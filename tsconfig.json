@@ -1,0 +1,23 @@
+{
+    "compilerOptions": {
+        "target": "ES2022", /* Output modern JavaScript compatible with newer Node.js versions */
+        "module": "NodeNext", /* Use Node's native ESM module system */
+        "moduleResolution": "NodeNext", /* Mimic how Node.js looks up module files */
+        "outDir": "./dist", /* Where compiled .js files will be saved */
+        "rootDir": "./src", /* Location of your source TypeScript files */
+        "strict": true, /* Enable all strict type-checking flags */
+        "esModuleInterop": true, /* Allows clean imports from legacy CommonJS packages */
+        "skipLibCheck": true, /* Skip type checking of declaration files (.d.ts) for speed */
+        "forceConsistentCasingInFileNames": true, /* Ensure cross-platform file system safety */
+        "types": [
+            "node"
+        ]
+    },
+    "include": [
+        "src/**/*"
+    ], /* Compile all files inside the src directory */
+    "exclude": [
+        "node_modules",
+        "dist"
+    ] /* Ignore third-party packages and build output */
+}
