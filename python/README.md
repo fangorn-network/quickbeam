@@ -33,14 +33,52 @@ docker run -d -p 6333:6333 -p 6334:6334 \
 
 ```sh
 # Point the linker to your venv's nvidia libraries
-export LD_LIBRARY_PATH=/path/to/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:/path/to/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=~/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:~/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
 
 python3 embeddings.py \
   -s test.sond3r.track.invariants.3=0xc4103f242a1e99bda3d6c484aa4e8155fc7e2df8fa6f59e0362a592b91570143 \
   -s test.sond3r.track.taxonomy.2=0x382fdaf1fb03f43ee0e5bcb0517fe0d2df3a3e9d27dddedf371c67e4812b6720 \
   --primary test.sond3r.track.invariants.3 \
-  --graph-api-key <key> \
-  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs
+  --graph-api-key PrivateKey \
+  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
+  --dim 256 \
+  --umap \
+  --reset 
+```
+
+build the umap deps
+
+``` sh
+python embeddings.py --collection fangorn --umap-only
+```
+
+#### Export Snapshot
+
+``` sh
+# write the latest snapshot to qdrant 
+curl -X POST localhost:6333/collections/fangorn/snapshots
+# grab the latest snapshot from qdrant
+docker exec qdrant-core find /qdrant -name "*.snapshot"
+# exfiltrate the latest snapshot from docker and store locally
+docker cp qdrant-core:/qdrant/snapshots/fangorn/fangorn-7445347200924990-2026-06-09-21-28-36.snapshot ~/.snapshot
+# zip the snapshot
+gzip -k ~/.snapshot
+# pin to ipfs (from the root)
+node src/pin.mjs ~/.snapshot.gz "fangorn-7445347200924990-2026-06-09-21-28-36.snapshot.gz"
+# note the sha256 sum of the snapshot before cleanup
+sha256sum ~/.snapshot 
+rm -rf ~/.snapshot ~/.snapshot.gz
+```
+
+###### IPFS installation
+
+``` sh
+# Ubuntu/Debian
+wget https://dist.ipfs.tech/kubo/v0.27.0/kubo_v0.27.0_linux-amd64.tar.gz
+tar -xvzf kubo_v0.27.0_linux-amd64.tar.gz
+sudo bash kubo/install.sh
+ipfs init
+ipfs daemon &
 ```
 
 ### 3. Start the server
@@ -53,19 +91,6 @@ python server.py \
   --qdrant-host xyz-example.eu-central.aws.cloud.qdrant.io \
   --qdrant-port 6334 \
   --qdrant-api-key your-api-key  # need to add this arg
-```
-
-  python - << 'EOF'
-  from qdrant_client import QdrantClient
-
-  src = QdrantClient(host="localhost", port=6333, prefer_grpc=True)
-  dst = QdrantClient(
-      url="https://c741b23e-fe75-4f00-8f6e-53709c011371.us-east-1-1.aws.cloud.qdrant.io:6334",
-      api_key="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6NDVkZjI4Y2YtNDhiMS00ZGY2LWExMDYtNWZiMzBiNGE4NDQzIn0.Rp90WUQjOuw410DXWzgdTYEb-9Jw5Y5Ob_DjFYfJyZU",
-  )
-
-  src.migrate(dst, collection_names=["fangorn"])
-  EOF
 
 The server starts immediately and serves whatever is already in Qdrant. Use `POST /reingest` to pull new subgraph data without restarting.
 
@@ -78,10 +103,13 @@ For distribution and local simulation — export the populated vector collection
 ### Export
 
 ```sh
+# Full bundle (already done)
 python export_bundle.py --src http://localhost:8080 --out bundle.ndjson
+
+# Embeddings only
+python export_bundle.py --src http://localhost:8080 --out embeddings.ndjson --embeddings-only
 ```
 
-Pin `bundle.ndjson` to IPFS (e.g. via Pinata), grab the CID.
 
 ### Seed on startup
 

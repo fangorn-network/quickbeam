@@ -1,12 +1,16 @@
+--extra-index-url https://pypi.nvidia.com
 aiohttp
 chromadb
 fastapi
 fastembed-gpu
+httpx
 nvidia-cudnn-cu12
+onnxruntime-gpu
 requests
-sentence-transformers
 torch
 tqdm
+tuspy
 umap-learn
 uvicorn[standard]
 qdrant-client
+cuml-cu13

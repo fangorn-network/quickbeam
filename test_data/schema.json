@@ -1,0 +1,26 @@
+{
+    "title": {
+        "@type": "string"
+    },
+    "artist": {
+        "@type": "string"
+    },
+    "album": {
+        "@type": "string"
+    },
+    "trackNumber": {
+        "@type": "string"
+    },
+    "genre": {
+        "@type": "string"
+    },
+    "duration": {
+        "@type": "string"
+    },
+    "image": {
+        "@type": "string"
+    },
+    "audio": {
+        "@type": "handle"
+    }
+}

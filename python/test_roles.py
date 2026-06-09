@@ -1,4 +1,4 @@
-"""Parity + generalization checks for role inference. Run: python test_roles.py"""
+git remote add origin git@github.com:fangorn-network/embeddings.git"""Parity + generalization checks for role inference. Run: python test_roles.py"""
 from roles import infer_roles
 
 MUSIC = [{

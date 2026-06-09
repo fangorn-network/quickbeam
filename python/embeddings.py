@@ -5,16 +5,16 @@ import sys
 import argparse
 import asyncio
 import aiohttp
-import random
 import hashlib
 import json
 import uuid
 
+import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from fastembed import TextEmbedding
 from roles import infer_roles
-from tqdm import tqdm  # Real-time telemetry engine
+from tqdm import tqdm
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -43,6 +43,16 @@ def parse_args():
     parser.add_argument("--concurrency", type=int, default=16)
     parser.add_argument("--reset", action="store_true", default=False)
     parser.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5")
+    parser.add_argument("--dim", type=int, default=256, help="Matryoshka output dim: 256, 512, or 768")
+    parser.add_argument("--embed-batch", type=int, default=16, help="GPU embed batch size (lower for small VRAM)")
+    parser.add_argument("--role-map-file", default="./db/role_map.json")
+    # UMAP precompute. The 2D galaxy projection is catalog-wide and identical for
+    # every user, so it is BUILDER work, computed once here and baked into the
+    # snapshot as px/py payload — never recomputed on a client.
+    parser.add_argument("--umap", action="store_true", default=False, help="Compute + store UMAP px/py after ingest")
+    parser.add_argument("--umap-only", action="store_true", default=False, help="Skip ingest; only (re)compute UMAP on the existing collection")
+    parser.add_argument("--umap-neighbors", type=int, default=15)
+    parser.add_argument("--umap-min-dist", type=float, default=0.05)
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -51,6 +61,161 @@ MODEL_DIM_MAP = {
     "sentence-transformers/all-MiniLM-L6-v2": 384
 }
 
+# ---------------------------------------------------------------------------
+# MATRYOSHKA TRUNCATION
+# nomic-embed-text-v1.5 recipe: layer-norm over the dim axis, slice to N,
+# then L2-normalize. Run identically on the SOND3R query side or distances break.
+# ---------------------------------------------------------------------------
+def matryoshka(vec, dim):
+    x = np.asarray(vec, dtype=np.float32)
+    x = (x - x.mean()) / np.sqrt(x.var() + 1e-5)
+    x = x[:dim]
+    n = np.linalg.norm(x)
+    return (x / n).astype(np.float32).tolist() if n else x.tolist()
+
+# ---------------------------------------------------------------------------
+# PAYLOAD INDEXES (idempotent — runs every build)
+# Text indexes power lexical /search/text (exact artist/title lookup); the owner
+# keyword index powers owner-filtered queries. These are METADATA, not vectors —
+# creating them never re-embeds anything and is fast even on a full collection.
+# ---------------------------------------------------------------------------
+def ensure_indexes(qdrant, collection):
+    specs = [
+        ("fields.title",    models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        ("fields.byArtist", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        ("owner",           models.KeywordIndexParams(type="keyword")),
+    ]
+    for field, schema in specs:
+        try:
+            qdrant.create_payload_index(collection_name=collection, field_name=field, field_schema=schema)
+            print(f"[index] created {field}")
+        except Exception as e:
+            print(f"[index] {field} already present ({type(e).__name__})")
+
+# ---------------------------------------------------------------------------
+# UMAP PRECOMPUTE (one-time, builder-side)
+# Pulls all vectors, projects to 2D, normalises to [-1, 1], and writes px/py
+# back onto each point's payload via batched set-payload operations. The coords
+# then travel inside the Qdrant snapshot, so the client renders the galaxy with
+# zero compute.
+# ---------------------------------------------------------------------------
+def write_umap_coords(qdrant, collection, neighbors, min_dist):
+    try:
+        import umap
+    except ImportError:
+        print("[umap] umap-learn not installed. Run: pip install umap-learn")
+        return
+    import numpy as np
+    from tqdm import tqdm
+    import gc
+    import tempfile, os
+
+    total = qdrant.count(collection).count
+    print(f"[umap] pulling {total} vectors ...")
+
+    # --- Probe dims from first point before allocating anything ---
+    probe, _ = qdrant.scroll(collection, limit=1, with_vectors=True, with_payload=False)
+    if not probe:
+        print("[umap] collection empty, nothing to project")
+        return
+    dims = len(probe[0].vector)
+
+    # --- Allocate mmap up front; write directly during scroll ---
+    arr_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mmap")
+    arr_tmp.close()
+    arr = np.memmap(arr_tmp.name, dtype=np.float32, mode="w+", shape=(total, dims))
+
+    ids = []
+    cursor = 0
+    offset = None
+    pbar = tqdm(total=total, desc="  ↳ pulling vectors", unit=" vec")
+    while True:
+        pts, offset = qdrant.scroll(
+            collection, limit=500, offset=offset,
+            with_vectors=True, with_payload=False
+        )
+        if not pts:
+            break
+        for p in pts:
+            ids.append(p.id)
+            arr[cursor] = p.vector   # write straight to disk-backed array
+            cursor += 1
+        pbar.update(len(pts))
+        if offset is None:
+            break
+    pbar.close()
+
+    n = cursor  # actual count (may differ from total if collection shifted)
+
+    # --- Sample for fitting ---
+    sample_size = min(30_000, n)
+    print(f"[umap] fitting UMAP on {sample_size}-vector sample ...")
+    indices = np.random.choice(n, sample_size, replace=False)
+    train_sample = np.array(arr[indices], dtype=np.float32)  # small, fine in RAM
+
+    reducer = umap.UMAP(
+        n_components=2,
+        n_neighbors=min(neighbors, sample_size - 1),
+        min_dist=min_dist,
+        metric="cosine",
+        low_memory=True,
+        random_state=42,
+        verbose=True,
+    )
+    reducer.fit(train_sample)
+    del train_sample
+    gc.collect()
+
+    # --- proj also mmap'd ---
+    proj_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mmap")
+    proj_tmp.close()
+    proj = np.memmap(proj_tmp.name, dtype=np.float32, mode="w+", shape=(n, 2))
+
+    transform_batch_size = 10_000
+    for i in tqdm(range(0, n, transform_batch_size), desc="  ↳ transforming"):
+        end = min(i + transform_batch_size, n)
+        chunk = np.array(arr[i:end], dtype=np.float32)
+        proj[i:end] = reducer.transform(chunk)
+        del chunk
+        gc.collect()
+
+    del arr
+    gc.collect()
+    os.unlink(arr_tmp.name)
+
+    # --- Normalize in-place ---
+    for ax in range(2):
+        mn, mx = float(proj[:, ax].min()), float(proj[:, ax].max())
+        rng = (mx - mn) or 1.0
+        proj[:, ax] = (proj[:, ax] - mn) / rng * 2 - 1
+
+    # --- Write back ---
+    print("[umap] writing px/py back to payloads ...")
+    B = 1000
+    bad = 0
+    for i in tqdm(range(0, n, B), desc="  ↳ set_payload", unit=" batch"):
+        ops = []
+        batch_proj = np.array(proj[i:i + B])  # force copy out of mmap into plain ndarray
+        for pid, row in zip(ids[i:i + B], batch_proj):
+            x, y = float(row[0]), float(row[1])
+            if not (np.isfinite(x) and np.isfinite(y)):
+                bad += 1
+                x, y = 0.0, 0.0  # or skip — NaN/inf will always blow up gRPC
+            ops.append(models.SetPayloadOperation(
+                set_payload=models.SetPayload(
+                    payload={"px": x, "py": y},
+                    points=[pid],
+                )
+            ))
+        qdrant.batch_update_points(collection_name=collection, update_operations=ops)
+
+    if bad:
+        print(f"[umap] warning: {bad} points had non-finite coords, zeroed out")
+
+    del proj
+    os.unlink(proj_tmp.name)
+    print(f"[umap] done — px/py on {n} points. Snapshot now to bake it in.")
+            
 # ---------------------------------------------------------------------------
 # SUBGRAPH & IPFS LOGIC
 # ---------------------------------------------------------------------------
@@ -125,41 +290,62 @@ def _track_id(fields: dict) -> str:
 # ---------------------------------------------------------------------------
 async def main():
     args = parse_args()
+
+    qdrant = QdrantClient(host=args.qdrant_host, port=args.qdrant_port,
+                      grpc_port=args.qdrant_grpc_port, prefer_grpc=True,
+                      timeout=600)
+
+    # ── UMAP-only mode: skip all ingest, just (re)project the existing collection
+    if args.umap_only:
+        if not qdrant.collection_exists(args.collection):
+            print(f"[Builder] collection '{args.collection}' does not exist — nothing to project")
+            return
+        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+        ensure_indexes(qdrant, args.collection)
+        return
+
     schemas = {}
     for pair in args.schemas:
         name, s_id = pair.split("=", 1)
         schemas[name.strip()] = s_id.strip()
     primary_key = args.primary or next(iter(schemas))
-    
-    # Init Clients
-    qdrant = QdrantClient(host=args.qdrant_host, port=args.qdrant_port, grpc_port=args.qdrant_grpc_port, prefer_grpc=True)
-    # Find this initialization in your script:
-    # Deep optimization for the ONNX BFC Memory Arena
+
+    # Init embedder. Provider list falls back to CPU so a missing/oversized CUDA
+    # allocation degrades instead of crashing. Tune gpu_mem_limit to your card.
     embed_engine = TextEmbedding(
         model_name=args.embedding_model,
-        max_length=512,
+        max_length=256,
         providers=[
             ("CUDAExecutionProvider", {
                 "device_id": 0,
-                "arena_extend_strategy": "kSameAsRequested", 
-                "gpu_mem_limit": 3   * 1024 * 1024 * 1024,     
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "gpu_mem_limit": 3 * 1024 * 1024 * 1024,
                 "cudnn_conv_algo_search": "DEFAULT",
-                
-                # CHANGE THESE TWO LINE CONFIGURATIONS:
-                "do_copy_in_default_stream": "True",
-                "has_user_compute_stream": "False" # Forces predictable synchronous scheduling
-            })
+            }),
+            "CPUExecutionProvider",
         ]
     )
-    dim = MODEL_DIM_MAP.get(args.embedding_model, 768)
+
+    model_dim = MODEL_DIM_MAP.get(args.embedding_model, 768)
+    dim = min(args.dim, model_dim)
+    truncate = dim < model_dim
+    print(f"[Builder] model native dim={model_dim}, output dim={dim} (truncate={truncate})")
 
     if args.reset and qdrant.collection_exists(args.collection):
         print(f"[Builder] Resetting collection '{args.collection}'...")
         qdrant.delete_collection(args.collection)
     if not qdrant.collection_exists(args.collection):
-        qdrant.create_collection(args.collection, vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE))
+        qdrant.create_collection(
+            args.collection,
+            vectors_config=models.VectorParams(
+                size=dim, distance=models.Distance.COSINE, on_disk=True),
+            quantization_config=models.ScalarQuantization(
+                scalar=models.ScalarQuantizationConfig(
+                    type=models.ScalarType.INT8, quantile=0.99, always_ram=True)),
+        )
+    ensure_indexes(qdrant, args.collection)
 
-    # Load Checkpoint with backwards compatibility for track tracking
+    # Load checkpoint
     try:
         with open(args.checkpoint_file) as f:
             checkpoint = json.load(f)
@@ -178,24 +364,16 @@ async def main():
     for s_name, s_id in schemas.items():
         print(f"\n[Builder] [1/4] Querying Subgraph events for schema: {s_name}")
         publishes, updates = await _fetch_all_events_async(args.subgraph_url, args.graph_api_key, s_id, args.page_size)
-        
+
         cids_meta = {}
         for p in publishes: cids_meta[p["manifestCid"]] = p
         for u in updates: cids_meta[u["manifestCid"]] = u
 
-        # # Unnest the actual dictionary if it wrapped in the "manifests" key
-        # if isinstance(manifest_checkpoints, dict) and "manifests" in manifest_checkpoints:
-        #     manifest_checkpoints = manifest_checkpoints["manifests"]
-
-        # # Your fixed line 172:
-        # new_cids = [c for c, m in cids_meta.items() if int(manifest_checkpoints.get(c, -1)) < int(m["blockTimestamp"])]
-        # new_cids = [c for c, m in cids_meta.items() if int(manifest_checkpoints.get(c, -1)) < int(m["blockTimestamp"])]
         new_cids = list(cids_meta.keys())
 
         print(f"[Builder] [2/4] Syncing manifests from IPFS Gateway...")
         manifests = await fetch_all_ipfs(new_cids, args.ipfs_gateway, args.ipfs_timeout, args.concurrency, desc="Manifest Files")
 
-        # Harvest Data CIDs
         data_cids_to_meta = {}
         for c, json_data in manifests.items():
             if not json_data: continue
@@ -218,12 +396,14 @@ async def main():
                     primary_records.append({"track_id": t_id, "fields": fields, "meta": meta})
                 else:
                     secondary_by_track.setdefault(t_id, []).append(fields)
-        
-        for c, m in cids_meta.items(): 
+
+        for c, m in cids_meta.items():
             manifest_checkpoints[c] = m["blockTimestamp"]
 
     if not primary_records:
-        print("\n[Builder] Success! No new entries found to process.")
+        print("\n[Builder] No new entries found. Computing UMAP if requested...")
+        if args.umap:
+            write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
         return
 
     # Cross-Schema Join & Role inference Phase
@@ -232,12 +412,9 @@ async def main():
     skipped_count = 0
     for item in primary_records:
         t_id, fields, meta = item["track_id"], dict(item["fields"]), item["meta"]
-        
-        # Track Resumability skipping mechanism
         if t_id in processed_track_ids:
             skipped_count += 1
             continue
-
         if t_id in secondary_by_track:
             for sec_fields in secondary_by_track[t_id]: fields.update(sec_fields)
         joined_data.append({"track_id": t_id, "fields": fields, "meta": meta})
@@ -245,104 +422,94 @@ async def main():
     print(f"[Builder] Skipped {skipped_count} track IDs already marked completed in checkpoint.")
 
     if not joined_data:
-        print("\n[Builder] All discovered tracks in these chunks are already uploaded.")
+        print("\n[Builder] All discovered tracks already uploaded.")
+        if args.umap:
+            write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
         return
 
     role_map = infer_roles([j["fields"] for j in joined_data])
 
-    # ---------------------------------------------------------------------------
-    # Embedding Generation & Chunked Upload Phase
-    # ---------------------------------------------------------------------------
+    rm_dir = os.path.dirname(args.role_map_file)
+    if rm_dir and not os.path.exists(rm_dir):
+        os.makedirs(rm_dir, exist_ok=True)
+    with open(args.role_map_file, "w") as f:
+        json.dump(role_map, f)
+    print(f"[Builder] Wrote global role map to {args.role_map_file}")
+
+    # ── Embedding Generation & Chunked Upload Phase ──────────────────────────
     print(f"\n[Builder] [4/4] Computing ONNX Embeddings via CUDA GPU Pipeline...")
-    
-    # Process in chunks of 5000 to save state frequently and prevent memory bloating
-    SAVE_BATCH_SIZE = 5000 
-    
+    SAVE_BATCH_SIZE = 5000
+
     for i in range(0, len(joined_data), SAVE_BATCH_SIZE):
         chunk = joined_data[i : i + SAVE_BATCH_SIZE]
         print(f"\n[Execution] Processing Batch {i // SAVE_BATCH_SIZE + 1} ({len(chunk)} tracks)...")
-        
+
         texts, points = [], []
         for item in chunk:
             fields = item["fields"]
-            if args.searchable_fields == "auto":    
+            if args.searchable_fields == "auto":
                 tags = " ".join(fields.get(t, "") if isinstance(fields.get(t), str) else "" for t in role_map.get("tags", []))
                 text_str = f"Title: {fields.get(role_map.get('title',''), '')}. Tags: {tags}"
             else:
                 text_str = " ".join(str(fields[k]) for k in args.searchable_fields.split(",") if fields.get(k))
-            
-            # handle any unusually long strings
             if len(text_str) > 1000:
                 text_str = text_str[:1000]
             texts.append(f"search_document: {text_str}")
             points.append(item)
 
-        # Generate vectors for this chunk
         vectors = []
-        # Breaks the 5k batches down to reset generator hooks
-        SUB_CHUNK_SIZE = 1000 
-        
+        SUB_CHUNK_SIZE = 1000
         with tqdm(total=len(texts), desc="  ↳ GPU Vectors Generated", unit=" doc") as pbar:
             for sub_idx in range(0, len(texts), SUB_CHUNK_SIZE):
                 sub_texts = texts[sub_idx : sub_idx + SUB_CHUNK_SIZE]
-                
-                # Consume the generator completely into a temporary pool
-                for vec in embed_engine.embed(sub_texts, batch_size=32):    
-                    vectors.append(vec.tolist())
+                for vec in embed_engine.embed(sub_texts, batch_size=args.embed_batch):
+                    vectors.append(matryoshka(vec, dim) if truncate else vec.tolist())
                     pbar.update(1)
-                
-                # Explicit micro-flush mid-batch
-                import gc
-                gc.collect()
-                
-                # --- ADD A TINY THERMAL/POWER BREAK HERE ---
-                import time
-                time.sleep(0.1) # 100ms pause to let the GPU stabilize
-                # -------------------------------------------
+                import gc; gc.collect()
 
-        # Package current chunk for Qdrant
-        print(f"[Builder] Packaging vector collections into storage structures...")
+        # Minimal payload: join key + owner + display fields + provenance cid.
         qdrant_payload = [
             models.PointStruct(
                 id=str(uuid.uuid4()),
                 vector=vec,
-                payload={"id": p["track_id"], "owner": p["meta"]["owner"], "fields": p["fields"], "meta": p["meta"], "role_map_cache": role_map}
+                payload={
+                    "id": p["track_id"],
+                    "owner": p["meta"].get("owner"),
+                    "fields": p["fields"],
+                    "meta": {"manifestCid": p["meta"].get("manifestCid")},
+                }
             ) for vec, p in zip(vectors, points)
         ]
 
-        # Upload chunk
-        print(f"[Builder] Shifting vectors to Qdrant Core Engine storage...")
-        qdrant.upload_points(collection_name=args.collection, points=qdrant_payload, batch_size=1000)
-        
+        print(f"[Builder] Uploading {len(qdrant_payload)} points to Qdrant...")
+        qdrant.upload_points(collection_name=args.collection, points=qdrant_payload, batch_size=256)
 
-        # IMMEDIATELY write progress for this chunk to the database checkpoint
         for p in points:
             checkpoint["processed_track_ids"].append(p["track_id"])
-
-        # Add this here to update manifest tracking safely:
         for p in points:
             m_cid = p["meta"]["manifestCid"]
             manifest_checkpoints[m_cid] = p["meta"]["blockTimestamp"]
+        checkpoint["manifests"] = manifest_checkpoints
 
-        checkpoint["manifests"] = manifest_checkpoints  
-
-        # Make sure directory exists before saving
         checkpoint_dir = os.path.dirname(args.checkpoint_file)
         if checkpoint_dir and not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir, exist_ok=True)
-
-        with open(args.checkpoint_file, "w") as f: 
+        with open(args.checkpoint_file, "w") as f:
             json.dump(checkpoint, f)
-            
-        print(f"[Builder] Batch {i // SAVE_BATCH_SIZE + 1} safely committed to checkpoint file.")
-        del texts
-        del points
-        del vectors
-        del qdrant_payload
-        import gc
-        gc.collect()
+        print(f"[Builder] Batch {i // SAVE_BATCH_SIZE + 1} committed to checkpoint.")
 
-    print("\n[Builder] All tasks complete! Vector space database generation successfully updated.")
+        del texts, points, vectors, qdrant_payload
+        import gc; gc.collect()
+
+    print("\n[Builder] Embedding complete.")
+
+    # ── UMAP precompute (one-time). Run AFTER all points exist so the projection
+    #    covers the whole catalog. Snapshot the collection after this to ship it.
+    if args.umap:
+        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+
+    ensure_indexes(qdrant, args.collection)
+    print("\n[Builder] All tasks complete.")
 
 if __name__ == "__main__":
     asyncio.run(main())

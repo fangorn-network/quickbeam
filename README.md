@@ -1,4 +1,4 @@
-# fangorn-embeddings
+  # fangorn-embeddings
 
 Fangorn infrastructure for building and serving vector search over Fangorn data sources. Pulls manifests from The Graph, resolves payloads from IPFS, joins across schemas, embeds via fastembed/ONNX, and serves a semantic search API backed by Qdrant.
 
@@ -52,8 +52,19 @@ python3 embeddings.py \
   -s test.sond3r.track.taxonomy.2=0x382fdaf1fb03f43ee0e5bcb0517fe0d2df3a3e9d27dddedf371c67e4812b6720 \
   --primary test.sond3r.track.invariants.3 \
   --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs
+  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
+  --dim 256 \
+  --umap \
+  --reset <--- only if you want a full rebuild 
 ```
+
+To only build UMAP coords, run
+
+``` sh 
+python embeddings.py --collection fangorn --umap-only
+```
+
+
 
 ### 3. Start the server
 
@@ -71,6 +82,10 @@ The server starts immediately and serves whatever is already in Qdrant. Use `POS
 ---
 
 ## Publishing a snapshot
+
+``` sh
+docker cp qdrant-core:/qdrant/snapshots/fangorn/fangorn-7445347200924990-2026-06-08-17-26-31.snapshot ~/fangorn.snapshot
+```
 
 Snapshots are versioned, derived artifacts registered on Fangorn. A snapshot captures the embedding bundle at a specific point in time, tied to specific source schema versions and a specific model. Clients use the snapshot CID to seed a local Qdrant instance without re-embedding.
 
@@ -92,6 +107,16 @@ python export_bundle.py --src http://localhost:8080 --out embeddings.ndjson --em
 ### 2. Pin to IPFS
 
 Upload both files to Pinata (or any IPFS pinning service) and note the CIDs.
+
+``` sh
+# Compress the bundle
+gzip -k python/bundle.ndjson
+
+# Upload the compressed bundle
+PINATA_JWT=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiJhNWFiOTAzNC04NDZmLTQ0YTMtOWUxMy1iYzViMGY4NGZhNWIiLCJlbWFpbCI6ImRyaWVtd29ya3NAZmFuZ29ybi5uZXR3b3JrIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsInBpbl9wb2xpY3kiOnsicmVnaW9ucyI6W3siZGVzaXJlZFJlcGxpY2F0aW9uQ291bnQiOjEsImlkIjoiRlJBMSJ9LHsiZGVzaXJlZFJlcGxpY2F0aW9uQ291bnQiOjEsImlkIjoiTllDMSJ9XSwidmVyc2lvbiI6MX0sIm1mYV9lbmFibGVkIjpmYWxzZSwic3RhdHVzIjoiQUNUSVZFIn0sImF1dGhlbnRpY2F0aW9uVHlwZSI6InNjb3BlZEtleSIsInNjb3BlZEtleUtleSI6IjU2OTQ4OGI2Nzg2NTIxMGEzNGVmIiwic2NvcGVkS2V5U2VjcmV0IjoiMGQ1ZjE1ODMxOWViYzJlMDhhYjE0OWE1ZWE5MTRhZTQ4YzRkNWQwOTIzMDgyMGMyMmZhMDY2ZWE0ZTcwMGY2MyIsImV4cCI6MTgxMjQwNzI2MX0.6VBV4xJyk__73a4iTOBfyUkEasXQ_uFCwVcxDE6qSDU \
+PINATA_GATEWAY=https://green-reasonable-heron-957.mypinata.cloud \
+node src/pin.mjs bundle.ndjson.gz "sond3r-bundle-v1"
+```
 
 ### 3. Publish the snapshot to Fangorn
 
