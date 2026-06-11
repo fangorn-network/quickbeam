@@ -1,24 +1,41 @@
 # Fangorn Embeddings Builder and VectorDB Server
 
-FastAPI + Qdrant read model for Fangorn manifests. Fetches published manifests from The Graph subgraph, resolves them from IPFS, joins across any number of schemas on a shared primary key (`trackId`), embeds via fastembed/ONNX, and serves a vector search API to the SOND3R client.
+FastAPI + Qdrant read model for Fangorn manifests. Fetches published manifests from The Graph subgraph, resolves them from IPFS, joins the records — either across flat schemas on a shared primary key (`trackId`) or by walking the committed edges of a **schema bundle** — embeds via fastembed/ONNX, and serves a vector search API to the SOND3R client.
+
+> **Two meanings of "bundle".** This doc uses the word in two unrelated ways:
+> - **Schema bundle** (`--bundle`) — a registered subgraph schema whose v3 manifests carry typed node chunks plus an edge chunk. The builder walks those edges to join records. Covered under [Build from a schema bundle](#build-from-a-schema-bundle).
+> - **Snapshot/NDJSON bundle** (`--bundle-cid`, `/bundle/*`) — an exported copy of the populated Qdrant collection, used to seed new instances without a GPU. Covered under [Seeding from a snapshot bundle](#seeding-from-a-snapshot-bundle).
 
 ---
 
 ## How it works
 
 ```
-Subgraph (events) → IPFS (manifests) → join on trackId → Qdrant → API
+Subgraph (events) → IPFS (manifests) → join (trackId | edge-walk) → Qdrant → API
 ```
 
-There are two separate processes: an offline **embeddings builder** (`embeddings.py`) that does the heavy GPU work and populates Qdrant, and a **server** (`server.py`) that reads from Qdrant and serves the API. The server does not ingest on startup — it expects the collection to already be populated, either by the builder or by seeding from an IPFS bundle.
+There are two separate processes: an offline **embeddings builder** (`embeddings.py`) that does the heavy GPU work and populates Qdrant, and a **server** (`server.py`) that reads from Qdrant and serves the API. The server does not ingest on startup — it expects the collection to already be populated, either by the builder or by seeding from a snapshot bundle.
 
-Each schema is fetched independently and deduped (newest manifest wins per entry name). All schemas are joined on the primary schema's entry name. The merged field set is stored as a JSON payload in Qdrant; a searchable text document (built from inferred or configured fields) drives the embedding.
+The builder produces the same record shape — `{ track_id, fields, meta }` — through one of two interchangeable join phases. Everything downstream (role inference, embedding text, Qdrant payload) is identical for both:
+
+- **Flat schemas (`--schema`/`--primary`).** Each schema is fetched independently and deduped (newest manifest wins per entry name). All schemas are joined on the primary schema's entry name (`trackId`), and the merged field set drives the embedding.
+- **Schema bundle (`--bundle`).** A single bundle schema publishes v3 manifests carrying typed node chunks (`{id, type, fields}`) and an edge chunk (`{rel, from, to}`). The builder walks the committed **outgoing** edges from each root-type node (`--root-type`, default `Track`) and flattens each neighbor's fields into the root record — no track-id guessing. The root node's stable, publisher-assigned `id` is the join key.
 
 Responses return `{ id, fields: {...}, ...meta }` — the client reads `hit.fields.title`, not a parsed pipe-delimited string.
 
 ---
 
 ## Quickstart
+
+### 0. Installation
+
+Create a venv and install dependencies, from the root:
+
+``` sh
+cd python
+python -m venv venv
+pip install -r requirements.txt
+```
 
 ### 1. Run Qdrant
 
@@ -32,9 +49,39 @@ docker run -d -p 6333:6333 -p 6334:6334 \
 ### 2. Build embeddings
 
 ```sh
-# Point the linker to your venv's nvidia libraries
-export LD_LIBRARY_PATH=~/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:~/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+# Point the linker to your venv's nvidia libraries (both build modes need this)
+export LD_LIBRARY_PATH=$HOME/fangorn/embeddings/python/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$HOME/fangorn/embeddings/python/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
 
+# verify cuda is available
+python -c "import onnxruntime as ort; ort.InferenceSession('test', providers=['CUDAExecutionProvider'])"
+```
+
+#### Build from a schema bundle
+
+The bundle's committed edges define the join, so you pass a single `--bundle NAME=0x...`
+instead of a `--schema`/`--primary` set. `--root-type` selects which node type becomes one
+record (one Qdrant point) per root node; its neighbors are flattened in by edge-walk.
+
+```sh
+python3 embeddings.py \
+  --bundle test.sond3r.track.bundle.1=0x9f2c...e0143 \
+  --root-type Track \
+  --graph-api-key b66e8b18ae3fe2c5a91929098b290d69 \
+  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
+  --dim 256 \
+  --umap \
+  --reset
+```
+
+> `--bundle` and the `--schema`/`--primary` flags are mutually exclusive in practice — when
+> `--bundle` is set the builder takes the edge-walk path and ignores `--schema`/`--primary`.
+> Re-running after the join-key fix: if a collection was first built before bundle ids became
+> the stable key, pass `--reset` (or a fresh `--checkpoint-file`) once so old random-uuid keys
+> are replaced cleanly.
+
+#### Build from flat schemas
+
+```sh
 python3 embeddings.py \
   -s test.sond3r.track.invariants.3=0xc4103f242a1e99bda3d6c484aa4e8155fc7e2df8fa6f59e0362a592b91570143 \
   -s test.sond3r.track.taxonomy.2=0x382fdaf1fb03f43ee0e5bcb0517fe0d2df3a3e9d27dddedf371c67e4812b6720 \
@@ -96,9 +143,9 @@ The server starts immediately and serves whatever is already in Qdrant. Use `POS
 
 ---
 
-## Seeding from a bundle
+## Seeding from a snapshot bundle
 
-For distribution and local simulation — export the populated vector collection as an NDJSON bundle, pin it to IPFS, and seed any new instance from the CID on startup. No GPU required on the receiving end.
+For distribution and local simulation — export the populated vector collection as an NDJSON bundle, pin it to IPFS, and seed any new instance from the CID on startup. No GPU required on the receiving end. (This is the snapshot/NDJSON bundle, unrelated to the `--bundle` schema bundle used to *build* embeddings above.)
 
 ### Export
 
@@ -144,17 +191,21 @@ cat bundle.ndjson | curl -X POST http://localhost:8080/bundle/import \
 
 All config is via CLI flags.
 
-### Required
+### Required (one join mode)
+
+Provide **either** a flat-schema set **or** a bundle:
 
 | Flag | Description |
 |---|---|
-| `--schema` / `-s` | `NAME=0x...` schema ID pair. Repeatable. |
+| `--schema` / `-s` | `NAME=0x...` schema ID pair. Repeatable. Flat-schema join mode. |
+| `--bundle` | `NAME=0x...` bundle schema. Edge-walk join mode (replaces `--schema`/`--primary`). |
 
 ### Optional
 
 | Flag | Default | Description |
 |---|---|---|
-| `--primary` / `-p` | First schema listed | Schema whose entry names are the join key |
+| `--primary` / `-p` | First schema listed | Schema whose entry names are the join key (flat-schema mode) |
+| `--root-type` | `Track` | Bundle node type emitted as one record per node (bundle mode) |
 | `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
 | `--graph-api-key` | `""` | The Graph gateway API key |
 | `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway for manifest and bundle resolution |
@@ -328,12 +379,23 @@ Returns matched/unmatched track IDs across primary and secondary schemas, plus t
 
 ## Join semantics
 
+### Flat schemas (`--schema`/`--primary`)
+
 - The `--primary` schema's entry names are the join key (`trackId`)
 - All other schemas are indexed by entry name and merged into a single field dict
 - On key conflicts, the secondary schema wins (enrichment pattern)
 - If a secondary schema has multiple entries per `trackId`, they are merged left-to-right — last writer wins within that schema
 - Entries in secondary schemas with no matching primary entry are silently dropped
-- The semantic role map (`title`, `subtitle`, `tags`) is inferred automatically from field names and value shapes across the merged dataset
+
+### Schema bundle (`--bundle`)
+
+- One record is emitted per `--root-type` node; the root node's stable, publisher-assigned `id` is the join key (carried into Qdrant as `fields`/payload `id` and the checkpoint dedup key)
+- Only **outgoing** edges from the root node are walked (one hop); each neighbor's fields are flattened into the root record
+- On key conflicts, the neighbor wins — same enrichment semantics as the flat secondary merge
+- Edges into the root, and nodes not reachable from any root, contribute no fields
+- Manifests that are not valid v3 bundles (missing `version: 3` or an `edgeChunk`) are skipped
+
+In both modes the semantic role map (`title`, `subtitle`, `tags`) is inferred automatically from field names and value shapes across the merged dataset.
 
 ---
 

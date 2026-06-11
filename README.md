@@ -44,8 +44,8 @@ docker run -d -p 6333:6333 -p 6334:6334 \
 
 ```sh
 # Link NVIDIA libraries if using CUDA
-export LD_LIBRARY_PATH=/path/to/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:\
-/path/to/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=~/fangorn/embeddings/python/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:\
+~/fangorn/embeddings/python/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
 
 python3 embeddings.py \
   -s test.sond3r.track.invariants.3=0xc4103f242a1e99bda3d6c484aa4e8155fc7e2df8fa6f59e0362a592b91570143 \

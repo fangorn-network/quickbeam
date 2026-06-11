@@ -29,6 +29,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Fangorn Qdrant Ingestion CLI Builder")
     parser.add_argument("--schema", "-s", action="append", dest="schemas", default=[])
     parser.add_argument("--primary", "-p", default=None)
+    # ── Bundle mode: a single bundle schema whose v3 manifests carry typed
+    #    node chunks + an edge chunk. When set, the builder walks committed
+    #    edges to join instead of guessing a track-id join across --schema.
+    #    Mutually exclusive in practice with the --schema/--primary path.
+    parser.add_argument("--bundle", default=None,
+                        help="Bundle schema as name=schemaId. Uses edge-walk join instead of --primary track-id join.")
+    parser.add_argument("--root-type", default="Track",
+                        help="Bundle root node type — one record is emitted per root node.")
     parser.add_argument("--subgraph-url", default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc")
     parser.add_argument("--graph-api-key", default="")
     parser.add_argument("--ipfs-gateway", default="https://gateway.pinata.cloud/ipfs")
@@ -215,7 +223,7 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist):
     del proj
     os.unlink(proj_tmp.name)
     print(f"[umap] done — px/py on {n} points. Snapshot now to bake it in.")
-            
+
 # ---------------------------------------------------------------------------
 # SUBGRAPH & IPFS LOGIC
 # ---------------------------------------------------------------------------
@@ -277,13 +285,115 @@ async def fetch_all_ipfs(cids, gateway, timeout, concurrency, desc="Downloading 
     pbar.close()
     return dict(zip(cids, results))
 
-def _track_id(fields: dict) -> str:
+def _track_id(fields: dict, prefer: str | None = None) -> str:
+    # Bundle mode passes the root node's stable, publisher-assigned id here. It is
+    # the canonical join key, so it wins over any heuristic derived from merged
+    # fields (which can be clobbered by a neighbour's `id` after the edge-walk).
+    if prefer:
+        return str(prefer).strip().removeprefix("track:")
     for key in ["trackId", "track_id", "id", "contentId"]:
         if fields.get(key): return str(fields[key]).strip().removeprefix("track:")
     artist = str(fields.get("artist") or "").strip()
     title = str(fields.get("title") or "").strip()
     if artist and title: return hashlib.sha256(f"{artist}:{title}".encode()).hexdigest()[:24]
     return str(uuid.uuid4())[:12]
+
+# ---------------------------------------------------------------------------
+# BUNDLE JOIN  (edge-walk replacement for the track-id join)
+#
+# A bundle publishes ONE ManifestPublished event per dataset, pointing at a v3
+# bundle manifest: { version:3, nodeChunks:[{type,dataCid,leaf}], edgeChunk:{dataCid,leaf} }.
+# Node chunks are lists of { id, type, fields }; the edge chunk is a list of
+# { rel, from, to } over node ids. We walk one hop from each root-type node and
+# flatten its neighbors' fields INTO the root's fields — identical merge
+# semantics to the legacy secondary_by_track join, so everything downstream
+# (role inference, embedding text, Qdrant payload) runs unchanged.
+#
+# Output shape matches the legacy path exactly: [{ "track_id", "fields", "meta" }].
+# ---------------------------------------------------------------------------
+async def build_bundle_joined_data(args, schema_id, root_type):
+    print(f"\n[Builder] [1/3] Querying Subgraph for bundle ManifestPublished events...")
+    publishes, updates = await _fetch_all_events_async(
+        args.subgraph_url, args.graph_api_key, schema_id, args.page_size
+    )
+
+    # newest manifest wins per CID; updates override publishes for the same cid
+    cids_meta = {}
+    for p in publishes: cids_meta[p["manifestCid"]] = p
+    for u in updates: cids_meta[u["manifestCid"]] = u
+
+    if not cids_meta:
+        return []
+
+    print(f"[Builder] [2/3] Fetching v3 bundle manifests from IPFS...")
+    manifests = await fetch_all_ipfs(
+        list(cids_meta.keys()), args.ipfs_gateway, args.ipfs_timeout,
+        args.concurrency, desc="Bundle Manifests"
+    )
+
+    # collect every node-chunk + edge-chunk CID across all bundle manifests
+    chunk_cids = set()
+    manifest_chunks = {}  # manifestCid -> (node_cids, edge_cid)
+    skipped_non_v3 = 0
+    for mcid, m in manifests.items():
+        if not m or m.get("version") != 3:
+            skipped_non_v3 += 1
+            continue
+        node_cids = [c["dataCid"] for c in m.get("nodeChunks", [])]
+        edge_cid = (m.get("edgeChunk") or {}).get("dataCid")
+        if edge_cid is None:
+            skipped_non_v3 += 1
+            continue
+        manifest_chunks[mcid] = (node_cids, edge_cid)
+        chunk_cids.update(node_cids)
+        chunk_cids.add(edge_cid)
+
+    if skipped_non_v3:
+        print(f"[Builder] Skipped {skipped_non_v3} manifests that were not valid v3 bundles.")
+    if not manifest_chunks:
+        return []
+
+    print(f"[Builder] [3/3] Pulling node + edge chunks from IPFS...")
+    chunks = await fetch_all_ipfs(
+        list(chunk_cids), args.ipfs_gateway, args.ipfs_timeout,
+        args.concurrency, desc="Bundle Chunks"
+    )
+
+    joined = []
+    for mcid, (node_cids, edge_cid) in manifest_chunks.items():
+        meta = cids_meta[mcid]
+
+        # hydrate: index every node by id (ids unique across the whole bundle)
+        nodes_by_id = {}
+        for ncid in node_cids:
+            for node in (chunks.get(ncid) or []):
+                nodes_by_id[node["id"]] = node
+        edges = chunks.get(edge_cid) or []
+
+        # group outgoing edges once: (from_id, rel) -> [to_id, ...]
+        out = {}
+        for e in edges:
+            out.setdefault((e["from"], e["rel"]), []).append(e["to"])
+
+        # one record per root node, neighbors flattened into fields
+        for node in nodes_by_id.values():
+            if node.get("type") != root_type:
+                continue
+            fields = dict(node.get("fields", {}))
+            for (frm, _rel), tos in out.items():
+                if frm != node["id"]:
+                    continue
+                for tid in tos:
+                    nb = nodes_by_id.get(tid)
+                    if nb:
+                        fields.update(nb.get("fields", {}))  # same merge as secondary_by_track
+            joined.append({
+                "track_id": _track_id(fields, prefer=node.get("id")),
+                "fields": fields,
+                "meta": meta,
+            })
+
+    return joined
 
 # ---------------------------------------------------------------------------
 # PIPELINE EXECUTION
@@ -308,7 +418,7 @@ async def main():
     for pair in args.schemas:
         name, s_id = pair.split("=", 1)
         schemas[name.strip()] = s_id.strip()
-    primary_key = args.primary or next(iter(schemas))
+    primary_key = args.primary or (next(iter(schemas)) if schemas else None)
 
     # Init embedder. Provider list falls back to CPU so a missing/oversized CUDA
     # allocation degrades instead of crashing. Tune gpu_mem_limit to your card.
@@ -339,9 +449,7 @@ async def main():
             args.collection,
             vectors_config=models.VectorParams(
                 size=dim, distance=models.Distance.COSINE, on_disk=True),
-            quantization_config=models.ScalarQuantization(
-                scalar=models.ScalarQuantizationConfig(
-                    type=models.ScalarType.INT8, quantile=0.99, always_ram=True)),
+           ,
         )
     ensure_indexes(qdrant, args.collection)
 
@@ -357,72 +465,105 @@ async def main():
     manifest_checkpoints = checkpoint.get("manifests", {})
     processed_track_ids = set(checkpoint.get("processed_track_ids", []))
 
-    primary_records = []
-    secondary_by_track = {}
+    # ── JOIN PHASE ───────────────────────────────────────────────────────────
+    # Two interchangeable ways to produce `joined_data` (shape: [{track_id, fields, meta}]).
+    # Bundle mode walks committed edges; legacy mode joins secondaries on track id.
+    # Everything AFTER this block is identical for both.
 
-    # Extract Data Phase
-    for s_name, s_id in schemas.items():
-        print(f"\n[Builder] [1/4] Querying Subgraph events for schema: {s_name}")
-        publishes, updates = await _fetch_all_events_async(args.subgraph_url, args.graph_api_key, s_id, args.page_size)
+    if args.bundle:
+        b_name, b_id = args.bundle.split("=", 1)
+        print(f"\n[Builder] Bundle mode for '{b_name.strip()}' (root type = {args.root_type})")
+        raw_joined = await build_bundle_joined_data(args, b_id.strip(), args.root_type)
 
-        cids_meta = {}
-        for p in publishes: cids_meta[p["manifestCid"]] = p
-        for u in updates: cids_meta[u["manifestCid"]] = u
+        joined_data = []
+        skipped_count = 0
+        for item in raw_joined:
+            if item["track_id"] in processed_track_ids:
+                skipped_count += 1
+                continue
+            joined_data.append(item)
+        print(f"[Builder] Skipped {skipped_count} track IDs already marked completed in checkpoint.")
 
-        new_cids = list(cids_meta.keys())
+        # record bundle manifest timestamps in the checkpoint
+        for item in joined_data:
+            manifest_checkpoints[item["meta"]["manifestCid"]] = item["meta"]["blockTimestamp"]
 
-        print(f"[Builder] [2/4] Syncing manifests from IPFS Gateway...")
-        manifests = await fetch_all_ipfs(new_cids, args.ipfs_gateway, args.ipfs_timeout, args.concurrency, desc="Manifest Files")
+    else:
+        if not schemas:
+            print("[Builder] No --schema provided and no --bundle. Nothing to do.")
+            return
+        if primary_key is None:
+            print("[Builder] No --primary provided. Nothing to do.")
+            return
 
-        data_cids_to_meta = {}
-        for c, json_data in manifests.items():
-            if not json_data: continue
-            for entry in json_data.get("entries", []):
-                dcid = entry.get("fields", {}).get("dataCid")
-                if dcid: data_cids_to_meta[dcid] = cids_meta[c]
+        primary_records = []
+        secondary_by_track = {}
 
-        print(f"[Builder] [3/4] Pulling structural data payloads from IPFS...")
-        payloads = await fetch_all_ipfs(list(data_cids_to_meta.keys()), args.ipfs_gateway, args.ipfs_timeout, args.concurrency, desc="Payload Data")
+        # Extract Data Phase
+        for s_name, s_id in schemas.items():
+            print(f"\n[Builder] [1/4] Querying Subgraph events for schema: {s_name}")
+            publishes, updates = await _fetch_all_events_async(args.subgraph_url, args.graph_api_key, s_id, args.page_size)
 
-        for dcid, data in payloads.items():
-            if not data: continue
-            records = data if isinstance(data, list) else [data]
-            for r in records:
-                fields = r.get("fields", r) if isinstance(r, dict) else {}
-                t_id = _track_id(fields)
-                meta = data_cids_to_meta[dcid]
+            cids_meta = {}
+            for p in publishes: cids_meta[p["manifestCid"]] = p
+            for u in updates: cids_meta[u["manifestCid"]] = u
 
-                if s_name == primary_key:
-                    primary_records.append({"track_id": t_id, "fields": fields, "meta": meta})
-                else:
-                    secondary_by_track.setdefault(t_id, []).append(fields)
+            new_cids = list(cids_meta.keys())
 
-        for c, m in cids_meta.items():
-            manifest_checkpoints[c] = m["blockTimestamp"]
+            print(f"[Builder] [2/4] Syncing manifests from IPFS Gateway...")
+            manifests = await fetch_all_ipfs(new_cids, args.ipfs_gateway, args.ipfs_timeout, args.concurrency, desc="Manifest Files")
 
-    if not primary_records:
-        print("\n[Builder] No new entries found. Computing UMAP if requested...")
-        if args.umap:
-            write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
-        return
+            data_cids_to_meta = {}
+            for c, json_data in manifests.items():
+                if not json_data: continue
+                for entry in json_data.get("entries", []):
+                    dcid = entry.get("fields", {}).get("dataCid")
+                    if dcid: data_cids_to_meta[dcid] = cids_meta[c]
 
-    # Cross-Schema Join & Role inference Phase
-    print(f"\n[Builder] Merging primary and secondary schemas on track ID keys...")
-    joined_data = []
-    skipped_count = 0
-    for item in primary_records:
-        t_id, fields, meta = item["track_id"], dict(item["fields"]), item["meta"]
-        if t_id in processed_track_ids:
-            skipped_count += 1
-            continue
-        if t_id in secondary_by_track:
-            for sec_fields in secondary_by_track[t_id]: fields.update(sec_fields)
-        joined_data.append({"track_id": t_id, "fields": fields, "meta": meta})
+            print(f"[Builder] [3/4] Pulling structural data payloads from IPFS...")
+            payloads = await fetch_all_ipfs(list(data_cids_to_meta.keys()), args.ipfs_gateway, args.ipfs_timeout, args.concurrency, desc="Payload Data")
 
-    print(f"[Builder] Skipped {skipped_count} track IDs already marked completed in checkpoint.")
+            for dcid, data in payloads.items():
+                if not data: continue
+                records = data if isinstance(data, list) else [data]
+                for r in records:
+                    fields = r.get("fields", r) if isinstance(r, dict) else {}
+                    t_id = _track_id(fields)
+                    meta = data_cids_to_meta[dcid]
+
+                    if s_name == primary_key:
+                        primary_records.append({"track_id": t_id, "fields": fields, "meta": meta})
+                    else:
+                        secondary_by_track.setdefault(t_id, []).append(fields)
+
+            for c, m in cids_meta.items():
+                manifest_checkpoints[c] = m["blockTimestamp"]
+
+        if not primary_records:
+            print("\n[Builder] No new entries found. Computing UMAP if requested...")
+            if args.umap:
+                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+            return
+
+        # Cross-Schema Join Phase
+        print(f"\n[Builder] Merging primary and secondary schemas on track ID keys...")
+        joined_data = []
+        skipped_count = 0
+        for item in primary_records:
+            t_id, fields, meta = item["track_id"], dict(item["fields"]), item["meta"]
+            if t_id in processed_track_ids:
+                skipped_count += 1
+                continue
+            if t_id in secondary_by_track:
+                for sec_fields in secondary_by_track[t_id]: fields.update(sec_fields)
+            joined_data.append({"track_id": t_id, "fields": fields, "meta": meta})
+
+        print(f"[Builder] Skipped {skipped_count} track IDs already marked completed in checkpoint.")
+
+    # ── CONVERGED PATH (identical for bundle + legacy) ───────────────────────
 
     if not joined_data:
-        print("\n[Builder] All discovered tracks already uploaded.")
+        print("\n[Builder] No new joined records to embed.")
         if args.umap:
             write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
         return
