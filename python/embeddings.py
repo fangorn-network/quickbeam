@@ -448,8 +448,7 @@ async def main():
         qdrant.create_collection(
             args.collection,
             vectors_config=models.VectorParams(
-                size=dim, distance=models.Distance.COSINE, on_disk=True),
-           ,
+                size=dim, distance=models.Distance.COSINE, on_disk=True)
         )
     ensure_indexes(qdrant, args.collection)
 
