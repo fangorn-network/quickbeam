@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickbeam"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiohttp",
+    "certifi",
+    "fastapi",
+    "httpx",
+    "musicbrainzngs",
+    "numpy",
+    "qdrant-client",
+    "requests",
+    "tqdm",
+    "typer",
+    "umap-learn",
+    "uvicorn[standard]",
+]
+
+[project.optional-dependencies]
+# Install one of these depending on your hardware:
+#   pip install -e ".[gpu]"   — CUDA-accelerated embeddings (default for build)
+#   pip install -e ".[cpu]"   — CPU-only fallback
+gpu = ["fastembed-gpu"]
+cpu = ["fastembed"]
+# Agent / payments layer: MCP server (FastMCP) + x402 EIP-712 payment signing.
+agent = ["fastmcp", "eth-account", "httpx"]
+dev   = ["pytest", "fastmcp", "eth-account"]
+
+[project.scripts]
+quickbeam = "quickbeam.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quickbeam*"]

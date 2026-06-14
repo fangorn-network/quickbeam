@@ -6,3 +6,7 @@ node_modules/
 **/cuda-**
 .env
 **/__pycache/
+.claude
+**/__pycache__
+.pytest_cache   
+**/stage_volumes/

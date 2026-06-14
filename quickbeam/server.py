@@ -1,26 +1,54 @@
 import certifi
 import os
+
+# ── Native thread governance ────────────────────────────────────────────────
+# numba (pulled in by UMAP), numpy/OpenBLAS, and onnxruntime (via fastembed)
+# each start a pool of worker threads that *busy-wait* when idle. After a big
+# job like the 860k-point UMAP build finishes, those leftover threads keep every
+# core pinned at 100% for the life of the process. Make idle OpenMP threads
+# sleep, and cap each pool to ~half the cores so a build can't lock up the whole
+# machine. Must run before those libraries load (fastembed below pulls in
+# onnxruntime at import time; numpy/numba load lazily on the first map build).
+_HALF_CORES = str(max(1, (os.cpu_count() or 4) // 2))
+os.environ.setdefault("OMP_WAIT_POLICY", "PASSIVE")
+os.environ.setdefault("OMP_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("OPENBLAS_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("MKL_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMEXPR_NUM_THREADS", _HALF_CORES)
+os.environ.setdefault("NUMBA_NUM_THREADS", _HALF_CORES)
+
 import io
 import sys
 os.environ['SSL_CERT_FILE'] = certifi.where()
 import argparse
 import asyncio
+import threading
 import aiohttp
 import random
 import hashlib
 import json
+import logging
+import math
 import uuid
 import requests
 import uvicorn
 
 from qdrant_client import QdrantClient, models as qmodels
 from fastembed import TextEmbedding
-from fastapi import FastAPI, Query, BackgroundTasks, Request
+from fastapi import FastAPI, Query, BackgroundTasks, Request, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from roles import infer_roles, field_label
+# Dual import: works both as a script run from quickbeam/ and as quickbeam.server.
+try:
+    from quickbeam.roles import infer_roles, field_label
+except ImportError:
+    from roles import infer_roles, field_label
+try:
+    from quickbeam import x402 as x402mod
+except ImportError:
+    import x402 as x402mod
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -50,6 +78,11 @@ def parse_args():
     parser.add_argument("--qdrant-grpc-port", type=int, default=6334)
     parser.add_argument("--checkpoint-file", default="./db/ingest_checkpoint.json")
     parser.add_argument("--collection",      default="fangorn")
+    parser.add_argument(
+        "--dim", type=int, default=None,
+        help="Vector dimension. Default: read from the recovered collection and "
+             "Matryoshka-truncate query embeddings to match it.",
+    )
     parser.add_argument("--searchable-fields", default="auto")
     parser.add_argument("--page-size",       type=int, default=100)
     parser.add_argument("--ipfs-timeout",    type=int, default=20)
@@ -62,6 +95,22 @@ def parse_args():
         "--bundle-cid", default=None, metavar="CID",
         help="IPFS CID of an NDJSON bundle to seed from on first startup (skipped if collection already has points)",
     )
+    # ── x402 payment gating ──────────────────────────────────────────────────
+    # When --x402-pay-to is set, the search/query routes return HTTP 402 until a
+    # valid X-PAYMENT header is supplied. See quickbeam/x402.py.
+    x = parser.add_argument_group("x402 payment gating")
+    x.add_argument("--x402-pay-to", default=None, metavar="0x...",
+                   help="Recipient address for payments. Enables x402 gating when set.")
+    x.add_argument("--x402-price", default="0.001", metavar="USDC",
+                   help="Price per gated request in whole token units (default: 0.001).")
+    x.add_argument("--x402-network", default="base-sepolia",
+                   help="EVM network: base-sepolia, base, avalanche-fuji.")
+    x.add_argument("--x402-asset", default=None, metavar="0x...",
+                   help="Token contract. Defaults to the network's USDC.")
+    x.add_argument("--x402-decimals", type=int, default=6,
+                   help="Token decimals for converting --x402-price to atomic units.")
+    x.add_argument("--x402-facilitator", default=None, metavar="URL",
+                   help="Facilitator URL for on-chain verify+settle. Omit for local verification.")
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -101,6 +150,9 @@ qdrant_client:   QdrantClient | None = None
 embed_engine:    TextEmbedding | None = None
 debug_secondary: dict                 = {}
 role_map_global: dict | None          = None
+# Effective vector dimension, resolved at startup from the recovered collection
+# (or --dim / model default as a fallback). Query embeddings are truncated to it.
+vector_dim:      int | None           = None
 
 # ---------------------------------------------------------------------------
 # ID HELPERS
@@ -368,15 +420,39 @@ def _build_map_sync() -> dict:
 # TEXT (LEXICAL) SEARCH
 # ---------------------------------------------------------------------------
 
-_text_index:    list[dict] | None = None
+_text_index:      list[dict] | None = None
+_text_index_lock = threading.Lock()
+
+# True once background warmup has finished: lexical index built, embedding model
+# loaded, and the vector index paged into memory. The /ready boot gate keys off
+# this so the loading screen can hold until the very first query is fast.
+_warm = False
+
+# Real, not-cosmetic warmup progress for the boot splash. The dominant warmup cost
+# is the lexical build, which scans a *known* number of records — so the splash can
+# show `_warm_indexed / _warm_total` as a literal count of work completed, not an
+# estimate. The two tail steps (embedding-model load, vector-index touch) have no
+# measurable sub-progress; `_warm_phase` names the current step so the UI can show
+# an honest indeterminate state for those instead of fabricating a percentage.
+_warm_phase   = "starting"
+_warm_indexed = 0
+_warm_total   = 0
 
 def _build_text_index_sync() -> list[dict]:
+    global _warm_indexed, _warm_total
     total = _collection_count()
     if total == 0:
         return []
+    # Publish the denominator before the scroll starts so the splash bar is a real
+    # fraction (records folded in / total) from the first tick onward.
+    _warm_total   = total
+    _warm_indexed = 0
+    print(f"[search/text] building lexical index over {total} records…")
     _ensure_role_map()
     out: list[dict] = []
-    for pt_id, payload, _ in _scroll_all(with_vectors=False):
+    # Larger scroll pages → far fewer gRPC round-trips over the full collection,
+    # which is the slow part of the cold build.
+    for pt_id, payload, _ in _scroll_all(with_vectors=False, batch=20_000):
         fields   = payload.get("fields", {}) or {}
         owner    = payload.get("owner")
         subtitle = _role_subtitle(fields)
@@ -391,6 +467,11 @@ def _build_text_index_sync() -> list[dict]:
             "_tags_l":  " ".join(t.lower() for t in tags),
             "_sort":    (subtitle.lower(), title.lower()),
         })
+        # Coarse progress tick — every 5k records is smooth enough for the bar
+        # without churning a global per row over 860k iterations.
+        if len(out) % 5_000 == 0:
+            _warm_indexed = len(out)
+    _warm_indexed = len(out)
     print(f"[search/text] built lexical index: {len(out)} records")
     return out
 
@@ -409,13 +490,23 @@ def _score_rec(rec: dict, q_l: str, tokens: list[str]) -> float:
         score += 12 * (sum(1 for tok in tokens if tok in tags) / len(tokens))
     return score
 
-def _search_text_sync(q: str, limit: int, owner: str | None) -> list[dict]:
+def _ensure_text_index() -> list[dict]:
+    """Build the lexical index once, lazily, under a lock + double-check so two
+    concurrent callers (each on its own executor thread) don't both scroll the
+    full 860k-record collection. Pre-called from warmup so the user's first text
+    search does only scoring, not the build."""
     global _text_index
     if _text_index is None:
-        _text_index = _build_text_index_sync()
+        with _text_index_lock:
+            if _text_index is None:
+                _text_index = _build_text_index_sync()
+    return _text_index
+
+def _search_text_sync(q: str, limit: int, owner: str | None) -> list[dict]:
+    index  = _ensure_text_index()
     q_l    = q.strip().lower()
     tokens = [tok for tok in q_l.split() if tok]
-    recs   = _text_index if not owner else [r for r in _text_index if r.get("owner") == owner]
+    recs   = index if not owner else [r for r in index if r.get("owner") == owner]
     scored = [(s, r) for r in recs if (s := _score_rec(r, q_l, tokens)) > 0]
     scored.sort(key=lambda x: (-x[0], x[1]["_sort"]))
     return [{"id": r["id"], "fields": r["fields"], "owner": r.get("owner")}
@@ -824,11 +915,26 @@ def join_records(entries_by_schema: dict[str, list[dict]], primary: str) -> list
 # EMBED + UPSERT (server-side ingestion)
 # ---------------------------------------------------------------------------
 
-def _embed_texts(texts: list[str]) -> list[list[float]]:
-    prefixed = [f"search_document: {t}" for t in texts]
+def _truncate_normalize(vec: list[float], dim: int) -> list[float]:
+    """Matryoshka truncation. nomic-embed-text-v1.5 is trained so the leading
+    components of its 768-dim output form valid lower-dim embeddings; slice to
+    `dim` and re-normalize so query vectors line up with a snapshot built at `dim`.
+    """
+    v = vec[:dim]
+    norm = math.sqrt(sum(x * x for x in v)) or 1.0
+    return [x / norm for x in v]
+
+def _embed_texts(texts: list[str], prefix: str = "search_document") -> list[list[float]]:
+    # nomic-embed-text-v1.5 is asymmetric: documents must be prefixed
+    # "search_document:" (ingestion default), queries "search_query:". Passing
+    # the right prefix on the query side measurably improves retrieval.
+    prefixed = [f"{prefix}: {t}" for t in texts]
     vectors  = []
     for vec in embed_engine.embed(prefixed, batch_size=64):
-        vectors.append(vec.tolist() if not isinstance(vec, list) else vec)
+        v = vec.tolist() if not isinstance(vec, list) else vec
+        if vector_dim and len(v) > vector_dim:
+            v = _truncate_normalize(v, vector_dim)
+        vectors.append(v)
     return vectors
 
 def _upsert_joined(joined: list[dict]) -> None:
@@ -917,7 +1023,15 @@ def _hit_from_point(pt, score: float | None = None) -> dict:
     payload = pt.payload or {}
     fields  = payload.get("fields", {})
     owner   = payload.get("owner")
+    meta    = payload.get("meta", {}) or {}
     hit     = {"id": payload.get("id", str(pt.id)), "fields": fields, "owner": owner}
+    # Surface on-chain provenance so the MCP layer can attach it to every result.
+    hit["meta"] = {
+        "manifestCid":    meta.get("manifestCid"),
+        "blockTimestamp": meta.get("blockTimestamp"),
+        "version":        meta.get("version"),
+        "owner":          meta.get("owner"),
+    }
     if score is not None:
         hit["score"] = round(score, 4)
     vec = getattr(pt, "vector", None)
@@ -1011,12 +1125,22 @@ async def _seed_from_ipfs(cid: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global qdrant_client, embed_engine
+    global qdrant_client, embed_engine, vector_dim, _warm
+    # Silence the boot-poll access logs (main polls /ready every ~300ms until the
+    # warmup below flips it to 200). Done here, after uvicorn has set up its
+    # loggers, so the filter sticks.
+    logging.getLogger("uvicorn.access").addFilter(_AccessLogPollFilter())
+    # `timeout` is the per-request gRPC deadline. The default (5s) is too tight
+    # for a cold first query: against a freshly-recovered 1M-vector collection,
+    # Qdrant has to page the HNSW graph + mmap'd segments into memory before it
+    # can answer, which can take far longer than 5s. Give it real headroom — a
+    # warm query still returns in milliseconds, so this only bites on cold start.
     if cfg.qdrant_url:
         qdrant_client = QdrantClient(
             url=cfg.qdrant_url,
             api_key=cfg.qdrant_api_key,
             prefer_grpc=True,
+            timeout=120,
         )
         print(f"[startup] connecting to Qdrant Cloud: {cfg.qdrant_url}")
     else:
@@ -1025,6 +1149,7 @@ async def lifespan(app: FastAPI):
             port=cfg.qdrant_port,
             grpc_port=cfg.qdrant_grpc_port,
             prefer_grpc=True,
+            timeout=120,
         )
         print(f"[startup] connecting to local Qdrant: {cfg.qdrant_host}:{cfg.qdrant_port}")
 
@@ -1033,13 +1158,26 @@ async def lifespan(app: FastAPI):
         qdrant_client.delete_collection(cfg.collection)
         _clear_checkpoint()
 
-    dim = MODEL_DIM_MAP.get(cfg.embedding_model, 768)
-    if not qdrant_client.collection_exists(cfg.collection):
+    # Read-only path: the snapshot has already been recovered into Qdrant (see
+    # ensureCollection in main), so the collection — and its true vector dim —
+    # already exist. Trust that dim and truncate query embeddings to match it,
+    # rather than guessing from the model. Only create a collection when one is
+    # genuinely missing (e.g. standalone --bundle-cid seeding).
+    if qdrant_client.collection_exists(cfg.collection):
+        info       = qdrant_client.get_collection(cfg.collection)
+        vparams    = info.config.params.vectors
+        snap_dim   = getattr(vparams, "size", None)
+        vector_dim = cfg.dim or snap_dim or MODEL_DIM_MAP.get(cfg.embedding_model, 768)
+        if cfg.dim and snap_dim and cfg.dim != snap_dim:
+            print(f"[startup] WARNING: --dim {cfg.dim} != collection dim {snap_dim}; using {vector_dim}")
+        print(f"[startup] collection '{cfg.collection}' present — vector dim = {vector_dim}")
+    else:
+        vector_dim = cfg.dim or MODEL_DIM_MAP.get(cfg.embedding_model, 768)
         qdrant_client.create_collection(
             cfg.collection,
-            vectors_config=qmodels.VectorParams(size=dim, distance=qmodels.Distance.COSINE),
+            vectors_config=qmodels.VectorParams(size=vector_dim, distance=qmodels.Distance.COSINE),
         )
-        print(f"[startup] created collection '{cfg.collection}' dim={dim}")
+        print(f"[startup] created collection '{cfg.collection}' dim={vector_dim}")
 
     print(f"[startup] loading embedding model: {cfg.embedding_model}")
     embed_engine = TextEmbedding(model_name=cfg.embedding_model, max_length=512)
@@ -1055,7 +1193,65 @@ async def lifespan(app: FastAPI):
     else:
         print(f"[startup] use POST /reingest to pull new subgraph data, POST /bundle/upsert to seed from a bundle")
 
+    # Warm both hot paths in the background so the user's first query is fast:
+    # fastembed finishes loading its ONNX model lazily on the first embed, and
+    # Qdrant pages the index into memory on the first search. Doing this off the
+    # critical path means /health comes up immediately while warmup proceeds.
+    if count > 0:
+        asyncio.create_task(_warmup())
+    else:
+        # Nothing to warm (empty / still-seeding collection) — don't gate boot on
+        # a warmup that will never run.
+        _warm = True
+
     yield
+
+
+async def _warmup() -> None:
+    global _warm, _warm_phase
+    loop = asyncio.get_event_loop()
+    try:
+        # Pre-build the lexical index first: it's the first thing most users hit,
+        # and building it lazily on the first /search/text means an 860k-record
+        # scroll blocks that query. Doing it here (behind /health, at startup)
+        # makes the first text search do only scoring. This is the long phase and
+        # the one with a real percentage (records scanned / total).
+        _warm_phase = "building text index"
+        await loop.run_in_executor(None, _ensure_text_index)
+        # Force the embedding model to fully initialise (semantic search path).
+        # No measurable sub-progress — the UI shows this as an indeterminate step.
+        _warm_phase = "loading embedding model"
+        await loop.run_in_executor(None, lambda: _embed_texts(["warmup"]))
+        # Touch the collection so its HNSW graph + segments page into memory.
+        _warm_phase = "warming vector index"
+        dim = vector_dim or MODEL_DIM_MAP.get(cfg.embedding_model, 768)
+        await loop.run_in_executor(None, lambda: qdrant_client.query_points(
+            collection_name=cfg.collection,
+            query=[0.0] * dim,
+            limit=1,
+            with_payload=False,
+            with_vectors=False,
+        ))
+        print("[startup] warmup complete — lexical index + embeddings + vector index hot")
+    except Exception as e:
+        print(f"[startup] warmup skipped: {e}")
+    finally:
+        # Release the boot gate either way: on success everything's hot; on
+        # failure the lazy fallbacks still work and we must not hang the splash.
+        _warm_phase = "ready"
+        _warm = True
+
+
+class _AccessLogPollFilter(logging.Filter):
+    """Drop uvicorn access-log lines for the boot-gate poll endpoints. While the
+    splash waits for warmup, main hits /ready every ~300ms — without this the
+    console fills with '"GET /ready" 503' until the index is hot."""
+    _QUIET = ("/ready", "/health")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(p in msg for p in self._QUIET)
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -1096,26 +1292,26 @@ async def search(
 ):
     loop = asyncio.get_event_loop()
 
-    # Embed the query text
-    vectors = await loop.run_in_executor(None, lambda: _embed_texts([q]))
+    # Embed the query text. nomic is asymmetric — use the query-side prefix.
+    vectors = await loop.run_in_executor(None, lambda: _embed_texts([q], prefix="search_query"))
     query_vec = vectors[0]
 
     query_filter = qmodels.Filter(
         must=[qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner))]
     ) if owner else None
 
-    scored = await loop.run_in_executor(
+    resp = await loop.run_in_executor(
         None,
-        lambda: qdrant_client.search(
+        lambda: qdrant_client.query_points(
             collection_name=cfg.collection,
-            query_vector=query_vec,
+            query=query_vec,
             limit=n_results,
             query_filter=query_filter,
             with_payload=True,
             with_vectors=True,
         ),
     )
-    return {"results": [_hit_from_point(pt, pt.score) for pt in scored]}
+    return {"results": [_hit_from_point(pt, pt.score) for pt in resp.points]}
 
 @app.post("/search/vector")
 async def search_vector(body: VectorSearchRequest):
@@ -1123,18 +1319,18 @@ async def search_vector(body: VectorSearchRequest):
     query_filter = qmodels.Filter(
         must=[qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=body.owner))]
     ) if body.owner else None
-    scored = await loop.run_in_executor(
+    resp = await loop.run_in_executor(
         None,
-        lambda: qdrant_client.search(
+        lambda: qdrant_client.query_points(
             collection_name=cfg.collection,
-            query_vector=body.embedding,
+            query=body.embedding,
             limit=body.n_results,
             query_filter=query_filter,
             with_payload=True,
             with_vectors=True,
         ),
     )
-    return {"results": [_hit_from_point(pt, pt.score) for pt in scored]}
+    return {"results": [_hit_from_point(pt, pt.score) for pt in resp.points]}
 
 @app.post("/search/text")
 async def search_text(body: TextSearchRequest):
@@ -1368,23 +1564,17 @@ async def catalog_map_refresh(background_tasks: BackgroundTasks):
 
 @app.get("/debug")
 async def debug():
-    schemas    = get_schemas()
-    primary    = get_primary(schemas)
-    checkpoint = _load_checkpoint()
     all_ids, all_owners = [], []
     for _, payload, _ in _scroll_all(with_vectors=False):
         all_ids.append(payload.get("id", ""))
         all_owners.append(payload.get("owner", ""))
-    primary_ids        = sorted(all_ids)
-    total_cached_cids  = sum(len(v) if isinstance(v, dict) else 1
-                             for v in checkpoint.get("manifests", {}).values())
+    primary_ids = sorted(all_ids)
     return {
         "primary_track_ids":    primary_ids,
         "secondary_tag_keys":   sorted(debug_secondary.keys()),
         "matched":              sorted(set(primary_ids) & set(debug_secondary.keys())),
         "unmatched_primary":    sorted(set(primary_ids) - set(debug_secondary.keys())),
         "unmatched_tags":       sorted(set(debug_secondary.keys()) - set(primary_ids)),
-        "checkpoint_cid_count": total_cached_cids,
         "tag_details": {
             k: {
                 "genres":   v.get("genres"),
@@ -1398,18 +1588,45 @@ async def debug():
 
 @app.get("/health")
 async def health():
-    schemas    = get_schemas()
-    checkpoint = _load_checkpoint()
+    # Read-only server: schemas/checkpoints belong to the offline builder, not here.
+    # Roles are inferred from the recovered data on first access.
     return {
-        "status":          "ok",
-        "count":           _collection_count(),
-        "schemas":         schemas,
-        "roles":           role_map_global,
-        "map_cached":      _map_cache is not None,
-        "map_computing":   _map_computing,
-        "text_indexed":    _text_index is not None,
-        "checkpoint_cids": {name: len(cids) if isinstance(cids, dict) else 0
-                            for name, cids in checkpoint.get("manifests", {}).items()},
+        "status":        "ok",
+        "count":         _collection_count(),
+        "collection":    cfg.collection,
+        "dim":           vector_dim,
+        "roles":         role_map_global,
+        "map_cached":    _map_cache is not None,
+        "map_computing": _map_computing,
+        "text_indexed":  _text_index is not None,
+        "warm":          _warm,
+        "warm_phase":    _warm_phase,
+        "warm_indexed":  _warm_indexed,
+        "warm_total":    _warm_total,
+    }
+
+@app.get("/ready")
+async def ready(response: Response):
+    """Boot gate. Returns 200 only once background warmup has finished (lexical
+    index + embedding model + vector index hot), so the loading screen can hold
+    until the very first query is fast. 503 while still warming.
+
+    The 503 body carries *real* progress: `phase` names the current step and,
+    during the lexical build, `indexed`/`total`/`pct` report records scanned so
+    far. `pct` is non-null only while that build runs — the tail steps have no
+    measurable sub-progress, so the splash shows them as an indeterminate state
+    rather than a fabricated number."""
+    if _warm:
+        return {"ready": True}
+    response.status_code = 503
+    building = _warm_phase == "building text index"
+    pct = round(100 * _warm_indexed / _warm_total) if (building and _warm_total) else None
+    return {
+        "ready":   False,
+        "phase":   _warm_phase,
+        "indexed": _warm_indexed,
+        "total":   _warm_total,
+        "pct":     pct,
     }
 
 @app.post("/reingest")
@@ -1430,6 +1647,32 @@ async def reingest_full():
 # MAIN
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def _maybe_add_x402() -> None:
+    """Install the x402 middleware when --x402-pay-to is configured."""
+    if not getattr(cfg, "x402_pay_to", None):
+        print("[startup] x402 disabled (no --x402-pay-to); search routes are free")
+        return
+    price_atomic = x402mod.price_to_atomic(cfg.x402_price, cfg.x402_decimals)
+    config = x402mod.X402Config(
+        pay_to=cfg.x402_pay_to,
+        price_atomic=price_atomic,
+        network=cfg.x402_network,
+        asset=cfg.x402_asset or "",
+        facilitator_url=cfg.x402_facilitator,
+        description="quickbeam semantic search query",
+    )
+    app.add_middleware(x402mod.build_middleware(config), config=config)
+    mode = "facilitator" if cfg.x402_facilitator else "local-verify"
+    print(f"[startup] x402 ENABLED ({mode}) — {sorted(config.gated_paths)} "
+          f"cost {cfg.x402_price} on {cfg.x402_network}, paid to {cfg.x402_pay_to}")
+
+
+def main() -> None:
+    global cfg
     cfg = parse_args()
+    _maybe_add_x402()
     uvicorn.run(app, host=cfg.host, port=cfg.port)
+
+
+if __name__ == "__main__":
+    main()

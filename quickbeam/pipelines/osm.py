@@ -109,7 +109,7 @@ def _parse_changeset(cs: ET.Element) -> dict:
     }
 
 
-def run():
+def main():
     records: list[dict] = []
     seen: set[str] = set()
     now = datetime.now(timezone.utc)
