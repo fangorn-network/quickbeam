@@ -194,6 +194,21 @@ Note this loads the embedding model twice (once in each process), so plan VRAM a
 
 A snapshot is a portable copy of the populated Qdrant collection. It lets you seed a new instance — including one without a GPU — from a pinned IPFS artifact.
 
+``` sh  
+curl -X POST localhost:6333/collections/fangorn/snapshots
+# grab the latest snapshot from qdrant
+docker exec qdrant-core find /qdrant -name "*.snapshot"
+# exfiltrate the latest snapshot from docker and store locally
+docker cp qdrant-core:/qdrant/snapshots/fangorn/fangorn-8009660693873684-2026-06-16-22-11-57.snapshot ~/.snapshot
+# zip the snapshot
+gzip -k ~/.snapshot
+# pin to ipfs (from the root)
+node src/pinata.mjs upload ~/.snapshot.gz "fangorn-8009660693873684-2026-06-16-22-11-57.snapshot.gz"
+# note the sha256 sum of the snapshot before cleanup
+sha256sum ~/.snapshot 
+rm -rf ~/.snapshot ~/.snapshot.gz
+```
+
 ### Export
 
 ```sh

@@ -95,6 +95,12 @@ def parse_args():
         "--bundle-cid", default=None, metavar="CID",
         help="IPFS CID of an NDJSON bundle to seed from on first startup (skipped if collection already has points)",
     )
+    parser.add_argument(
+        "--catalog-map-file", default="./db/catalog_map.json.gz", metavar="PATH",
+        help="Gzipped catalog-map artifact produced by `quickbeam build --umap-target file`. "
+             "When present, GET /catalog/map streams it directly (no UMAP recompute) — the "
+             "scalable path for large collections.",
+    )
     # ── x402 payment gating ──────────────────────────────────────────────────
     # When --x402-pay-to is set, the search/query routes return HTTP 402 until a
     # valid X-PAYMENT header is supplied. See quickbeam/x402.py.
@@ -318,19 +324,77 @@ def _scroll_all(with_vectors: bool = False, batch: int = 5_000):
 _map_cache:     dict | None = None
 _map_computing: bool        = False
 
-def _build_map_sync() -> dict:
-    try:
-        import umap as umap_lib
-        import numpy as np
-    except ImportError as exc:
-        raise RuntimeError("umap-learn is not installed. Run: pip install umap-learn") from exc
+def _build_map_from_payload() -> dict:
+    """Fast catalog map: read the px/py that `quickbeam build --umap` baked into
+    each point's payload, instead of recomputing UMAP. Pulls no vectors and runs
+    no UMAP, so it scales to multi-million-point collections where the recompute
+    path (all vectors in RAM + UMAP) is infeasible. The baked coords are already
+    normalized to [-1, 1], so no rescaling is needed."""
+    import numpy as np
+    tracks:        list = []
+    tag_positions: dict = {}
+    for pt_id, payload, _ in _scroll_all(with_vectors=False):
+        px, py = payload.get("px"), payload.get("py")
+        if px is None or py is None:
+            continue
+        fields = payload.get("fields", {})
+        if not isinstance(fields, dict):
+            fields = {}
+        primary   = _role_tag_field_values(fields, 0)
+        secondary = _role_tag_field_values(fields, 1)
+        px, py    = float(px), float(py)
+        tracks.append({
+            "id":     str(pt_id),
+            "title":  _role_title(fields, fallback=str(pt_id)),
+            "artist": _role_subtitle(fields),
+            "genres": primary[:3],
+            "moods":  secondary[:3],
+            "px":     px,
+            "py":     py,
+        })
+        if primary:
+            tag_positions.setdefault(primary[0], []).append((px, py))
 
+    tag_centroids = []
+    for tag, pts in tag_positions.items():
+        if len(pts) < 5:
+            continue
+        a = np.array(pts)
+        tag_centroids.append({"genre": tag, "px": float(a[:, 0].mean()),
+                              "py": float(a[:, 1].mean()), "count": len(pts)})
+    tag_centroids.sort(key=lambda x: -x["count"])
+    print(f"[catalog/map] served {len(tracks)} tracks from baked px/py (no recompute)")
+    return {"tracks": tracks, "total": len(tracks), "genres": tag_centroids[:40]}
+
+
+def _build_map_sync() -> dict:
     total = _collection_count()
     print(f"[catalog/map] building projection for {total} tracks …")
     if total == 0:
         return {"tracks": [], "total": 0, "genres": []}
 
     _ensure_role_map()
+
+    # ── Fast path: px/py baked into payloads by the builder (quickbeam build --umap
+    #    / --umap-only). Read them directly — the only viable path at large scale.
+    try:
+        probe, _ = qdrant_client.scroll(
+            collection_name=cfg.collection, limit=1,
+            with_payload=True, with_vectors=False)
+    except Exception:
+        probe = None
+    if (probe and isinstance(probe[0].payload, dict)
+            and probe[0].payload.get("px") is not None
+            and probe[0].payload.get("py") is not None):
+        return _build_map_from_payload()
+
+    # ── Slow path: recompute UMAP from vectors. Feasible only for small
+    #    collections — large ones must bake px/py with the builder first.
+    try:
+        import umap as umap_lib
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError("umap-learn is not installed. Run: pip install umap-learn") from exc
 
     embeddings, payloads, ids = [], [], []
     for pt_id, payload, vec in _scroll_all(with_vectors=True):
@@ -1529,6 +1593,23 @@ async def schema():
 @app.get("/catalog/map")
 async def catalog_map():
     global _map_cache, _map_computing
+    # Fast path: stream the prebuilt artifact (quickbeam build --umap-target file).
+    # It is already gzipped JSON in the exact response shape, so we stream the
+    # bytes straight from disk — no recompute, no loading 10M points into RAM.
+    map_file = getattr(cfg, "catalog_map_file", None)
+    if map_file and os.path.exists(map_file):
+        def _iter():
+            with open(map_file, "rb") as f:
+                while True:
+                    chunk = f.read(1 << 20)
+                    if not chunk:
+                        break
+                    yield chunk
+        return StreamingResponse(
+            _iter(),
+            media_type="application/json",
+            headers={"Content-Encoding": "gzip", "X-Map-Source": "artifact"},
+        )
     if _map_cache is not None:
         return _map_cache
     if _map_computing:

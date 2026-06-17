@@ -53,8 +53,37 @@ def parse_args():
     parser.add_argument("--role-map-file", default="./db/role_map.json")
     parser.add_argument("--umap", action="store_true", default=False)
     parser.add_argument("--umap-only", action="store_true", default=False)
+    parser.add_argument("--umap-tmp-dir", default="./db/umap_tmp",
+                        help="Directory for UMAP temp memmaps. MUST be on real disk — "
+                             "the system temp dir is often tmpfs (RAM), where the ~10GB "
+                             "vector array would exhaust memory.")
     parser.add_argument("--umap-neighbors", type=int, default=15)
     parser.add_argument("--umap-min-dist", type=float, default=0.05)
+    parser.add_argument("--umap-writeback-batch", type=int, default=1000,
+                        help="Points per Qdrant payload-update call during UMAP write-back. "
+                             "Lower it if Qdrant balloons RAM on a small machine.")
+    parser.add_argument("--umap-writeback-sleep", type=float, default=0.0,
+                        help="Seconds to pause between write-back batches (synchronous mode "
+                             "only, i.e. --umap-writeback-workers 1). Throttles Qdrant on "
+                             "tiny machines.")
+    parser.add_argument("--umap-writeback-workers", type=int, default=4,
+                        help="Concurrent connections applying UMAP px/py updates. >1 multiplies "
+                             "write-back throughput ~Nx. wait=True per call still bounds Qdrant "
+                             "memory. Set 1 for the old synchronous (throttle-able) path.")
+    parser.add_argument("--umap-writeback-wait", default=True,
+                        action=argparse.BooleanOptionalAction,
+                        help="If true (default), each write waits for Qdrant to apply it — "
+                             "safe but disk-flush bound. Pass --no-umap-writeback-wait for a "
+                             "big speedup (async WAL writes + one final flush); ONLY with a "
+                             "Qdrant memory cap, or the apply-queue can OOM the box.")
+    parser.add_argument("--umap-target", choices=["file", "payload"], default="file",
+                        help="Where to put the UMAP projection. 'file' (default) writes a "
+                             "catalog-map artifact the server streams from /catalog/map — one "
+                             "fast read pass, no Qdrant writes (the only path that scales to "
+                             "millions). 'payload' writes px/py into each Qdrant point (slow; "
+                             "needed only if you must bake coords into the Qdrant snapshot).")
+    parser.add_argument("--umap-map-file", default="./db/catalog_map.json.gz",
+                        help="Output path for the --umap-target file artifact (gzipped JSON).")
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -88,6 +117,15 @@ def _save_checkpoint(ck, path):
         json.dump(ck, f)
 
 
+def _str_to_uuid(s: str) -> str:
+    """Deterministic UUID v5 from a track id. Using a stable id (rather than a
+    random one) makes re-upserting a manifest idempotent — a crash that re-runs
+    an already-embedded manifest overwrites the same points instead of creating
+    duplicates. Matches server.py's _str_to_uuid so builder + bundle-import agree.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_DNS, s))
+
+
 def _save_role_map(role_map, path):
     d = os.path.dirname(path)
     if d and not os.path.exists(d):
@@ -96,8 +134,19 @@ def _save_role_map(role_map, path):
         json.dump(role_map, f)
 
 
-def _init_embed_engine(args):
-    """Init TextEmbedding, first clearing any corrupted model cache snapshots."""
+def _build_text_embedding(args, cpu_only: bool = False):
+    """Construct a raw fastembed TextEmbedding, first clearing any corrupted
+    model cache snapshots.
+
+    `arena_extend_strategy=kSameAsRequested` (not kNextPowerOfTwo) is deliberate:
+    on small/laptop GPUs the power-of-two strategy rounds every allocation up to
+    the next power of two, wasting VRAM and fragmenting the arena over a long run
+    until a mid-size allocation can no longer fit (the BFCArena "Available memory
+    of 0" OOM). Requesting exactly what's needed keeps the arena dense.
+
+    `cpu_only=True` builds a CPU-only session — used as the last-resort fallback
+    when the GPU is exhausted (see ResilientEmbedder).
+    """
     import glob, shutil, tempfile
     cache_root = os.environ.get("FASTEMBED_CACHE_PATH", os.path.join(tempfile.gettempdir(), "fastembed_cache"))
     slug = args.embedding_model.replace("/", "--")
@@ -105,19 +154,86 @@ def _init_embed_engine(args):
         if os.path.isdir(snap) and not os.path.isfile(os.path.join(snap, "onnx", "model.onnx")):
             print(f"[Builder] Corrupt model cache at {snap!r}, removing for re-download...")
             shutil.rmtree(snap)
-    return TextEmbedding(
-        model_name=args.embedding_model,
-        max_length=256,
-        providers=[
-            ("CUDAExecutionProvider", {
-                "device_id": 0,
-                "arena_extend_strategy": "kNextPowerOfTwo",
-                "gpu_mem_limit": 3 * 1024 * 1024 * 1024,
-                "cudnn_conv_algo_search": "DEFAULT",
-            }),
-            "CPUExecutionProvider",
-        ]
-    )
+    providers = ["CPUExecutionProvider"] if cpu_only else [
+        ("CUDAExecutionProvider", {
+            "device_id": 0,
+            "arena_extend_strategy": "kSameAsRequested",
+            "gpu_mem_limit": 3 * 1024 * 1024 * 1024,
+            "cudnn_conv_algo_search": "DEFAULT",
+        }),
+        "CPUExecutionProvider",
+    ]
+    return TextEmbedding(model_name=args.embedding_model, max_length=256, providers=providers)
+
+
+_OOM_SIGNATURES = ("available memory", "out of memory", "bfcarena",
+                   "bfc_arena", "cudaerrormemoryallocation", "cublas_status_alloc_failed")
+
+
+def _is_gpu_oom(exc: Exception) -> bool:
+    return any(sig in str(exc).lower() for sig in _OOM_SIGNATURES)
+
+
+class ResilientEmbedder:
+    """Wraps a fastembed TextEmbedding so a GPU out-of-memory during embedding is
+    recoverable instead of fatal.
+
+    Recovery strategy (in order):
+      1. Retry the same texts at progressively smaller batch sizes on the SAME
+         GPU session. A failed onnxruntime run rolls its allocations back, so the
+         session stays usable and a smaller batch often fits in the arena's freed
+         space. (We do NOT rebuild the session: onnxruntime does not release the
+         CUDA arena on `del`, so a rebuild's own initialization OOMs — making
+         things worse.)
+      2. If even batch_size=1 OOMs, the arena is exhausted and cannot be
+         reclaimed in-process. Mark the GPU dead and fall back to a CPU session
+         for the rest of the run — slow, but it never OOMs, so the build always
+         finishes. The deterministic-id checkpoint means stopping and restarting
+         with a smaller --embed-batch resumes on GPU with no lost or duplicated work.
+
+    Exposes the same `.embed(texts, batch_size=...)` surface as TextEmbedding.
+    """
+
+    def __init__(self, args):
+        self.args        = args
+        self.engine      = _build_text_embedding(args)
+        self._cpu_engine = None
+        self._gpu_dead   = False
+
+    def _cpu(self):
+        if self._cpu_engine is None:
+            print("[Builder] Building CPU fallback embedder (one-time)...")
+            self._cpu_engine = _build_text_embedding(self.args, cpu_only=True)
+        return self._cpu_engine
+
+    def embed(self, texts, batch_size: int = 16):
+        if not self._gpu_dead:
+            sizes, bs = [], max(1, batch_size)
+            while bs > 1:
+                sizes.append(bs); bs //= 2
+            sizes.append(1)
+            for bs in sizes:
+                try:
+                    # Materialise (not lazy) so a retry can re-run the same texts.
+                    return list(self.engine.embed(texts, batch_size=bs))
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_gpu_oom(exc):
+                        raise
+                    if bs > 1:
+                        print(f"[Builder] GPU OOM at batch_size={bs} — retrying at {bs // 2}...")
+            # batch_size=1 still OOM'd → GPU is unrecoverable in this process.
+            self._gpu_dead = True
+            print("[Builder] GPU OOM persists at batch_size=1; the CUDA arena can't be "
+                  "reclaimed in-process — falling back to CPU for the rest of this run.")
+            print("[Builder] TIP: stop (Ctrl-C) and restart with a smaller --embed-batch "
+                  "(e.g. 4) to run on GPU again; the checkpoint resumes where it left off.")
+        return list(self._cpu().embed(texts, batch_size=max(1, batch_size)))
+
+
+def _init_embed_engine(args):
+    """Init the embedder used by build + watch. Returns a ResilientEmbedder that
+    transparently recovers from GPU OOM (see class docs)."""
+    return ResilientEmbedder(args)
 
 # ---------------------------------------------------------------------------
 # MATRYOSHKA TRUNCATION
@@ -148,7 +264,58 @@ def ensure_indexes(qdrant, collection):
 # ---------------------------------------------------------------------------
 # UMAP PRECOMPUTE
 # ---------------------------------------------------------------------------
-def write_umap_coords(qdrant, collection, neighbors, min_dist):
+def _shape_map_track(fields: dict, doc_id: str, px: float, py: float, role_map: dict):
+    """Project a record's fields into the catalog-map track shape using the role
+    map. Returns (track_dict, primary_tags) — mirrors server.py's map shaping so
+    the file artifact and the recompute path produce identical output."""
+    title_f = role_map.get("title")
+    sub_f   = role_map.get("subtitle")
+    tags    = role_map.get("tags", []) or []
+
+    def _vals(f):
+        v = fields.get(f) if f else None
+        if isinstance(v, list):
+            return [str(x) for x in v if x]
+        return [str(v)] if v else []
+
+    primary   = _vals(tags[0]) if len(tags) > 0 else []
+    secondary = _vals(tags[1]) if len(tags) > 1 else []
+    track = {
+        "id":     doc_id,
+        "title":  str(fields.get(title_f) or doc_id) if title_f else doc_id,
+        "artist": str(fields.get(sub_f) or "")       if sub_f   else "",
+        "genres": primary[:3],
+        "moods":  secondary[:3],
+        "px":     px,
+        "py":     py,
+    }
+    return track, primary
+
+
+def write_umap_coords(qdrant, collection, neighbors, min_dist, tmp_dir=None, reconnect=None,
+                      writeback_batch=1000, writeback_sleep=0.0, writeback_workers=4,
+                      writeback_wait=True, target="file", map_file="./db/catalog_map.json.gz",
+                      role_map=None):
+    """Project the whole collection to 2D and write px/py back onto each point.
+
+    Built to survive a multi-hour run on a flaky laptop against 10M × 256-d:
+
+      • Memory-bounded. Temp arrays are memmapped onto REAL DISK (not the system
+        temp dir, which is commonly tmpfs/RAM — a 10M×256 float32 array is ~10GB
+        and would brick the machine). Point ids are never held in RAM; write-back
+        re-scrolls in deterministic id order and aligns rows by position. Peak RAM
+        is ~one scroll page + the fit sample + the tiny n×2 projection.
+
+      • Transient-fault tolerant. Every Qdrant call is retried with backoff, and
+        the client is rebuilt via `reconnect()` on a dropped connection
+        ("Stream removed (Socket closed)", UNAVAILABLE, etc.).
+
+      • Resumable. Progress is checkpointed to umap_state.json in tmp_dir across
+        three stages (pull → transform → writeback). A crash resumes from the
+        last completed step instead of repeating the ~1h pull/transform. The fit
+        is deterministic (fixed seeds), so a re-fit on resume reproduces the exact
+        same projection. Delete tmp_dir to force a clean re-projection.
+    """
     try:
         import umap
     except ImportError:
@@ -156,108 +323,361 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist):
         return
     import numpy as np
     from tqdm import tqdm
-    import gc
-    import tempfile, os
+    import gc, os, json, time
 
-    total = qdrant.count(collection).count
-    print(f"[umap] pulling {total} vectors ...")
+    tmp_dir = tmp_dir or os.path.join("db", "umap_tmp")
+    os.makedirs(tmp_dir, exist_ok=True)
+    arr_path   = os.path.join(tmp_dir, "umap_vectors.f32")
+    proj_path  = os.path.join(tmp_dir, "umap_proj.f32")
+    state_path = os.path.join(tmp_dir, "umap_state.json")
 
-    probe, _ = qdrant.scroll(collection, limit=1, with_vectors=True, with_payload=False)
-    if not probe:
-        print("[umap] collection empty, nothing to project")
-        return
-    dims = len(probe[0].vector)
+    # ── Qdrant call wrapper: retry transient gRPC faults, reconnect if possible.
+    client = [qdrant]
+    _TRANSIENT = ("unavailable", "socket closed", "stream removed", "deadline exceeded",
+                  "connection reset", "broken pipe", "timed out", "transport is closing")
 
-    arr_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mmap")
-    arr_tmp.close()
-    arr = np.memmap(arr_tmp.name, dtype=np.float32, mode="w+", shape=(total, dims))
+    def _retry(fn, what):
+        delay = 1.0
+        for attempt in range(8):
+            try:
+                return fn(client[0])
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 7 or not any(t in str(exc).lower() for t in _TRANSIENT):
+                    raise
+                print(f"\n[umap] {what}: transient error ({str(exc)[:80]}); "
+                      f"reconnect+retry {attempt + 1}/8 in {delay:.0f}s")
+                time.sleep(delay)
+                delay = min(30.0, delay * 2)
+                if reconnect:
+                    try:
+                        client[0] = reconnect()
+                    except Exception as rexc:  # noqa: BLE001
+                        print(f"[umap] reconnect failed: {rexc}")
 
-    ids = []
-    cursor = 0
-    offset = None
-    pbar = tqdm(total=total, desc="  ↳ pulling vectors", unit=" vec")
-    while True:
-        pts, offset = qdrant.scroll(
-            collection, limit=500, offset=offset,
-            with_vectors=True, with_payload=False
+    def _save_state(st):
+        tmp = state_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, state_path)  # atomic
+
+    def _load_state():
+        try:
+            with open(state_path) as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    st = _load_state()
+    resuming = bool(st and st.get("collection") == collection and os.path.exists(proj_path))
+    if resuming:
+        # The output stage follows the CURRENT --umap-target, not whatever a prior
+        # run used. So a projection that finished transform under the old payload
+        # path can be redirected to the fast file artifact on resume (and vice versa).
+        if st.get("stage") in ("writeback", "artifact"):
+            st["stage"] = "artifact" if target == "file" else "writeback"
+        print(f"[umap] resuming: stage={st['stage']} n={st['n']} (tmp dir: {tmp_dir})")
+    else:
+        st = None
+
+    # ── STAGE 1: PULL all vectors → on-disk memmap (not resumable; if interrupted
+    #    here, the cheaper pull simply restarts). Skipped entirely when resuming.
+    if not resuming:
+        total = _retry(lambda c: c.count(collection).count, "count")
+        print(f"[umap] projecting {total} vectors (temp dir on disk: {tmp_dir}) ...")
+        probe = _retry(lambda c: c.scroll(collection, limit=1, with_vectors=True, with_payload=False), "probe")[0]
+        if not probe:
+            print("[umap] collection empty, nothing to project")
+            return
+        dims = len(probe[0].vector)
+        arr = np.memmap(arr_path, dtype=np.float32, mode="w+", shape=(max(total, 1), dims))
+        cursor, offset = 0, None
+        pbar = tqdm(total=total, desc="  ↳ pulling vectors", unit=" vec")
+        while True:
+            pts, offset = _retry(
+                lambda c, o=offset: c.scroll(collection, limit=2000, offset=o,
+                                             with_vectors=True, with_payload=False),
+                "scroll-pull")
+            if not pts:
+                break
+            for p in pts:
+                if cursor >= total:
+                    break
+                arr[cursor] = p.vector if p.vector is not None else 0.0
+                cursor += 1
+            pbar.update(len(pts))
+            if offset is None:
+                break
+        pbar.close()
+        arr.flush()
+        n = cursor
+        if n == 0:
+            del arr; os.unlink(arr_path)
+            print("[umap] no vectors pulled, nothing to project")
+            return
+        st = {"collection": collection, "n": n, "dims": dims,
+              "stage": "transform", "transform_row": 0}
+        _save_state(st)
+    else:
+        n, dims = st["n"], st["dims"]
+
+    # ── STAGE 2: TRANSFORM (resumable per TBATCH). Fit is deterministic, so a
+    #    re-fit on resume yields the identical mapping for already-done rows.
+    if st["stage"] == "transform":
+        arr  = np.memmap(arr_path, dtype=np.float32, mode="r", shape=(n, dims))
+        proj = np.memmap(proj_path, dtype=np.float32,
+                         mode=("r+" if (resuming and os.path.exists(proj_path)) else "w+"),
+                         shape=(n, 2))
+        sample_size = min(30_000, n)
+        rng = np.random.default_rng(42)
+        idx = np.unique(rng.integers(0, n, size=sample_size))
+        print(f"[umap] fitting UMAP on {len(idx)}-vector sample ...")
+        reducer = umap.UMAP(
+            n_components=2, n_neighbors=min(neighbors, max(2, len(idx) - 1)),
+            min_dist=min_dist, metric="cosine", low_memory=True,
+            random_state=42, verbose=True,
         )
-        if not pts:
-            break
-        for p in pts:
-            ids.append(p.id)
-            arr[cursor] = p.vector
-            cursor += 1
-        pbar.update(len(pts))
-        if offset is None:
-            break
-    pbar.close()
+        reducer.fit(np.array(arr[idx], dtype=np.float32))
 
-    n = cursor
+        TBATCH = 10_000
+        start = st.get("transform_row", 0)
+        for i in tqdm(range(start, n, TBATCH), desc="  ↳ transforming", initial=start // TBATCH,
+                      total=(n + TBATCH - 1) // TBATCH):
+            end = min(i + TBATCH, n)
+            proj[i:end] = reducer.transform(np.array(arr[i:end], dtype=np.float32))
+            st["transform_row"] = end
+            _save_state(st)
+            gc.collect()
+        proj.flush()
 
-    sample_size = min(30_000, n)
-    print(f"[umap] fitting UMAP on {sample_size}-vector sample ...")
-    indices = np.random.choice(n, sample_size, replace=False)
-    train_sample = np.array(arr[indices], dtype=np.float32)
-
-    reducer = umap.UMAP(
-        n_components=2,
-        n_neighbors=min(neighbors, sample_size - 1),
-        min_dist=min_dist,
-        metric="cosine",
-        low_memory=True,
-        random_state=42,
-        verbose=True,
-    )
-    reducer.fit(train_sample)
-    del train_sample
-    gc.collect()
-
-    proj_tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mmap")
-    proj_tmp.close()
-    proj = np.memmap(proj_tmp.name, dtype=np.float32, mode="w+", shape=(n, 2))
-
-    transform_batch_size = 10_000
-    for i in tqdm(range(0, n, transform_batch_size), desc="  ↳ transforming"):
-        end = min(i + transform_batch_size, n)
-        chunk = np.array(arr[i:end], dtype=np.float32)
-        proj[i:end] = reducer.transform(chunk)
-        del chunk
+        # Normalize to [-1, 1] once, at the transform→writeback boundary.
+        for ax in range(2):
+            mn, mx = float(proj[:, ax].min()), float(proj[:, ax].max())
+            rng_ax = (mx - mn) or 1.0
+            proj[:, ax] = (proj[:, ax] - mn) / rng_ax * 2 - 1
+        proj.flush()
+        del arr, proj
         gc.collect()
+        try:
+            os.unlink(arr_path)  # vectors no longer needed
+        except OSError:
+            pass
+        st["stage"] = "artifact" if target == "file" else "writeback"
+        st["writeback_row"] = 0
+        _save_state(st)
 
-    del arr
-    gc.collect()
-    os.unlink(arr_tmp.name)
+    # ── STAGE 3a: MAP ARTIFACT (target=file). One read pass over payloads aligned
+    #    to the projection, streamed to a gzipped catalog-map JSON the server can
+    #    serve directly from /catalog/map. No Qdrant writes — the only path that
+    #    scales to millions of points. Genre centroids are aggregated incrementally
+    #    (running mean) so memory stays flat.
+    if st["stage"] == "artifact":
+        import gzip
+        proj = np.memmap(proj_path, dtype=np.float32, mode="r", shape=(n, 2))
+        rmap = role_map or {}
+        os.makedirs(os.path.dirname(map_file) or ".", exist_ok=True)
+        tmp_map = map_file + ".tmp"
+        tag_agg: dict = {}     # tag -> [sum_px, sum_py, count]
+        bad = row = written = 0
+        offset = None
+        print(f"[umap] writing catalog-map artifact → {map_file} (no Qdrant writes) ...")
+        pbar = tqdm(total=n, desc="  ↳ map artifact", unit=" pt")
+        with gzip.open(tmp_map, "wt", encoding="utf-8") as fh:
+            fh.write('{"tracks":[')
+            first = True
+            while row < n:
+                pts, offset = _retry(
+                    lambda c, o=offset: c.scroll(collection, limit=5000, offset=o,
+                                                 with_vectors=False, with_payload=True),
+                    "scroll-artifact")
+                if not pts:
+                    break
+                for p in pts:
+                    if row >= n:
+                        break
+                    fields = (p.payload or {}).get("fields", {}) or {}
+                    px, py = float(proj[row, 0]), float(proj[row, 1])
+                    if not (np.isfinite(px) and np.isfinite(py)):
+                        bad += 1
+                        px, py = 0.0, 0.0
+                    track, primary = _shape_map_track(fields, str(p.id), px, py, rmap)
+                    fh.write(("" if first else ",") + json.dumps(track, separators=(",", ":")))
+                    first = False
+                    if primary:
+                        a = tag_agg.setdefault(primary[0], [0.0, 0.0, 0])
+                        a[0] += px; a[1] += py; a[2] += 1
+                    row += 1
+                    written += 1
+                pbar.update(len(pts))
+                if offset is None:
+                    break
+            centroids = [
+                {"genre": t, "px": s[0] / s[2], "py": s[1] / s[2], "count": s[2]}
+                for t, s in tag_agg.items() if s[2] >= 5
+            ]
+            centroids.sort(key=lambda x: -x["count"])
+            fh.write('],"genres":' + json.dumps(centroids[:40], separators=(",", ":"))
+                     + ',"total":' + str(written) + '}')
+        pbar.close()
+        os.replace(tmp_map, map_file)   # atomic publish
+        if bad:
+            print(f"[umap] warning: {bad} points had non-finite coords, zeroed out")
+        del proj
+        gc.collect()
+        for path in (proj_path, arr_path, state_path):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        print(f"[umap] done — catalog map artifact with {written} tracks at {map_file}.\n"
+              f"[umap] point the server at it: quickbeam serve --catalog-map-file {map_file}")
+        return
 
-    for ax in range(2):
-        mn, mx = float(proj[:, ax].min()), float(proj[:, ax].max())
-        rng = (mx - mn) or 1.0
-        proj[:, ax] = (proj[:, ax] - mn) / rng * 2 - 1
+    # ── STAGE 3b: WRITE-BACK (resumable, parallel). The main thread scrolls ids in
+    #    order and forms batches; a pool of worker connections applies the payload
+    #    updates concurrently. wait=True per call keeps Qdrant from queueing
+    #    unbounded work (memory backpressure that prevents the OOM/swap brick),
+    #    while N workers multiply throughput ~N× over the single-stream path.
+    #    set_payload is idempotent, so a resume may harmlessly re-write the few
+    #    in-flight batches that weren't yet checkpointed.
+    import concurrent.futures
+    import queue as _queue
+    import collections as _collections
 
-    print("[umap] writing px/py back to payloads ...")
-    B = 1000
+    proj = np.memmap(proj_path, dtype=np.float32, mode="r", shape=(n, 2))
+    skip_until = st.get("writeback_row", 0)   # resume point (constant for this run)
+    flushed = skip_until                       # contiguous rows confirmed written
+    B = max(1, writeback_batch)
     bad = 0
-    for i in tqdm(range(0, n, B), desc="  ↳ set_payload", unit=" batch"):
-        ops = []
-        batch_proj = np.array(proj[i:i + B])
-        for pid, row in zip(ids[i:i + B], batch_proj):
-            x, y = float(row[0]), float(row[1])
-            if not (np.isfinite(x) and np.isfinite(y)):
-                bad += 1
-                x, y = 0.0, 0.0
-            ops.append(models.SetPayloadOperation(
-                set_payload=models.SetPayload(
-                    payload={"px": x, "py": y},
-                    points=[pid],
-                )
-            ))
-        qdrant.batch_update_points(collection_name=collection, update_operations=ops)
+    seen = 0
+    offset = None
+
+    # Build a pool of worker clients (each thread needs its own gRPC channel).
+    W = max(1, writeback_workers)
+    pool = _queue.Queue()
+    if reconnect and W > 1:
+        for _ in range(W):
+            try:
+                pool.put(reconnect())
+            except Exception:  # noqa: BLE001
+                pass
+    parallel = not pool.empty()
+    if not parallel:
+        W = 1  # no spare connections — fall back to synchronous on the main client
+
+    print(f"[umap] writing px/py back to payloads"
+          + (f" (resuming at {flushed}/{n})" if flushed else "")
+          + f" — {W} worker(s){' [parallel]' if parallel else ''} ...")
+
+    def _update_ops(c, ops):
+        delay = 1.0
+        for attempt in range(8):
+            try:
+                c.batch_update_points(collection_name=collection,
+                                      update_operations=ops, wait=writeback_wait)
+                return c
+            except Exception as exc:  # noqa: BLE001
+                if attempt == 7 or not any(t in str(exc).lower() for t in _TRANSIENT):
+                    raise
+                time.sleep(delay)
+                delay = min(30.0, delay * 2)
+                if reconnect:
+                    try:
+                        c = reconnect()
+                    except Exception:  # noqa: BLE001
+                        pass
+        return c
+
+    def _worker_wrapped(ops):
+        # Take a client from the pool, apply the batch (reconnecting on transient
+        # faults), and return the live client to the pool.
+        c = pool.get()
+        try:
+            c = _update_ops(c, ops)
+        finally:
+            pool.put(c)
+
+    pbar = tqdm(total=n, initial=flushed, desc="  ↳ set_payload", unit=" pt")
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=W) if parallel else None
+    inflight = _collections.deque()   # (end_row, future) in submission order
+    MAXQ = W * 2
+    last_ops = None   # most recent batch — re-applied as a wait=True barrier when async
+
+    def _drain_one():
+        nonlocal flushed
+        end_row, fut = inflight.popleft()
+        fut.result()                  # propagate any terminal failure
+        pbar.update(end_row - flushed)
+        flushed = end_row
+        st["writeback_row"] = flushed
+        _save_state(st)
+
+    try:
+        while True:
+            pts, offset = _retry(
+                lambda c, o=offset: c.scroll(collection, limit=B, offset=o,
+                                             with_vectors=False, with_payload=False),
+                "scroll-writeback")
+            if not pts:
+                break
+            ops = []
+            for p in pts:
+                if seen < skip_until:        # already written in a prior run — skip
+                    seen += 1
+                    continue
+                if seen >= n:
+                    break
+                x, y = float(proj[seen, 0]), float(proj[seen, 1])
+                if not (np.isfinite(x) and np.isfinite(y)):
+                    bad += 1
+                    x, y = 0.0, 0.0
+                ops.append(models.SetPayloadOperation(
+                    set_payload=models.SetPayload(payload={"px": x, "py": y}, points=[p.id])))
+                seen += 1
+
+            if ops:
+                last_ops = ops
+                if parallel:
+                    inflight.append((seen, ex.submit(_worker_wrapped, ops)))
+                    while len(inflight) >= MAXQ:
+                        _drain_one()
+                else:
+                    _update_ops(client[0], ops)
+                    pbar.update(seen - flushed)
+                    flushed = seen
+                    st["writeback_row"] = flushed
+                    _save_state(st)
+                    if writeback_sleep:
+                        time.sleep(writeback_sleep)
+            if offset is None or seen >= n:
+                break
+        while inflight:
+            _drain_one()
+        # With wait=False the futures only confirm the server *accepted* each
+        # batch, not that it applied it. Re-issue the final batch with wait=True
+        # as a barrier so everything is durably applied before we delete temps.
+        if not writeback_wait and last_ops is not None:
+            print("[umap] final flush — waiting for queued writes to apply ...")
+            _retry(lambda c, ops=last_ops: c.batch_update_points(
+                collection_name=collection, update_operations=ops, wait=True),
+                "final-flush")
+    finally:
+        if ex:
+            ex.shutdown(wait=True)
+    pbar.close()
+    done = flushed
 
     if bad:
         print(f"[umap] warning: {bad} points had non-finite coords, zeroed out")
 
+    # ── Done — clean up temp artifacts.
     del proj
-    os.unlink(proj_tmp.name)
-    print(f"[umap] done — px/py on {n} points. Snapshot now to bake it in.")
+    gc.collect()
+    for path in (proj_path, arr_path, state_path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    print(f"[umap] done — px/py on {done} points. Snapshot now to bake it in.")
 
 # ---------------------------------------------------------------------------
 # SUBGRAPH QUERIES
@@ -428,7 +848,10 @@ async def build_bundle_joined_data(
 
     for mcid in pending_cids:
         m = manifests.get(mcid)
-        if not m or m.get("version") != 3:
+        # v3 bundle manifests are tagged either by `kind: "bundle"` (current
+        # publisher format) or a legacy `version: 3`. Both carry nodeChunks +
+        # edgeChunk; accept either tag.
+        if not m or not (m.get("kind") == "bundle" or m.get("version") == 3):
             print(f"[Builder] Skipping invalid manifest {_cid_to_path(mcid)!r}: {str(m)[:120]!r}")
             continue
 
@@ -453,22 +876,21 @@ async def build_bundle_joined_data(
                 nodes_by_id[node["id"]] = node
         edges = chunks.get(edge_cid) or []
 
+        # Index outgoing edges by source node once, so the join below is O(edges)
+        # instead of O(nodes × edges) — each root node looks up only its own edges.
         out: dict = {}
         for e in edges:
-            out.setdefault((e["from"], e["rel"]), []).append(e["to"])
+            out.setdefault(e["from"], []).append(e["to"])
 
         records = []
         for node in nodes_by_id.values():
             if node.get("type") != root_type:
                 continue
             fields = dict(node.get("fields", {}))
-            for (frm, _rel), tos in out.items():
-                if frm != node["id"]:
-                    continue
-                for tid in tos:
-                    nb = nodes_by_id.get(tid)
-                    if nb:
-                        fields.update(nb.get("fields", {}))
+            for tid in out.get(node["id"], ()):
+                nb = nodes_by_id.get(tid)
+                if nb:
+                    fields.update(nb.get("fields", {}))
             records.append({
                 "track_id": _track_id(fields, prefer=node.get("id")),
                 "fields":   fields,
@@ -523,7 +945,7 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
             collection_name=args.collection,
             points=[
                 models.PointStruct(
-                    id=str(uuid.uuid4()),
+                    id=_str_to_uuid(p["track_id"]),
                     vector=vec,
                     payload={
                         "id":     p["track_id"],
@@ -537,14 +959,14 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
             batch_size=256,
         )
 
-        # Partial crash-recovery state: only records within the current manifest.
-        # Cleared when the manifest completes (see callers).
+        # Mutate the in-memory checkpoint only — persistence is the caller's job,
+        # on its own cadence (see main()'s batched flush). Deterministic point
+        # ids above make re-running an unflushed manifest idempotent.
         checkpoint["processed_track_ids"].extend(p["track_id"] for p in chunk)
         checkpoint["manifests"].update({
             p["meta"]["manifestCid"]: p["meta"].get("blockTimestamp")
             for p in chunk
         })
-        _save_checkpoint(checkpoint, args.checkpoint_file)
 
         del texts, vectors
         import gc; gc.collect()
@@ -555,16 +977,29 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
 async def main():
     args = parse_args()
 
-    qdrant = QdrantClient(
-        host=args.qdrant_host, port=args.qdrant_port,
-        grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600
-    )
+    def _make_qdrant():
+        return QdrantClient(
+            host=args.qdrant_host, port=args.qdrant_port,
+            grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600
+        )
+
+    qdrant = _make_qdrant()
 
     if args.umap_only:
         if not qdrant.collection_exists(args.collection):
             print(f"[Builder] collection '{args.collection}' does not exist — nothing to project")
             return
-        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+        # The map artifact needs the role map (title/subtitle/tags field names) the
+        # build wrote; load it from disk since umap-only doesn't run the join.
+        umap_role_map = {}
+        if os.path.exists(args.role_map_file):
+            with open(args.role_map_file) as f:
+                umap_role_map = json.load(f)
+        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
+                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
+                          writeback_workers=args.umap_writeback_workers,
+                          writeback_wait=args.umap_writeback_wait,
+                          target=args.umap_target, map_file=args.umap_map_file, role_map=umap_role_map)
         ensure_indexes(qdrant, args.collection)
         return
 
@@ -595,11 +1030,30 @@ async def main():
             with open(args.role_map_file) as f:
                 role_map = json.load(f)
 
+        # Persist the checkpoint every CHECKPOINT_EVERY completed manifests rather
+        # than after each one. Serializing the full (growing) completed-cid list +
+        # manifests dict on every manifest is O(N) per write → O(N²) over a run of
+        # ~10k manifests. Batching cuts that to O(N²/CHECKPOINT_EVERY). Safe because
+        # point ids are deterministic: a crash that re-runs the manifests since the
+        # last flush re-upserts them idempotently (no duplicates), only re-spending
+        # the embed compute for at most CHECKPOINT_EVERY manifests.
+        CHECKPOINT_EVERY = 50
+
+        def _mark_complete(mcid: str) -> None:
+            completed_manifest_cids.add(mcid)
+            checkpoint["completed_manifest_cids"] = list(completed_manifest_cids)
+            checkpoint["processed_track_ids"] = []
+            processed_track_ids.clear()
+
+        def _flush() -> None:
+            _save_checkpoint(checkpoint, args.checkpoint_file)
+
         # Lazy-init: don't load the model into GPU VRAM until we know there's
         # actual new work to do (avoids OOM when everything is already checkpointed).
         embed_engine = None
         any_new = False
         manifest_num = 0
+        since_flush  = 0
 
         async for mcid, records in build_bundle_joined_data(
             args, b_id.strip(), args.root_type,
@@ -608,11 +1062,11 @@ async def main():
             new_records = [r for r in records if r["track_id"] not in processed_track_ids]
             if not new_records:
                 # All records in this manifest were already embedded — mark complete.
-                completed_manifest_cids.add(mcid)
-                checkpoint["completed_manifest_cids"] = list(completed_manifest_cids)
-                checkpoint["processed_track_ids"] = []
-                processed_track_ids.clear()
-                _save_checkpoint(checkpoint, args.checkpoint_file)
+                _mark_complete(mcid)
+                since_flush += 1
+                if since_flush >= CHECKPOINT_EVERY:
+                    _flush()
+                    since_flush = 0
                 continue
 
             # First manifest with real work: set up collection + model.
@@ -636,13 +1090,16 @@ async def main():
             print(f"[Builder] Manifest {manifest_num}: {_cid_to_path(mcid)[:16]}... — {len(new_records)} records")
             await _embed_and_upload(args, qdrant, embed_engine, new_records, role_map, dim, truncate, checkpoint)
 
-            # Manifest fully committed: move to completed set and clear partial state.
-            completed_manifest_cids.add(mcid)
-            checkpoint["completed_manifest_cids"] = list(completed_manifest_cids)
-            checkpoint["processed_track_ids"] = []
-            processed_track_ids.clear()
-            _save_checkpoint(checkpoint, args.checkpoint_file)
+            _mark_complete(mcid)
             any_new = True
+            since_flush += 1
+            if since_flush >= CHECKPOINT_EVERY:
+                _flush()
+                since_flush = 0
+
+        # Final flush — persist whatever completed since the last batched write.
+        if since_flush:
+            _flush()
 
         if not any_new:
             print("\n[Builder] No new bundle manifests to embed.")
@@ -727,7 +1184,11 @@ async def main():
         if not primary_records:
             print("\n[Builder] No new entries found.")
             if args.umap:
-                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
+                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
+                          writeback_workers=args.umap_writeback_workers,
+                          writeback_wait=args.umap_writeback_wait,
+                          target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
             return
 
         print(f"\n[Builder] Merging primary and secondary schemas on track ID keys...")
@@ -746,7 +1207,11 @@ async def main():
         if not joined_data:
             print("\n[Builder] No new joined records to embed.")
             if args.umap:
-                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
+                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
+                          writeback_workers=args.umap_writeback_workers,
+                          writeback_wait=args.umap_writeback_wait,
+                          target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
             return
 
         role_map = infer_roles([j["fields"] for j in joined_data])
@@ -755,10 +1220,16 @@ async def main():
 
         checkpoint["manifests"] = manifest_checkpoints
         await _embed_and_upload(args, qdrant, embed_engine, joined_data, role_map, dim, truncate, checkpoint)
+        # _embed_and_upload mutates the checkpoint in memory; persist it once here.
+        _save_checkpoint(checkpoint, args.checkpoint_file)
 
     # ── POST-PROCESSING ───────────────────────────────────────────────────────
     if args.umap:
-        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist)
+        write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
+                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
+                          writeback_workers=args.umap_writeback_workers,
+                          writeback_wait=args.umap_writeback_wait,
+                          target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
     ensure_indexes(qdrant, args.collection)
     print("\n[Builder] All tasks complete.")
 
