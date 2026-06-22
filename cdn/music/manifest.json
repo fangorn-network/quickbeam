@@ -1,0 +1,29 @@
+{
+  "name": "music",
+  "description": "MusicBrainz creative core \u2014 recordings & artists",
+  "count": 10000,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {
+    "entityType": [
+      "Recording",
+      "Artist"
+    ]
+  },
+  "created_at": 1782057122,
+  "shards": [
+    {
+      "file": "shard-0000.ndjson.gz",
+      "count": 5000,
+      "bytes": 12582734,
+      "sha256": "97b5204eb7f587cdb56253d04b917050949bf0a129d64239d164136ecf8f299d"
+    },
+    {
+      "file": "shard-0001.ndjson.gz",
+      "count": 5000,
+      "bytes": 12587664,
+      "sha256": "451b02dbea1add65746cf815bde6cdc77bf0d8318bb0530d29ce235021361db4"
+    }
+  ]
+}

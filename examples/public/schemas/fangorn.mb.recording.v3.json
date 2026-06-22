@@ -1,0 +1,41 @@
+{
+  "name": "fangorn.mb.recording.v3",
+  "definition": {
+    "byArtist": {
+      "@type": "string"
+    },
+    "disambiguation": {
+      "@type": "string"
+    },
+    "durationMs": {
+      "@type": "number"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "isrcCodes": {
+      "@type": "string"
+    },
+    "mbid": {
+      "@type": "string"
+    },
+    "rating": {
+      "@type": "number"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "tags": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "video": {
+      "@type": "boolean"
+    }
+  }
+}

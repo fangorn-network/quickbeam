@@ -1,0 +1,38 @@
+{
+  "name": "fangorn.mb.release.v3",
+  "definition": {
+    "barcode": {
+      "@type": "string"
+    },
+    "byArtist": {
+      "@type": "string"
+    },
+    "datePublished": {
+      "@type": "string"
+    },
+    "disambiguation": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "labelName": {
+      "@type": "string"
+    },
+    "mbid": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "status": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

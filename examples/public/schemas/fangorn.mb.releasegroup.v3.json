@@ -1,0 +1,35 @@
+{
+  "name": "fangorn.mb.releasegroup.v3",
+  "definition": {
+    "byArtist": {
+      "@type": "string"
+    },
+    "disambiguation": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "mbid": {
+      "@type": "string"
+    },
+    "primaryType": {
+      "@type": "string"
+    },
+    "rating": {
+      "@type": "number"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "tags": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

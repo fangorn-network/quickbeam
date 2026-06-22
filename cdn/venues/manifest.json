@@ -1,0 +1,29 @@
+{
+  "name": "venues",
+  "description": "Places & events",
+  "count": 10000,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {
+    "entityType": [
+      "Place",
+      "Event"
+    ]
+  },
+  "created_at": 1782057135,
+  "shards": [
+    {
+      "file": "shard-0000.ndjson.gz",
+      "count": 5000,
+      "bytes": 13192288,
+      "sha256": "53edd212db93f1170bfdf2c9e2f24418a7539459915d767682f0d75c8700b2c0"
+    },
+    {
+      "file": "shard-0001.ndjson.gz",
+      "count": 5000,
+      "bytes": 13123377,
+      "sha256": "0a37219db3e542cedb0a1dc783d1884601c38bf4777b39667ac721081ad4ebe8"
+    }
+  ]
+}

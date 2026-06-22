@@ -1,0 +1,31 @@
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-3) 0;
+  font-size: var(--text-sm);
+}
+
+.item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sep {
+  color: var(--text-muted);
+  margin: 0 var(--space-1);
+}
+
+.link {
+  color: var(--text-secondary);
+}
+.link:hover {
+  color: var(--text-link-hover);
+}
+
+.current {
+  color: var(--text-primary);
+  font-weight: 500;
+}

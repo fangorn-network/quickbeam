@@ -31,8 +31,27 @@ def parse_args():
     parser.add_argument("--primary", "-p", default=None)
     parser.add_argument("--bundle", default=None,
                         help="Bundle schema as name=schemaId. Uses edge-walk join instead of --primary track-id join.")
+    parser.add_argument(
+        "--root-profile",
+        action="append",
+        default=[],
+        help="Named projection(s) to emit, repeatable: e.g. --root-profile track "
+             "--root-profile place. Each profile walks the graph from a root type "
+             "and emits a distinct document (see ROOT_PROFILES). If omitted, falls "
+             "back to a single --root-type one-hop projection (legacy behavior).",
+    )
     parser.add_argument("--root-type", default="Track",
-                        help="Bundle root node type — one record is emitted per root node.")
+                        help="Legacy single-projection root node type (used only when "
+                             "no --root-profile is given).")
+    parser.add_argument("--profiles-file", default=None,
+                        help="Optional JSON file of custom/override root profiles, "
+                             "merged over the built-in ROOT_PROFILES.")
+    parser.add_argument("--max-depth", type=int, default=2,
+                        help="Default traversal depth for profiles that don't set one.")
+    parser.add_argument("--label-cap", type=int, default=50,
+                        help="Max neighbor labels collected per relation group in a projection.")
+    parser.add_argument("--node-cap", type=int, default=2000,
+                        help="Max nodes a single root's graph walk will visit (cost bound).")
     parser.add_argument("--subgraph-url", default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc")
     parser.add_argument("--graph-api-key", default="")
     parser.add_argument("--ipfs-gateway", default="https://gateway.pinata.cloud/ipfs")
@@ -253,6 +272,7 @@ def ensure_indexes(qdrant, collection):
         ("fields.title",    models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("fields.byArtist", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("owner",           models.KeywordIndexParams(type="keyword")),
+        ("entityType",      models.KeywordIndexParams(type="keyword")),
     ]
     for field, schema in specs:
         try:
@@ -787,6 +807,164 @@ def _track_id(fields: dict, prefer: str | None = None) -> str:
     return str(uuid.uuid4())[:12]
 
 # ---------------------------------------------------------------------------
+# ROOT PROFILES — graph-as-source-of-truth projections
+#
+# A bundle is a graph (typed nodes + typed edges). A *profile* projects that one
+# graph from a chosen root type into a distinct document: walking the graph up to
+# `max_depth` hops and folding the neighbor entities it cares about (`include`)
+# into grouped label lists. The SAME graph yields a Track view, an Artist view, a
+# Place view, etc. — each becomes its own embedding. Add a profile here (or via
+# --profiles-file) and a new semantic view exists with no change to the graph.
+#
+# Node types are the entityTypes produced by the mb_pg registry: Artist,
+# ReleaseGroup, Release, Recording, Work, Area, Place, Event, Instrument.
+# ---------------------------------------------------------------------------
+ROOT_PROFILES: dict[str, dict] = {
+    "track": {
+        "root_type": "Recording", "max_depth": 2,
+        "include": ["Artist", "Work", "Release", "ReleaseGroup", "Place", "Event", "Area"],
+    },
+    "recording": {  # alias of track for graphs that name the root "Recording"
+        "root_type": "Recording", "max_depth": 2,
+        "include": ["Artist", "Work", "Release", "ReleaseGroup", "Place", "Event", "Area"],
+    },
+    "artist": {
+        "root_type": "Artist", "max_depth": 2,
+        "include": ["Recording", "Release", "ReleaseGroup", "Work", "Place", "Event", "Area"],
+    },
+    "release": {
+        "root_type": "Release", "max_depth": 2,
+        "include": ["Artist", "Recording", "ReleaseGroup", "Work"],
+    },
+    "place": {
+        "root_type": "Place", "max_depth": 3,
+        "include": ["Artist", "Recording", "Event", "Area"],
+    },
+    "event": {
+        "root_type": "Event", "max_depth": 2,
+        "include": ["Artist", "Recording", "Place", "Area"],
+    },
+    "work": {
+        "root_type": "Work", "max_depth": 2,
+        "include": ["Artist", "Recording", "Release"],
+    },
+}
+
+
+def _load_profiles(args) -> list[dict]:
+    """Resolve --root-profile names (or fall back to a single --root-type) into a
+    list of fully-specified profile dicts. Each carries a `name` and `root_type`.
+    """
+    registry = dict(ROOT_PROFILES)
+    if args.profiles_file and os.path.exists(args.profiles_file):
+        with open(args.profiles_file) as f:
+            for name, prof in (json.load(f) or {}).items():
+                registry[name.lower()] = {**registry.get(name.lower(), {}), **prof}
+
+    if not args.root_profile:
+        # Legacy: one projection, one-hop neighbor *field* fold (preserves the old
+        # Recording-gets-byArtist behavior the catalog map relies on).
+        return [{"name": args.root_type.lower(), "root_type": args.root_type,
+                 "fold": True, "max_depth": 1, "include": None}]
+
+    profiles = []
+    for raw in args.root_profile:
+        key = raw.strip().lower()
+        if key not in registry:
+            raise SystemExit(
+                f"Unknown --root-profile '{raw}'. Known: {', '.join(sorted(registry))} "
+                f"(or define it in --profiles-file).")
+        prof = {"name": key, **registry[key]}
+        prof.setdefault("max_depth", args.max_depth)
+        prof.setdefault("include", None)
+        profiles.append(prof)
+    return profiles
+
+
+def _node_label(node: dict) -> str:
+    """Human label for a node — title / name / label, whichever the node carries."""
+    f = node.get("fields", {}) or {}
+    for k in ("title", "name", "label"):
+        v = f.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _group_key(type_name: str) -> str:
+    """Node type → camelCase plural field name. Artist→artists, Work→works,
+    Place→places, ReleaseGroup→releaseGroups."""
+    t = (type_name[:1].lower() + type_name[1:]) if type_name else type_name
+    if t.endswith("y"):
+        return t[:-1] + "ies"
+    if t.endswith(("s", "x", "z", "ch", "sh")):
+        return t + "es"
+    return t + "s"
+
+
+def _walk_graph(root_id, adj, max_depth, node_cap):
+    """BFS from root over an (undirected) adjacency map, returning [(node_id, depth)]
+    for every reachable node within `max_depth` (excluding the root). Bounded by
+    `node_cap` so a high-degree hub can't blow up a single projection."""
+    from collections import deque
+    visited = {root_id}
+    queue = deque([(root_id, 0)])
+    collected = []
+    while queue:
+        nid, d = queue.popleft()
+        if d >= max_depth:
+            continue
+        for nb in adj.get(nid, ()):  # neighbors
+            if nb in visited:
+                continue
+            visited.add(nb)
+            collected.append((nb, d + 1))
+            if len(collected) >= node_cap:
+                return collected
+            queue.append((nb, d + 1))
+    return collected
+
+
+def _project(root, nodes_by_id, adj, out, profile, defaults):
+    """Project a root node into a profile document. `fold` profiles reproduce the
+    legacy one-hop field merge; otherwise we walk the graph and fold included
+    neighbors into grouped, deduped, capped label lists."""
+    rt = profile.get("root_type") or root.get("type")
+    fields = dict(root.get("fields", {}))
+
+    if profile.get("fold"):
+        for tid in out.get(root["id"], ()):
+            nb = nodes_by_id.get(tid)
+            if nb:
+                fields.update(nb.get("fields", {}))
+        fields["entityType"] = rt
+        return fields
+
+    depth = int(profile.get("max_depth", defaults["max_depth"]))
+    label_cap = int(profile.get("label_cap", defaults["label_cap"]))
+    node_cap = int(profile.get("node_cap", defaults["node_cap"]))
+    include = profile.get("include")
+    include_set = set(include) if include else None
+
+    groups: dict = {}
+    for nid, _depth in _walk_graph(root["id"], adj, depth, node_cap):
+        nb = nodes_by_id.get(nid)
+        if not nb:
+            continue
+        t = nb.get("type")
+        if include_set is not None and t not in include_set:
+            continue
+        label = _node_label(nb)
+        if label:
+            groups.setdefault(_group_key(t), []).append(label)
+
+    for k, vals in groups.items():
+        fields[k] = list(dict.fromkeys(vals))[:label_cap]  # dedupe (order-preserving) + cap
+    fields["entityType"] = rt
+    return fields
+
+
+# ---------------------------------------------------------------------------
 # BUNDLE JOIN — async generator, one manifest at a time
 #
 # Yields (manifest_cid, [records]) for each pending bundle manifest.
@@ -802,13 +980,15 @@ def _track_id(fields: dict, prefer: str | None = None) -> str:
 async def build_bundle_joined_data(
     args,
     schema_id,
-    root_type,
+    profiles,
     completed_manifest_cids=None,
     owner_filter=None,
     name_filter=None,
     block_gt=None,
 ):
     completed = completed_manifest_cids or set()
+    defaults = {"max_depth": args.max_depth, "label_cap": args.label_cap,
+                "node_cap": args.node_cap}
 
     print(f"\n[Builder] Querying Subgraph for bundle ManifestPublished events...")
     publishes, updates = await _fetch_all_events_async(
@@ -856,16 +1036,19 @@ async def build_bundle_joined_data(
             continue
 
         node_cids = [c["dataCid"] for c in m.get("nodeChunks", [])]
-        edge_cid  = (m.get("edgeChunk") or {}).get("dataCid")
-        if edge_cid is None:
-            print(f"[Builder] Skipping manifest {_cid_to_path(mcid)!r} — missing edgeChunk")
+        # Edges are chunked into many leaves (`edgeChunks`); older manifests had a
+        # single `edgeChunk`. Accept both.
+        edge_refs = m.get("edgeChunks") or ([m["edgeChunk"]] if m.get("edgeChunk") else [])
+        edge_cids = [c["dataCid"] for c in edge_refs if c.get("dataCid")]
+        if not edge_cids:
+            print(f"[Builder] Skipping manifest {_cid_to_path(mcid)!r} — no edge chunks")
             continue
 
         # Fetch only this manifest's chunks, then free them before moving on.
         # This bounds RAM to one manifest's data at a time.
-        print(f"[Builder] Fetching {len(node_cids) + 1} chunks for {_cid_to_path(mcid)[:16]}...")
+        print(f"[Builder] Fetching {len(node_cids) + len(edge_cids)} chunks for {_cid_to_path(mcid)[:16]}...")
         chunks = await fetch_all_ipfs(
-            node_cids + [edge_cid], args.ipfs_gateway, args.ipfs_timeout,
+            node_cids + edge_cids, args.ipfs_gateway, args.ipfs_timeout,
             args.concurrency, desc="  Chunks", headers=gw_headers
         )
 
@@ -874,36 +1057,51 @@ async def build_bundle_joined_data(
         for ncid in node_cids:
             for node in (chunks.get(ncid) or []):
                 nodes_by_id[node["id"]] = node
-        edges = chunks.get(edge_cid) or []
+        edges = []
+        for ecid in edge_cids:
+            edges.extend(chunks.get(ecid) or [])
 
-        # Index outgoing edges by source node once, so the join below is O(edges)
-        # instead of O(nodes × edges) — each root node looks up only its own edges.
+        # Build adjacency once per manifest, reused across every profile.
+        #   `out` — outgoing edges only (legacy one-hop field fold).
+        #   `adj` — undirected, for multi-hop profile walks (a Place must reach the
+        #           artists/events on either side of its edges).
+        need_fold = any(p.get("fold") for p in profiles)
+        need_walk = any(not p.get("fold") for p in profiles)
         out: dict = {}
+        adj: dict = {}
         for e in edges:
-            out.setdefault(e["from"], []).append(e["to"])
+            if need_fold:
+                out.setdefault(e["from"], []).append(e["to"])
+            if need_walk:
+                adj.setdefault(e["from"], []).append(e["to"])
+                adj.setdefault(e["to"], []).append(e["from"])
 
         records = []
-        for node in nodes_by_id.values():
-            if node.get("type") != root_type:
-                continue
-            fields = dict(node.get("fields", {}))
-            for tid in out.get(node["id"], ()):
-                nb = nodes_by_id.get(tid)
-                if nb:
-                    fields.update(nb.get("fields", {}))
-            records.append({
-                "track_id": _track_id(fields, prefer=node.get("id")),
-                "fields":   fields,
-                "meta":     meta,
-            })
+        for prof in profiles:
+            rt = prof.get("root_type")
+            n_roots = 0
+            for node in nodes_by_id.values():
+                if node.get("type") != rt:
+                    continue
+                fields = _project(node, nodes_by_id, adj, out, prof, defaults)
+                records.append({
+                    "track_id":    _track_id(fields, prefer=node.get("id")),
+                    "entity_type": rt,
+                    "fields":      fields,
+                    "meta":        meta,
+                })
+                n_roots += 1
+            if n_roots == 0:
+                print(f"[Builder] Manifest {_cid_to_path(mcid)[:16]}... profile "
+                      f"{prof['name']!r}: no {rt!r} root nodes.")
 
-        del chunks, nodes_by_id, edges, out
+        del chunks, nodes_by_id, edges, out, adj
         import gc; gc.collect()
 
         if records:
             yield mcid, records
         else:
-            print(f"[Builder] Manifest {_cid_to_path(mcid)!r} had no {root_type!r} nodes — skipping.")
+            print(f"[Builder] Manifest {_cid_to_path(mcid)!r} produced no records — skipping.")
 
 # ---------------------------------------------------------------------------
 # EMBED + UPLOAD  (shared by build and watch)
@@ -927,7 +1125,18 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                     fields.get(t, "") if isinstance(fields.get(t), str) else ""
                     for t in role_map.get("tags", [])
                 )
+                # Fold any projected neighbor lists (artists, events, …) into the
+                # document text so each projection embeds its full graph context —
+                # the whole point of root profiles. (Legacy scalar records have no
+                # list fields, so this is a no-op for them.)
+                rels = "; ".join(
+                    f"{k}: {', '.join(str(x) for x in v[:20] if x)}"
+                    for k, v in fields.items()
+                    if isinstance(v, list) and v and k != "entityType"
+                )
                 text_str = f"Title: {fields.get(role_map.get('title', ''), '')}. Tags: {tags}"
+                if rels:
+                    text_str += f". {rels}"
             else:
                 text_str = " ".join(str(fields[k]) for k in args.searchable_fields.split(",") if fields.get(k))
             texts.append(f"search_document: {text_str[:1000]}")
@@ -948,10 +1157,11 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                     id=_str_to_uuid(p["track_id"]),
                     vector=vec,
                     payload={
-                        "id":     p["track_id"],
-                        "owner":  p["meta"].get("owner"),
-                        "fields": p["fields"],
-                        "meta":   {"manifestCid": p["meta"].get("manifestCid")},
+                        "id":         p["track_id"],
+                        "entityType": p.get("entity_type") or p["fields"].get("entityType"),
+                        "owner":      p["meta"].get("owner"),
+                        "fields":     p["fields"],
+                        "meta":       {"manifestCid": p["meta"].get("manifestCid")},
                     }
                 )
                 for vec, p in zip(vectors, chunk)
@@ -1015,7 +1225,9 @@ async def main():
     # ── BUNDLE PATH ──────────────────────────────────────────────────────────
     if args.bundle:
         b_name, b_id = args.bundle.split("=", 1)
-        print(f"\n[Builder] Bundle mode: '{b_name.strip()}' (root={args.root_type})")
+        profiles = _load_profiles(args)
+        _prof_desc = ", ".join(f"{p['name']}→{p['root_type']}" for p in profiles)
+        print(f"\n[Builder] Bundle mode: '{b_name.strip()}' — projections: {_prof_desc}")
 
         if args.reset and qdrant.collection_exists(args.collection):
             print(f"[Builder] Resetting collection '{args.collection}'...")
@@ -1056,7 +1268,7 @@ async def main():
         since_flush  = 0
 
         async for mcid, records in build_bundle_joined_data(
-            args, b_id.strip(), args.root_type,
+            args, b_id.strip(), profiles,
             completed_manifest_cids=completed_manifest_cids,
         ):
             new_records = [r for r in records if r["track_id"] not in processed_track_ids]

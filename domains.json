@@ -1,0 +1,12 @@
+{
+  "domains": {
+    "music": {
+      "description": "MusicBrainz creative core — recordings & artists",
+      "filter": { "entityType": ["Recording", "Artist"] }
+    },
+    "venues": {
+      "description": "Places & events",
+      "filter": { "entityType": ["Place", "Event"] }
+    }
+  }
+}
