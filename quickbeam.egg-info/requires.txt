@@ -11,8 +11,22 @@ typer
 umap-learn
 uvicorn[standard]
 
+[agent]
+fastmcp
+eth-account
+httpx
+
 [cpu]
 fastembed
 
+[dev]
+pytest
+fastmcp
+eth-account
+
 [gpu]
 fastembed-gpu
+
+[scraper]
+eth-account
+aiohttp

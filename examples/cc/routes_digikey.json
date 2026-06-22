@@ -1,0 +1,12 @@
+{
+  "routes": [
+    {
+      "regexes": [
+        "^https?://(www\\.)?digikey\\.com/en/products/(detail|base-product)/"
+      ],
+      "extractors": [
+        { "name": "digikey_products" }
+      ]
+    }
+  ]
+}

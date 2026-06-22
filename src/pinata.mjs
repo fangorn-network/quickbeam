@@ -26,7 +26,7 @@ function makeSdk() {
   const jwt = process.env.PINATA_JWT;
   if (!jwt) {
     console.error("Error: PINATA_JWT environment variable is not set.");
-    process.exit(1);
+    process.exit(1); 
   }
   return new PinataSDK({ pinataJwt: jwt });
 }

@@ -1,0 +1,269 @@
+[
+  {
+    "name": "https-ospo.gwu.edu-funding-opportunities-open-source",
+    "fields": {
+      "description": "funding opportunities and fellowships/internships related to open source",
+      "domain": "ospo.gwu.edu",
+      "image": "https://centraldata.gwu.edu/sites/g/files/zaxdzs4176/files/2021-12/gw_open_graph.png",
+      "siteName": "The GW Open Source Program Office",
+      "tags": [
+        "george washington university",
+        "gwu",
+        "gw",
+        "gw university",
+        "george washington",
+        "dc universities",
+        "dc colleges",
+        "education",
+        "higher education"
+      ],
+      "title": "Funding Opportunities For Open Source | The GW Open Source Program Office | The George Washington University",
+      "url": "https://ospo.gwu.edu/funding-opportunities-open-source"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-arbitrum-foundation-grant-program",
+    "fields": {
+      "author": "Carolina Silvestre",
+      "datePublished": "2024-04-19T21:04:45+00:00",
+      "description": "The Arbitrum Foundation Grant Program supports builders with milestones-based funding for growth and to foster adoption.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2024/04/arbitrum.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Arbitrum Foundation Grant Program",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/arbitrum-foundation-grant-program/"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-1inch",
+    "fields": {
+      "author": "@1inch",
+      "datePublished": "2023-06-27T00:00:00.000Z",
+      "description": "The 1inch Foundation grant program fosters growth and expansion of the 1inch Network and incentivizes contributions through grants and resources.",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "1inch Foundation grant program",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/1inch"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-decentraland",
+    "fields": {
+      "author": "@decentraland",
+      "datePublished": "2025-06-12T00:00:00.000Z",
+      "description": "Building a metaverse owned and created by its users",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Decentraland DAO Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/decentraland"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-aave",
+    "fields": {
+      "author": "@AaveGrants",
+      "datePublished": "2022-05-16T00:00:00.000Z",
+      "description": "Aave Grants DAO provides grants to projects, ideas, and events that benefit Aave and its ecosystem",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Aave Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/aave"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-base-grants",
+    "fields": {
+      "author": "Carolina Silvestre",
+      "datePublished": "2024-08-06T12:42:45+00:00",
+      "description": "Base grants aim to make the Base ecosystem a great place for builders with early ideas or initial prototypes.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2024/07/base-grants-1.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Base Grants",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/base-grants/"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-celo-foundation-grants",
+    "fields": {
+      "author": "Arturo Pfeiffer",
+      "datePublished": "2023-12-15T12:03:32+00:00",
+      "description": "Accelerate your projects with Celo grants. Apply now for streamlined opportunities on the Celo blockchain.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2023/12/celo-logo.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Celo Foundation Grants",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/celo-foundation-grants/"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-gitcoin",
+    "fields": {
+      "author": "@gitcoin",
+      "datePublished": "2022-05-16T00:00:00.000Z",
+      "description": "Discover and fund extraordinary Public Goods with Quadratic Funding",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Gitcoin Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/gitcoin"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-livepeer",
+    "fields": {
+      "author": "@livepeer_grants",
+      "datePublished": "2025-06-12T00:00:00.000Z",
+      "description": "The Livepeer Grants Program provides funding to projects, ideas and events that benefit the Livepeer ecosystem",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Livepeer Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/livepeer"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-filecoin",
+    "fields": {
+      "author": "@Filecoin",
+      "datePublished": "2022-05-16T00:00:00.000Z",
+      "description": "Engaging community members to contribute to the Filecoin protocol, project and ecosystem",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Filecoin Dev Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/filecoin"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-depin-grant-program-peak",
+    "fields": {
+      "author": "Carolina Silvestre",
+      "datePublished": "2025-03-20T13:03:46+00:00",
+      "description": "The DePIN Grant Program by peaq gets you access to funding and support to build! It funds DePINs, dApps, Machine DeFi, and L2 solutions.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2025/03/peaq.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "peaq Grants",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/depin-grant-program-peak/"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-chainlink-grant-program",
+    "fields": {
+      "author": "Carolina Silvestre",
+      "datePublished": "2024-08-05T16:25:04+00:00",
+      "description": "The Chainlink Grant Program funds individuals and teams building a more functional, accessible, and impactful smart contract economy.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2024/07/chainlink.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Chainlink Grant Program",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/chainlink-grant-program/"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-moonbeam-grants",
+    "fields": {
+      "author": "Carolina Silvestre",
+      "datePublished": "2024-08-29T22:12:53+00:00",
+      "description": "Moonbeam grants aim to support projects, from early-stage startups to more established teams looking to scale their operations.",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2024/08/moonbeam.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Moonbeam Grants",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/moonbeam-grants/"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-road-to-devcon",
+    "fields": {
+      "author": "@efdevcon",
+      "datePublished": "2023-11-04T00:00:00.000Z",
+      "description": "Promoting education in Southeast Asia prior to Devcon 7, by offering (financial) support for meetups, events, and other educational initiatives happening along the Road to Devcon.",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "Road to Devcon Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/road-to-devcon"
+    }
+  },
+  {
+    "name": "https-www.coinfabrik.com-web3-grants-reactive-network",
+    "fields": {
+      "author": "Magali Astesiano",
+      "datePublished": "2025-02-11T13:15:33+00:00",
+      "description": "Reactive Network launches a $3M Developer Fund with grants, mentorship and resources for Web3 innovators",
+      "domain": "coinfabrik.com",
+      "image": "https://www.coinfabrik.com/wp-content/uploads/2025/02/stellar-grant4.jpg",
+      "siteName": "CoinFabrik",
+      "tags": [
+        "Featured Grants"
+      ],
+      "title": "Reactive Dev Fund",
+      "type": "Article",
+      "url": "https://www.coinfabrik.com/web3-grants/reactive-network/"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-uni-grants",
+    "fields": {
+      "author": "@UniswapFND",
+      "datePublished": "2022-05-16T00:00:00.000Z",
+      "description": "The UNI Grants Program continues to expand and empower the Uniswap community",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "UNI Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/uni-grants"
+    }
+  },
+  {
+    "name": "https-www.useweb3.xyz-grants-zetachain",
+    "fields": {
+      "author": "@zetablockchain",
+      "datePublished": "2023-08-22T00:00:00.000Z",
+      "description": "The ZetaChain Grant empowers impactful dApp builders who want to make a revolutionary change in the multichain ecosystem with ZetaChain.",
+      "domain": "useweb3.xyz",
+      "image": "https://www.useweb3.xyz/images/social.png",
+      "siteName": "useWeb3.xyz",
+      "title": "ZetaChain Grants",
+      "type": "Article",
+      "url": "https://www.useweb3.xyz/grants/zetachain"
+    }
+  }
+]

@@ -1,0 +1,15 @@
+{
+  "$comment": "Example generic output schema for crawled web pages. We store only the structured facts a site publishes about itself (JSON-LD / OpenGraph / meta), never the scraped page body — results link back to `url` for the full content. The scraper publishes extracted {name, fields} records under a schema like this; role inference (quickbeam/roles.py) discovers title/subtitle/tags automatically. Register with: node src/publish.mjs --schema fangorn.webpage.v1 --schema-def schemas/webpage.json --register-only. Extend the definition to match your extractor's output.",
+  "definition": {
+    "url": { "@type": "string", "@description": "Canonical URL of the page; the source link returned by search." },
+    "title": { "@type": "string | null", "@description": "Page/article title." },
+    "description": { "@type": "string | null", "@description": "Publisher-supplied summary (og:description / JSON-LD description), trimmed to summary length." },
+    "author": { "@type": "string | null" },
+    "datePublished": { "@type": "string | null", "@description": "ISO date." },
+    "tags": {
+      "@type": "array | null",
+      "@description": "Keywords/categories — drives tag-based search facets.",
+      "items": { "@type": "string" }
+    }
+  }
+}

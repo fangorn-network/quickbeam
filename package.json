@@ -5,7 +5,8 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "pinata": "node src/pinata.mjs"
+    "pinata": "node src/pinata.mjs",
+    "publish-fangorn": "node src/publish.mjs"
   },
   "keywords": [],
   "author": "",
@@ -15,9 +16,11 @@
     "tsx": "^4.19.0"
   },
   "dependencies": {
+    "@fangorn-network/sdk": "^2026.6.16",
     "commander": "^15.0.0",
     "dotenv": "^17.4.2",
     "pinata": "^2.5.6",
-    "tus-js-client": "^4.3.1"
+    "tus-js-client": "^4.3.1",
+    "viem": "^2.52.2"
   }
 }

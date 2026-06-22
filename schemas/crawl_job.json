@@ -1,0 +1,102 @@
+{
+  "$comment": "Generic, reusable Fangorn resolver schema for an on-demand Common Crawl job. Register with: node src/publish.mjs --schema fangorn.crawljob.v1 --schema-def schemas/crawl_job.json --register-only. Records published under this schema are consumed by `quickbeam scrape`. Authored in Fangorn's @type grammar (see @fangorn-network/sdk roles/schema/types) so it is validated at publish time.",
+  "definition": {
+    "routes": {
+      "@type": "array",
+      "@description": "CmonCrawl extract routes: URL regexes → extractors. Mirrors CmonCrawl's extract config `routes` verbatim.",
+      "items": { "@type": "route" }
+    },
+    "extractors": {
+      "@type": "array | null",
+      "@description": "Extractor modules referenced by routes. Each carries inline `source` and/or an IPFS `sourceCid`.",
+      "items": { "@type": "extractorModule" }
+    },
+    "query": {
+      "@type": "crawlQuery",
+      "@description": "Which slice of Common Crawl to fetch. `limit` caps the crawl and therefore the price."
+    },
+    "outputSchema": {
+      "@type": "string",
+      "@description": "Name of the schema the produced {name, fields} records are published under.",
+      "constraints": [{ "kind": "length", "min": 1, "max": 128 }]
+    },
+    "outputSchemaDef": {
+      "@type": "object | null",
+      "@description": "Optional resolver SchemaDefinition to register for the output schema (freeform — itself a Fangorn schema definition). Omit to register the output schema out of band.",
+      "items": {}
+    },
+    "paymentReceipt": {
+      "@type": "string | null",
+      "@description": "Base64-encoded x402 payment object (a signed ERC-3009 transferWithAuthorization) authorizing the crawl fee to the operator. Verified + settled before the job runs."
+    }
+  },
+  "types": {
+    "routeExtractor": {
+      "shape": {
+        "name": {
+          "@type": "string",
+          "@description": "Extractor module name; matches an `extractors[].name` and the module's filename.",
+          "constraints": [{ "kind": "regex", "pattern": "^[A-Za-z0-9._-]+$" }]
+        },
+        "since": { "@type": "string | null", "@description": "ISO date — only apply this extractor to crawls on/after." },
+        "to": { "@type": "string | null", "@description": "ISO date — only apply this extractor to crawls on/before." }
+      }
+    },
+    "route": {
+      "shape": {
+        "regexes": {
+          "@type": "array",
+          "@description": "URL regexes; a record is routed to this route's extractors if any matches.",
+          "items": { "@type": "string" }
+        },
+        "extractors": {
+          "@type": "array",
+          "items": { "@type": "routeExtractor" }
+        }
+      }
+    },
+    "extractorModule": {
+      "shape": {
+        "name": {
+          "@type": "string",
+          "@description": "Module name referenced by routes; the module must expose a top-level `extractor` variable.",
+          "constraints": [{ "kind": "regex", "pattern": "^[A-Za-z0-9._-]+$" }]
+        },
+        "language": {
+          "@type": "string | null",
+          "@description": "Source language (currently only python).",
+          "constraints": [{ "kind": "enum", "values": ["python"] }]
+        },
+        "source": { "@type": "string | null", "@description": "Inline source. Takes precedence over sourceCid." },
+        "sourceCid": { "@type": "string | null", "@description": "IPFS CID of the source, resolved at run time." }
+      }
+    },
+    "crawlQuery": {
+      "shape": {
+        "urls": {
+          "@type": "array",
+          "@description": "URLs/hosts to crawl, e.g. example.com.",
+          "items": { "@type": "string" }
+        },
+        "matchType": {
+          "@type": "string",
+          "@description": "How `urls` match Common Crawl's index.",
+          "constraints": [{ "kind": "enum", "values": ["exact", "prefix", "host", "domain"] }]
+        },
+        "since": { "@type": "string | null", "@description": "ISO start date, e.g. 2024-01-01." },
+        "to": { "@type": "string | null", "@description": "ISO end date, e.g. 2024-06-01." },
+        "limit": {
+          "@type": "number",
+          "@description": "Max records to download. Caps the crawl and the price.",
+          "constraints": [{ "kind": "range", "min": 1, "max": 100000 }]
+        },
+        "aggregator": {
+          "@type": "string | null",
+          "@description": "gateway (free, slow) or athena (AWS, paid, fast). Defaults to gateway.",
+          "constraints": [{ "kind": "enum", "values": ["gateway", "athena"] }]
+        },
+        "filterNon200": { "@type": "boolean | null", "@description": "Drop non-200 captures. Defaults true." }
+      }
+    }
+  }
+}

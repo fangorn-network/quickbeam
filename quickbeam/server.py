@@ -4,7 +4,7 @@ import os
 # ── Native thread governance ────────────────────────────────────────────────
 # numba (pulled in by UMAP), numpy/OpenBLAS, and onnxruntime (via fastembed)
 # each start a pool of worker threads that *busy-wait* when idle. After a big
-# job like the 860k-point UMAP build finishes, those leftover threads keep every
+# job (like a 10 million-point UMAP build) finishes, those leftover threads keep every
 # core pinned at 100% for the life of the process. Make idle OpenMP threads
 # sleep, and cap each pool to ~half the cores so a build can't lock up the whole
 # machine. Must run before those libraries load (fastembed below pulls in
@@ -63,6 +63,7 @@ def parse_args():
         description="Fangorn Qdrant server",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    # TODO: we need to incorporate bundle probably
     parser.add_argument("--schema", "-s", metavar="NAME=0x...", action="append", dest="schemas", default=[])
     parser.add_argument("--primary", "-p", metavar="NAME", default=None)
     parser.add_argument(

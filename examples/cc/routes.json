@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "regexes": [
+        "^https?://([^/]+\\.)?digikey\\.com"
+      ],
+      "extractors": [
+        {
+          "name": "sample_extractor"
+        }
+      ]
+    }
+  ]
+}

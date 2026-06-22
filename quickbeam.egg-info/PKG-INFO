@@ -18,3 +18,14 @@ Provides-Extra: gpu
 Requires-Dist: fastembed-gpu; extra == "gpu"
 Provides-Extra: cpu
 Requires-Dist: fastembed; extra == "cpu"
+Provides-Extra: agent
+Requires-Dist: fastmcp; extra == "agent"
+Requires-Dist: eth-account; extra == "agent"
+Requires-Dist: httpx; extra == "agent"
+Provides-Extra: scraper
+Requires-Dist: eth-account; extra == "scraper"
+Requires-Dist: aiohttp; extra == "scraper"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: fastmcp; extra == "dev"
+Requires-Dist: eth-account; extra == "dev"

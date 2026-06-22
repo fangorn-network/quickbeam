@@ -2,10 +2,6 @@
 
 This repo contains infrastructure for building and serving vector search over on-chain data sources registered with [Fangorn](https://github.com/fangorn-network/fangorn). The core script pulls manifests from The Graph, resolves payloads from IPFS, joins across schemas, and then builds embeddings via fastembed/ONNX.
 
-> **Two meanings of "bundle".** This doc uses the word in two unrelated ways:
-> - **Schema bundle** (`--bundle`) — a registered subgraph schema whose v3 manifests carry typed node chunks plus an edge chunk. The builder walks those edges to join records.
-> - **Snapshot bundle** (`--bundle-cid`, `/bundle/*`) — an exported NDJSON copy of the populated Qdrant collection, used to seed new instances without a GPU.
-
 ---
 
 ## How it works
@@ -14,6 +10,7 @@ This repo contains infrastructure for building and serving vector search over on
 - **`quickbeam watch`**: live daemon that polls the subgraph for new events and embeds them automatically as they arrive. Keeps the GPU model loaded between cycles; uses `blockNumber_gt` to only query genuinely new events.
 - **`quickbeam serve`**: read-only API server. Connects to Qdrant and serves search, browse, and catalog endpoints. It does not ingest on startup, but instead expects the collection to already be populated, either by the builder or by seeding from a snapshot. Can optionally run the watcher alongside it (`serve --watch`) so one process both ingests and serves, and can gate the search routes behind [x402 payments](#x402-payment-gating).
 - **`quickbeam mcp`**: a [Model Context Protocol](#mcp-server) layer over the API. A thin, stateless HTTP client of `quickbeam serve` that exposes semantic search to agents as well-typed tools, attaches on-chain provenance to every result, and can optionally charge the calling agent per tool call via [x402](#x402-payment-gating).
+- **`quickbeam scrape`**: the [scraper service](#on-demand-common-crawl-scraping) — watches Fangorn for `crawl_job` manifests, scrapes [Common Crawl](https://commoncrawl.org) on-demand with [CmonCrawl](https://github.com/hynky1999/CmonCrawl), and publishes the extracted records back to Fangorn (x402-gated). The existing `watch` → `serve`/`mcp` stack then embeds and serves them — adding a data source becomes a *registration change, not an architecture change*.
 
 The builder produces the same record shape — `{ track_id, fields, meta }` — through one of two interchangeable join phases:
 
@@ -387,6 +384,113 @@ Since MCP has no HTTP headers, payment rides on a tool argument instead of `X-PA
 The verify/settle primitives are reused verbatim from `x402.py`; only the transport (tool argument vs HTTP header) differs.
 
 > **Embedding quality note.** nomic-embed-text-v1.5 is asymmetric — documents are embedded with a `search_document:` prefix and queries with `search_query:`. The `/search` route applies the query prefix automatically, so MCP results use the correct retrieval path. Existing indexed vectors are unaffected (they were correctly built as documents).
+
+---
+
+## On-demand Common Crawl scraping
+
+`quickbeam scrape` turns "build a data API about X" into a Fangorn registration. A user (or an agentic UI — out of scope here) generates a [CmonCrawl](https://github.com/hynky1999/CmonCrawl) **extractor + routes config**, publishes it as a `crawl_job` manifest on Fangorn, and pays per job via [x402](#x402-payment-gating). The scraper service reacts to the on-chain event, crawls Common Crawl, runs the extractor in a sandbox, and publishes the extracted `{ name, fields }` records back to Fangorn — where the normal `watch` → `serve`/`mcp` stack picks them up.
+
+```
+crawl_job manifest on Fangorn  ──(ManifestPublished)──▶  quickbeam scrape
+   routes + extractor source                               │ verify x402 payment
+   crawl query + outputSchema                               │ cmon download → sandboxed cmon extract
+                                                            ▼
+                              records published to Fangorn (outputSchema)
+                                                            │
+                          quickbeam watch  →  serve / mcp  (embed + search)
+```
+
+### The `crawl_job` schema
+
+`crawl_job` is a **generic, reusable Fangorn schema** (`@type` grammar, validated at publish) defined in [`schemas/crawl_job.json`](schemas/crawl_job.json) — register it with `node src/publish.mjs --schema fangorn.crawljob.v1 --schema-def schemas/crawl_job.json --register-only`. A conforming record (see `quickbeam/crawl/config.py`):
+
+```jsonc
+{
+  "routes": [                                   // exactly CmonCrawl's extract routes
+    { "regexes": [".*"], "extractors": [{ "name": "hotwheels", "since": "2024-01-01", "to": "2024-06-01" }] }
+  ],
+  "extractors": [                               // typed array: inline source and/or IPFS sourceCid
+    { "name": "hotwheels", "language": "python",
+      "source": "from cmoncrawl...\nextractor = MyExtractor()\n", "sourceCid": null }
+  ],
+  "query": { "urls": ["hotwheels.fandom.com"], "matchType": "domain",
+             "since": "2024-01-01", "to": "2024-06-01", "limit": 100, "aggregator": "gateway" },
+  "outputSchema": "fangorn.webpage.v1",         // a generic output schema, e.g. schemas/webpage.json
+  "outputSchemaDef": { "title": { "@type": "string" }, "url": { "@type": "string" } },  // optional, registered idempotently
+  "paymentReceipt": "<base64 x402 authorization>"   // see Payment below
+}
+```
+
+See [CC_Fangorn.md](CC_Fangorn.md) for the full field/`@type` reference.
+
+### Payment — embedded x402 authorization (pay for *compute*)
+
+The trigger is on-chain, so payment travels **inside the manifest**, not over a separate HTTP call. Before publishing, the client signs an x402 [ERC-3009 `transferWithAuthorization`](https://eips.ethereum.org/EIPS/eip-3009) for the exact price and puts it in the `crawl_job` field `paymentReceipt`. That signed object is a single-use *bearer* authorization (nonce-protected, fixed amount, fixed recipient), so it's safe to publish. When the manifest arrives, the listener recomputes the price from the job's own `query.limit`, verifies the authorization (`quickbeam/x402.py`), and **settles** it (locally on testnet, or via `--x402-facilitator` on mainnet) before running. Underpaying or paying the wrong recipient fails verification; manifest-CID dedupe prevents double-settle. Override with `--no-require-payment` for dev.
+
+**Pricing** scales with the requested work: `price = base + per_unit × query.limit` (atomic units), known to the client before they sign because `limit` caps the crawl. The operator advertises the parameters at `GET /pricing`; `POST /pricing/quote` returns the exact price + `PaymentRequirements` for a specific job.
+
+> **Compute vs. data access.** This gate pays the *scraper operator to run the crawl*. Selling *access to the resulting dataset* is a separate payment to the **data owner** — that's what Fangorn's `SettlementRegistry` (price-root + Semaphore-private settlement) and the x402 gating on `serve`/`mcp` are for. Same ERC-3009 rail underneath, different payer→payee.
+
+### Security
+
+The extract step runs publisher-supplied Python over untrusted Common Crawl HTML, so it is **sandboxed**: wall-clock + CPU + memory rlimits, a scrubbed environment (no secrets), and best-effort network-namespace isolation (`unshare --net`) — the download step does all networking, the extractor sees only already-fetched HTML. The production target is a per-job container/microVM; `quickbeam/crawl/sandbox.py:run` is the single seam to swap.
+
+### Setup
+
+CmonCrawl pins an old pydantic that conflicts with fastapi/mcp, so install it in **its own venv** and point the service at that binary. Publishing back to Fangorn uses the JS SDK via `node src/publish.mjs` (`npm install`).
+
+```sh
+# 1. CmonCrawl in an isolated venv
+python -m venv /opt/cmon-venv && /opt/cmon-venv/bin/pip install cmoncrawl
+
+# 2. JS publisher deps (uses @fangorn-network/sdk)
+npm install
+
+# 3. Env the publisher needs
+export FANGORN_PRIVATE_KEY=0x…      # signer for register/publish txs (Arbitrum Sepolia)
+export PINATA_JWT=…                 # IPFS pinning
+export PINATA_GATEWAY=your-gw.mypinata.cloud   # optional
+export GRAPH_API_KEY=…              # subgraph (optional)
+
+# 4. Run the service
+quickbeam scrape \
+  --crawl-job-schema fangorn.crawljob.v1=0x<schemaId> \
+  --cmon-bin /opt/cmon-venv/bin/cmon \
+  --graph-api-key "$GRAPH_API_KEY" \
+  --x402-pay-to 0x<operator> --x402-price-base 0.05 --x402-price-per-unit 0.001 \
+  --x402-network base-sepolia \
+  --poll-interval 60 --port 8090
+```
+
+Then embed + serve the produced dataset with the existing stack:
+
+```sh
+quickbeam watch --bundle fangorn.webpage.v1=0x<schemaId>
+quickbeam serve --x402-pay-to 0x<recipient>
+```
+
+### Develop an extractor offline first
+
+`quickbeam data crawl` runs the same pipeline locally — no chain, no payment, no SDK — so you can iterate on an extractor before wiring the on-chain path:
+
+```sh
+quickbeam data crawl \
+  --routes ./routes.json --extractors ./my_extractors \
+  --url hotwheels.fandom.com --match-type domain \
+  --since 2024-01-01 --to 2024-06-01 --limit 50 \
+  --cmon-bin /opt/cmon-venv/bin/cmon \
+  --out ./stage_volumes/crawl.json
+```
+
+### Publish records to Fangorn directly
+
+`src/publish.mjs` is a standalone bridge (also used by the service) — register a schema and publish `{ name, fields }` records:
+
+```sh
+node src/publish.mjs --records recs.jsonl --schema fangorn.webpage.v1 \
+  --dataset ds.hotwheels.2026 --schema-def schema.json
+```
 
 ---
 

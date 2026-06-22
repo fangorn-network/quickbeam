@@ -29,6 +29,12 @@ gpu = ["fastembed-gpu"]
 cpu = ["fastembed"]
 # Agent / payments layer: MCP server (FastMCP) + x402 EIP-712 payment signing.
 agent = ["fastmcp", "eth-account", "httpx"]
+# Scraper service: Common Crawl scraping via Fangorn-registered crawl_job manifests.
+# NOTE: the `cmon` CLI (CmonCrawl) is intentionally NOT listed here — it pins an
+# old pydantic that conflicts with fastapi/mcp. Install it in its OWN venv and
+# point the service at it via `--cmon-bin` / $CMON_BIN. Publishing results back to
+# Fangorn uses the JS SDK via `node src/publish.mjs` (run `npm install`).
+scraper = ["eth-account", "aiohttp"]
 dev   = ["pytest", "fastmcp", "eth-account"]
 
 [project.scripts]

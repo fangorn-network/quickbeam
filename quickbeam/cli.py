@@ -83,6 +83,15 @@ def mcp(ctx: typer.Context):
 
 
 @app.command(**_PASSTHROUGH)
+def scrape(ctx: typer.Context):
+    """Run the scraper service: watch Fangorn for crawl_job manifests, crawl
+    Common Crawl on-demand (x402-gated), and publish results back to Fangorn."""
+    _fwd("quickbeam scrape", ctx.args)
+    from quickbeam.scraper_service import main
+    main()
+
+
+@app.command(**_PASSTHROUGH)
 def watch(ctx: typer.Context):
     """Live daemon: poll subgraph for new events and embed them automatically."""
     import asyncio
@@ -127,6 +136,14 @@ def osm(ctx: typer.Context):
     """Fetch recent OSM changesets for a bounding box."""
     _fwd("quickbeam data osm", ctx.args)
     from quickbeam.pipelines.osm import main
+    main()
+
+
+@data_app.command(**_PASSTHROUGH)
+def crawl(ctx: typer.Context):
+    """One-shot Common Crawl scrape + extract → Fangorn-shaped JSON (offline)."""
+    _fwd("quickbeam data crawl", ctx.args)
+    from quickbeam.pipelines.cmoncrawl import main
     main()
 
 
