@@ -848,6 +848,13 @@ ROOT_PROFILES: dict[str, dict] = {
         "root_type": "Work", "max_depth": 2,
         "include": ["Artist", "Recording", "Release"],
     },
+    # local-business graph (places_pg): one document per Business, folding in its
+    # reviews, categories, locality, reviewers, and nearby businesses — the shape
+    # the per-bar demo shard embeds. Depth 2 reaches Business→Review→Reviewer.
+    "business": {
+        "root_type": "Business", "max_depth": 2,
+        "include": ["Review", "Category", "Locality", "Reviewer", "Business"],
+    },
 }
 
 

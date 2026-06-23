@@ -167,6 +167,22 @@ def schemagen(ctx: typer.Context):
     run()
 
 
+@data_app.command("places-fetch", **_PASSTHROUGH)
+def places_fetch(ctx: typer.Context):
+    """Scrape Google Places (new API) for an area into Postgres places_raw."""
+    _fwd("quickbeam data places-fetch", ctx.args)
+    from quickbeam.pipelines.places import main
+    main()
+
+
+@data_app.command(**_PASSTHROUGH)
+def placespg(ctx: typer.Context):
+    """Convert Postgres places_raw (Google Places) into a Fangorn graph."""
+    _fwd("quickbeam data placespg", ctx.args)
+    from quickbeam.pipelines.places_pg import run
+    run()
+
+
 @data_app.command(**_PASSTHROUGH)
 def osm(ctx: typer.Context):
     """Fetch recent OSM changesets for a bounding box."""

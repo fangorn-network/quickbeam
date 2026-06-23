@@ -8,6 +8,7 @@ Requires-Dist: fastapi
 Requires-Dist: httpx
 Requires-Dist: musicbrainzngs
 Requires-Dist: numpy
+Requires-Dist: psycopg[binary]
 Requires-Dist: qdrant-client
 Requires-Dist: requests
 Requires-Dist: tqdm

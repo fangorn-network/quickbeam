@@ -1,0 +1,9 @@
+quickbeam build \
+  --graph-api-key b66e8b18ae3fe2c5a91929098b290d69 \
+  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
+  --ipfs-gateway-key eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySW5mb3JtYXRpb24iOnsiaWQiOiI1YmE1NTE5MS0yZDNmLTQ3ZGQtYmZlMy0zOTYzMDFjOGRiNzAiLCJlbWFpbCI6ImZhbmdvcm5AZmFuZ29ybi5uZXR3b3JrIiwiZW1haWxfdmVyaWZpZWQiOnRydWUsInBpbl9wb2xpY3kiOnsicmVnaW9ucyI6W3siZGVzaXJlZFJlcGxpY2F0aW9uQ291bnQiOjEsImlkIjoiRlJBMSJ9LHsiZGVzaXJlZFJlcGxpY2F0aW9uQ291bnQiOjEsImlkIjoiTllDMSJ9XSwidmVyc2lvbiI6MX0sIm1mYV9lbmFibGVkIjpmYWxzZSwic3RhdHVzIjoiQUNUSVZFIn0sImF1dGhlbnRpY2F0aW9uVHlwZSI6InNjb3BlZEtleSIsInNjb3BlZEtleUtleSI6ImE1NmI1MzcyMGQ5MzA3N2RiMWI5Iiwic2NvcGVkS2V5U2VjcmV0IjoiNmZhYWU5MjAyMjJjNGIxZGFkNGU4YjZjZGM1NWE0MmNlOTU2MDJmZDlhYTI0ZjkwNWM0YTFiMGUzOTVmMmYwYiIsImV4cCI6MTgxMjgxMjExNn0.i9KNjWrcKKDQiFnjXDbWZm0PgYzPXUEX3u2U3tWt9VM \
+  --bundle "fangorn.places.localcore.v1=0xa516d0aded656ec1d1e2b3c4b8186140f8ca0dc2e781fd408fa709daf07118de" \
+  --root-profile business \
+  --dim 256 \
+  --umap \
+  --reset

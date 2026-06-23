@@ -1,12 +1,14 @@
 README.md
 pyproject.toml
 quickbeam/__init__.py
+quickbeam/cdn.py
 quickbeam/cli.py
 quickbeam/embeddings.py
 quickbeam/export_bundle.py
 quickbeam/mcp_payments.py
 quickbeam/mcp_server.py
 quickbeam/migrate.py
+quickbeam/pull.py
 quickbeam/roles.py
 quickbeam/server.py
 quickbeam/test_roles.py
@@ -19,8 +21,12 @@ quickbeam.egg-info/entry_points.txt
 quickbeam.egg-info/requires.txt
 quickbeam.egg-info/top_level.txt
 quickbeam/pipelines/__init__.py
+quickbeam/pipelines/fangorn_schema.py
 quickbeam/pipelines/lastfm.py
 quickbeam/pipelines/mb.py
+quickbeam/pipelines/mb_pg.py
 quickbeam/pipelines/osm.py
+quickbeam/pipelines/places.py
+quickbeam/pipelines/places_pg.py
 tests/test_mcp.py
 tests/test_x402_agent.py

@@ -4,6 +4,7 @@ fastapi
 httpx
 musicbrainzngs
 numpy
+psycopg[binary]
 qdrant-client
 requests
 tqdm
