@@ -103,6 +103,11 @@ def parse_args():
                              "needed only if you must bake coords into the Qdrant snapshot).")
     parser.add_argument("--umap-map-file", default="./db/catalog_map.json.gz",
                         help="Output path for the --umap-target file artifact (gzipped JSON).")
+    parser.add_argument("--max-manifests", type=int, default=0,
+                        help="Build at most N bundle manifests (shards) this run, then stop. "
+                             "0 = no limit. Progress is checkpointed, so a later run resumes "
+                             "with the next un-built shards. Use this to build a small number of "
+                             "shards on a memory-limited machine.")
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -763,6 +768,11 @@ def _b58encode(v: bytes) -> str:
     return ('1' * leading) + bytes(reversed(res)).decode('ascii')
 
 def _cid_to_path(cid: str) -> str:
+    # Chunk dataCids are stored as full `ipfs://<dirCid>/<file>` URIs (UnixFS dir +
+    # path); strip the scheme so the gateway URL is `<gw>/ipfs/<dirCid>/<file>` and
+    # not the malformed `<gw>/ipfs/ipfs://<dirCid>/<file>` (→ 400).
+    if cid.startswith("ipfs://"):
+        cid = cid[len("ipfs://"):]
     if cid.startswith(('0x', '0X')):
         raw = bytes.fromhex(cid[2:])
         if len(raw) == 34 and raw[0] == 0x12 and raw[1] == 0x20:
@@ -1308,6 +1318,11 @@ async def main():
             if since_flush >= CHECKPOINT_EVERY:
                 _flush()
                 since_flush = 0
+
+            if args.max_manifests and manifest_num >= args.max_manifests:
+                print(f"[Builder] Reached --max-manifests={args.max_manifests}; "
+                      f"stopping. Re-run to build the next shards (resumes from checkpoint).")
+                break
 
         # Final flush — persist whatever completed since the last batched write.
         if since_flush:

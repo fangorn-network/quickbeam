@@ -1,20 +1,12 @@
 import { useState } from 'react';
-import type { EntityFields, TypeSchema } from '../lib/types';
-import {
-  FIELD_LABELS,
-  SUPPRESSED_FIELDS,
-  SOFT_LINK_FIELDS,
-  fieldLabel,
-  formatDuration,
-  formatRating,
-  splitList,
-} from '../lib/labels';
-import { fieldTypeOf } from '../lib/schemas';
+import type { EntityFields } from '../lib/types';
+import { useDomain } from '../lib/domainContext';
+import type { Domain } from '../lib/domain';
+import { formatDuration, formatRating, splitList } from '../lib/labels';
 import styles from './FieldTable.module.css';
 
 interface Props {
   fields: EntityFields;
-  schema: TypeSchema | null;
   onSoftLink: (value: string, field: string) => void;
   onShowJson: () => void;
 }
@@ -29,30 +21,20 @@ function isEmpty(v: unknown): boolean {
   return false;
 }
 
-export default function FieldTable({ fields, schema, onSoftLink, onShowJson }: Props) {
+export default function FieldTable({ fields, onSoftLink, onShowJson }: Props) {
+  const domain = useDomain();
   const [showAll, setShowAll] = useState(false);
 
-  // Exclude suppressed + list fields (those go to Connections), keep scalars.
+  // Keep scalar fields + tag arrays (rendered as pills). Other array fields are the
+  // "Connections" and render elsewhere. Suppressed fields never show here.
   const entries = Object.entries(fields).filter(([k, v]) => {
-    if (SUPPRESSED_FIELDS.has(k)) return false;
-    if (Array.isArray(v)) return false;
-    if (k === 'beginYear' || k === 'endYear') return false; // merged below
-    if (k === 'rating' && typeof v === 'number' && v === 0) return false;
-    if (k === 'durationMs' && typeof v === 'number' && v === 0) return false;
-    if (k === 'video' && v !== true) return false;
-    if (k === 'cancelled' && v !== true) return false;
+    if (domain.isSuppressedField(k)) return false;
+    if (Array.isArray(v) && !domain.isTagField(k)) return false;
     if (!showAll && isEmpty(v)) return false;
     return true;
   });
 
-  // Merge Active row.
-  const activeRow = buildActiveRow(fields);
-
-  entries.sort((a, b) => {
-    const ord = (FIELD_LABELS[a[0]] ? 0 : 1) - (FIELD_LABELS[b[0]] ? 0 : 1);
-    if (ord !== 0) return ord;
-    return a[0].localeCompare(b[0]);
-  });
+  entries.sort((a, b) => domain.fieldLabel(a[0]).localeCompare(domain.fieldLabel(b[0])));
 
   return (
     <div className={styles.wrap}>
@@ -65,20 +47,13 @@ export default function FieldTable({ fields, schema, onSoftLink, onShowJson }: P
           </tr>
         </thead>
         <tbody>
-          {activeRow && (
-            <tr>
-              <td className={styles.field}>Active</td>
-              <td className={styles.value}>{activeRow}</td>
-              <td className={styles.type}>string</td>
-            </tr>
-          )}
           {entries.map(([k, v]) => (
             <tr key={k} className={isEmpty(v) ? styles.emptyRow : ''}>
-              <td className={styles.field}>{fieldLabel(k)}</td>
+              <td className={styles.field}>{domain.fieldLabel(k)}</td>
               <td className={styles.value}>
-                {renderValue(k, v, onSoftLink)}
+                {renderValue(k, v, domain, onSoftLink)}
               </td>
-              <td className={styles.type}>{fieldTypeOf(schema, k) ?? typeOf(v)}</td>
+              <td className={styles.type}>{typeOf(v)}</td>
             </tr>
           ))}
         </tbody>
@@ -95,18 +70,8 @@ export default function FieldTable({ fields, schema, onSoftLink, onShowJson }: P
   );
 }
 
-function buildActiveRow(fields: EntityFields): string | null {
-  const b = fields.beginYear;
-  const e = fields.endYear;
-  const bs = b != null && `${b}`.length ? `${b}` : null;
-  const es = e != null && `${e}`.length ? `${e}` : null;
-  if (bs && es) return `${bs}–${es}`;
-  if (bs && !es) return `${bs}–present`;
-  if (!bs && es) return `Dissolved ${es}`;
-  return null;
-}
-
 function typeOf(v: unknown): string {
+  if (Array.isArray(v)) return 'list';
   if (typeof v === 'number') return 'number';
   if (typeof v === 'boolean') return 'boolean';
   return 'string';
@@ -115,37 +80,38 @@ function typeOf(v: unknown): string {
 function renderValue(
   key: string,
   v: unknown,
+  domain: Domain,
   onSoftLink: (value: string, field: string) => void,
 ) {
   if (isEmpty(v)) return <span className={styles.muted}>—</span>;
 
-  if (key === 'durationMs' && typeof v === 'number')
-    return <span>{formatDuration(v)}</span>;
-  if (key === 'rating' && typeof v === 'number')
-    return <span>{formatRating(v)}</span>;
-  if (typeof v === 'boolean') return <span>{v ? 'Yes' : 'No'}</span>;
-
-  if (key === 'tags' && typeof v === 'string') {
+  // Tag facets → pills (array now, comma-string for legacy payloads).
+  if (domain.isTagField(key)) {
+    const items = Array.isArray(v)
+      ? v.filter((x): x is string => typeof x === 'string')
+      : typeof v === 'string'
+        ? splitList(v)
+        : [];
     return (
       <span className={styles.pills}>
-        {splitList(v).map((t) => (
-          <span key={t} className={styles.pill}>
-            {t}
-          </span>
+        {items.map((t) => (
+          <span key={t} className={styles.pill}>{t}</span>
         ))}
       </span>
     );
   }
 
-  if ((key === 'isrcCodes' || key === 'iswcCodes' || key === 'barcode') && typeof v === 'string') {
-    return (
-      <span className={styles.mono}>
-        {splitList(v).join(', ') || v}
-      </span>
-    );
+  // Generic, name-shape display heuristics (not type-switched).
+  if (typeof v === 'number' && /duration/i.test(key)) return <span>{formatDuration(v)}</span>;
+  if (typeof v === 'number' && /rating/i.test(key)) return <span>{formatRating(v)}</span>;
+  if (typeof v === 'boolean') return <span>{v ? 'Yes' : 'No'}</span>;
+
+  if (typeof v === 'string' && /(isrc|iswc|barcode|code)/i.test(key)) {
+    return <span className={styles.mono}>{splitList(v).join(', ') || v}</span>;
   }
 
-  if (SOFT_LINK_FIELDS.has(key) && typeof v === 'string') {
+  // Byline / location names → run a search (soft link).
+  if (domain.isSoftLinkField(key) && typeof v === 'string') {
     return (
       <button
         type="button"

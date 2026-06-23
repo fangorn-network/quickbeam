@@ -1,6 +1,5 @@
 // Centralised href + PageRef builders.
 import type { EntitySummary, PageRef } from './types';
-import { secondaryLine } from './summary';
 
 export function entityHref(pointId: string): string {
   return `/entity/${encodeURIComponent(pointId)}`;
@@ -35,8 +34,4 @@ export function searchPageRef(q: string, type?: string): PageRef {
     query: q,
     href: searchHref(q, type),
   };
-}
-
-export function summaryFor(e: EntitySummary): string {
-  return secondaryLine(e);
 }

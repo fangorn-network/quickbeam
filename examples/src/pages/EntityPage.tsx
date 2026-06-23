@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Breadcrumb from '../components/Breadcrumb';
 import EntityBadge from '../components/EntityBadge';
-import StatusBadge from '../components/StatusBadge';
 import FieldTable from '../components/FieldTable';
 import RelatedRail from '../components/RelatedRail';
 import SemanticNeighborGrid from '../components/SemanticNeighborGrid';
@@ -10,20 +9,11 @@ import JsonDrawer from '../components/JsonDrawer';
 import SkeletonBlock from '../components/SkeletonBlock';
 import { useAsync } from '../hooks/useAsync';
 import { getPoint, recommend, toSummary, QdrantError } from '../lib/qdrant';
-import { loadTypeSchema, loadBundle, edgesForType } from '../lib/schemas';
-import type {
-  CreativeCoreBundle,
-  EntitySummary,
-  EntityType,
-  PageRef,
-  TypeSchema,
-} from '../lib/types';
-import { isEntityType } from '../lib/types';
-import { metaFor, accentColor } from '../lib/entityMeta';
-import { mbUrl, formatActive, LIST_FIELDS, humanise } from '../lib/labels';
+import { useDomain } from '../lib/domainContext';
+import type { EntitySummary, PageRef } from '../lib/types';
+import { humanise } from '../lib/labels';
 import { COPY } from '../lib/copy';
 import { entityHref, entityPageRef, searchHref, searchPageRef, browseHref } from '../lib/nav';
-import { relHeading } from '../lib/relationships';
 import styles from './EntityPage.module.css';
 
 interface Props {
@@ -33,13 +23,13 @@ interface Props {
 
 export default function EntityPage({ pointId, onVisit }: Props) {
   const navigate = useNavigate();
+  const domain = useDomain();
   const [showJson, setShowJson] = useState(false);
 
   const point = useAsync(() => getPoint(pointId), [pointId]);
 
   const summary: EntitySummary | null = point.data ? toSummary(point.data) : null;
   const entityType = summary?.entityType ?? '';
-  const typedEntityType: EntityType | null = isEntityType(entityType) ? entityType : null;
 
   // Record visit in back stack once loaded.
   useEffect(() => {
@@ -47,21 +37,11 @@ export default function EntityPage({ pointId, onVisit }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [summary?.pointId]);
 
-  // Load schema + bundle for typed fields and connection vocabulary.
-  const schema = useAsync<TypeSchema | null>(
-    () => (typedEntityType ? loadTypeSchema(typedEntityType) : Promise.resolve(null)),
-    [typedEntityType],
-  );
-
-  const bundle = useAsync(() => loadBundle(), []);
-
   // Semantic neighbors (independent async load).
   const neighbors = useAsync<EntitySummary[]>(
     () => (point.data ? recommend(pointId, 12).then((ps) => ps.map(toSummary)) : Promise.resolve([])),
     [pointId, point.data?.id],
   );
-
-  const meta = metaFor(entityType);
 
   // ---- loading / error states ----
   if (point.loading) {
@@ -93,25 +73,25 @@ export default function EntityPage({ pointId, onVisit }: Props) {
 
   if (!summary || !point.data) return null;
 
-  const f = summary.fields;
+  const f = summary.fields as Record<string, unknown>;
   const title = summary.title;
-  const text = typeof f.text === 'string' ? f.text : null;
-  const dis = typeof f.disambiguation === 'string' ? f.disambiguation : null;
-  const sortName = typeof f.sortName === 'string' ? f.sortName : null;
-  const active = formatActive(f.beginYear as string, f.endYear as string);
-  const external = summary.mbid && typedEntityType ? mbUrl(typedEntityType, summary.mbid) : null;
-  const cancelled = f.cancelled === true;
+  const meta = domain.typeMeta(entityType);
+  const known = domain.hasType(entityType);
 
-  const subtitleParts: string[] = [];
-  if (typeof f.area === 'string' && f.area) subtitleParts.push(f.area);
-  if (active) subtitleParts.push(active);
-  const subtitle = subtitleParts.join(' · ');
+  // Lede = first long-text role field, else the type's definition.
+  const textField = domain.roleMap.text.find(
+    (tf) => typeof f[tf] === 'string' && (f[tf] as string).trim(),
+  );
+  const text = textField ? (f[textField] as string) : null;
+
+  const subtitle = domain.secondaryLine(summary);
+  const external = summary.mbid ? domain.externalUrl(entityType, { mbid: summary.mbid }) : null;
 
   const crumbs = [
     { label: 'Browse', href: '/' },
-    typedEntityType
-      ? { label: meta?.plural ?? entityType, href: browseHref(typedEntityType) }
-      : { label: entityType },
+    known
+      ? { label: domain.pluralOf(entityType), href: browseHref(entityType) }
+      : { label: entityType || 'Entry' },
     { label: title },
   ];
 
@@ -133,7 +113,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
       {/* Header card */}
       <div
         className={styles.header}
-        style={{ '--accent': accentColor(entityType) } as React.CSSProperties}
+        style={{ '--accent': meta.accent } as React.CSSProperties}
       >
         <div className={styles.headerTop}>
           <EntityBadge type={entityType} size="lg" />
@@ -145,28 +125,16 @@ export default function EntityPage({ pointId, onVisit }: Props) {
               rel="noreferrer"
               title={COPY.link.externalTooltip}
             >
-              View on MusicBrainz ↗
+              Open source ↗
             </a>
           )}
         </div>
         <h1 className={styles.h1}>{title}</h1>
-        {sortName && sortName !== title && (
-          <div className={styles.sortName}>{sortName}</div>
-        )}
-        {cancelled && (
-          <div className={styles.cancelled}>
-            <StatusBadge variant="error" label="CANCELLED" />
-          </div>
-        )}
         {subtitle && <div className={styles.subtitle}>{subtitle}</div>}
-        {dis && <div className={styles.dis}>({dis})</div>}
         {text ? (
           <p className={styles.lede}>{text}</p>
         ) : (
-          meta && <p className={styles.ledeMuted}>{meta.singular} · {meta.definition}</p>
-        )}
-        {entityType === 'Instrument' && typeof f.description === 'string' && (
-          <p className={styles.lede}>{f.description}</p>
+          meta.definition && <p className={styles.ledeMuted}>{meta.singular} · {meta.definition}</p>
         )}
       </div>
 
@@ -174,8 +142,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
       <section className={styles.section}>
         <h2 className={styles.sectionTitle}>Fields</h2>
         <FieldTable
-          fields={f}
-          schema={schema.data}
+          fields={summary.fields}
           onSoftLink={onSoftLink}
           onShowJson={() => setShowJson(true)}
         />
@@ -184,12 +151,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
       {/* Connections (list fields + edge vocabulary) */}
       <section className={styles.section}>
         <h2 className={styles.sectionTitle}>{COPY.connections.heading}</h2>
-        <ConnectionsBlock
-          fields={f}
-          entityType={entityType}
-          bundle={bundle.data}
-          onSearch={onSoftLink}
-        />
+        <ConnectionsBlock fields={f} entityType={entityType} onSearch={onSoftLink} />
       </section>
 
       {/* Semantic neighbors */}
@@ -210,46 +172,35 @@ export default function EntityPage({ pointId, onVisit }: Props) {
 function ConnectionsBlock({
   fields,
   entityType,
-  bundle,
   onSearch,
 }: {
   fields: Record<string, unknown>;
   entityType: string;
-  bundle: CreativeCoreBundle | null;
   onSearch: (value: string, field: string) => void;
 }) {
+  const domain = useDomain();
   const listSections = useMemo(() => {
     const out: { field: string; items: EntitySummary[] }[] = [];
-    for (const field of LIST_FIELDS) {
-      const v = fields[field];
-      if (Array.isArray(v) && v.length) {
-        const items: EntitySummary[] = v.slice(0, 5).map((raw, i) => {
-          if (typeof raw === 'string') {
-            return {
-              pointId: `lf-${field}-${i}`,
-              entityType: 'Unknown',
-              title: raw,
-              fields: {},
-            };
-          }
-          const obj = raw as Record<string, unknown>;
-          return {
-            pointId: `lf-${field}-${i}`,
-            entityType: (obj.entityType as string) ?? 'Unknown',
-            title: (obj.title as string) ?? (obj.name as string) ?? String(raw),
-            fields: obj as never,
-          };
-        });
-        out.push({ field, items });
-      }
+    for (const field of domain.connectionFields(fields)) {
+      const v = fields[field] as unknown[];
+      const items: EntitySummary[] = v.slice(0, 5).map((raw, i) => {
+        if (typeof raw === 'string') {
+          return { pointId: `lf-${field}-${i}`, entityType: 'Unknown', title: raw, fields: {} };
+        }
+        const obj = raw as Record<string, unknown>;
+        return {
+          pointId: `lf-${field}-${i}`,
+          entityType: (obj.entityType as string) ?? 'Unknown',
+          title: (obj.title as string) ?? (obj.name as string) ?? String(raw),
+          fields: obj as never,
+        };
+      });
+      out.push({ field, items });
     }
     return out;
-  }, [fields]);
+  }, [fields, domain]);
 
-  const edges = edgesForType(bundle, entityType);
-  const relVocab = Array.from(
-    new Set([...edges.outgoing.map((e) => e.rel), ...edges.incoming.map((e) => e.rel)]),
-  );
+  const relVocab = domain.relVocabForType(entityType);
 
   if (listSections.length === 0) {
     return (
@@ -258,9 +209,9 @@ function ConnectionsBlock({
         {relVocab.length > 0 && (
           <div className={styles.vocab}>
             <span className={styles.vocabLabel}>
-              This {metaFor(entityType)?.singular ?? entityType} can participate in:
+              This {domain.typeMeta(entityType).singular} can participate in:
             </span>{' '}
-            {relVocab.map((r) => relHeading(r)).join(' · ')}
+            {relVocab.map((r) => humanise(r)).join(' · ')}
             <div className={styles.vocabNote}>
               No direct edges are stored in the payload — following a name runs a search.
             </div>
@@ -283,7 +234,7 @@ function ConnectionsBlock({
       ))}
       {relVocab.length > 0 && (
         <div className={styles.vocabNote}>
-          Relationship vocabulary for this type: {relVocab.map((r) => relHeading(r)).join(' · ')}.
+          Relationship vocabulary for this type: {relVocab.map((r) => humanise(r)).join(' · ')}.
           Following an item runs a name search (no hard edges stored).
         </div>
       )}

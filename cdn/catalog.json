@@ -1,15 +1,18 @@
 {
-  "generated_at": 1782057135,
+  "generated_at": 1782184624,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
   "collection": "fangorn",
   "domains": [
     {
       "name": "music",
       "description": "MusicBrainz creative core \u2014 recordings & artists",
-      "count": 10000,
+      "count": 3000,
       "dim": 256,
-      "bytes": 25170398,
-      "shard_count": 2,
+      "bytes": 7690738,
+      "shard_count": 1,
+      "entity_types": [
+        "Recording"
+      ],
       "manifest": "music/manifest.json"
     },
     {

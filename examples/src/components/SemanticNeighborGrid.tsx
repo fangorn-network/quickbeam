@@ -2,7 +2,7 @@ import EntityBadge from './EntityBadge';
 import SkeletonBlock from './SkeletonBlock';
 import StatusBadge from './StatusBadge';
 import type { EntitySummary } from '../lib/types';
-import { secondaryLine } from '../lib/summary';
+import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import styles from './SemanticNeighborGrid.module.css';
 
@@ -21,6 +21,7 @@ export default function SemanticNeighborGrid({
   error,
   onItemClick,
 }: Props) {
+  const domain = useDomain();
   return (
     <section className={styles.section}>
       <div className={styles.head}>
@@ -57,7 +58,7 @@ export default function SemanticNeighborGrid({
                 )}
               </div>
               <div className={styles.title}>{n.title}</div>
-              <div className={styles.secondary}>{secondaryLine(n)}</div>
+              <div className={styles.secondary}>{domain.secondaryLine(n)}</div>
             </button>
           ))}
         </div>

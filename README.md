@@ -63,6 +63,8 @@ pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-su
 
 ### 1. Run Qdrant
 
+quickbeam build --bundle "fangorn.mb.creativecore.v4=0xba5436c0aac6cf01d35f5da35ca2a8011d3da7dda14b5e52548b73075ec08f54" --root-type Recording --reset
+
 ```sh
 docker run -d -p 6333:6333 -p 6334:6334 \
   -v "$(pwd)/python/qdrant_storage:/qdrant/storage:z" \
@@ -309,6 +311,15 @@ quickbeam serve --collection music_local      # local search — CDN sees nothin
 A **domain** is operator-declared (a named `entityType`/`owner` filter, in `domains.json`).
 `bake` writes `cdn/<domain>/shard-NNNN.ndjson.gz` (reusing the `/bundle/export` row shape)
 plus a `manifest.json` carrying a **sha256 per shard**, and a top-level `catalog.json`.
+
+Each `manifest.json` is also **self-describing** so a pulled domain drives a generic,
+schema-agnostic client with no hardcoding: an inferred `role_map`
+(title/subtitle/tags/spatial/…) and an `entity_types` vocabulary with per-type counts are
+always baked in. Two optional per-domain keys in `domains.json` add more — `bundle_schema`
+(path to a Fangorn bundle schema → copies its type + relationship vocabulary into
+`manifest.bundle`) and `presentation` (an overlay of icons / accent colors / `fieldLabels` /
+`externalUrl` templates, passed through verbatim for UI polish). See
+[docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md#1-declare-domains-domainsjson).
 `serve` is a separate minimal FastAPI app exposing only static reads (`/catalog`,
 `/domains/{name}/manifest`, `/domains/{name}/shards/{file}`) with HTTP **Range** support,
 so shards are cacheable and downloads resume. `pull` verifies every shard against its
@@ -689,6 +700,7 @@ Env equivalents: `QUICKBEAM_API_URL`, `QUICKBEAM_CORPUS`, `QUICKBEAM_DOMAIN`.
 | `--collection` | `fangorn` | Source Qdrant collection to bake from |
 | `--domain` | all | Bake only this one domain from the config |
 | `--shard-size` | `50000` | Points per shard file |
+| `--limit` | `0` | Cap total points baked per domain (0 = all). Use a small value for a lightweight in-browser snapshot. |
 | `--scroll-batch` | `2000` | Qdrant scroll page size |
 | `--embedding-model` | `nomic-ai/nomic-embed-text-v1.5` | Recorded in the manifest (Qdrant doesn't store it) |
 | `--qdrant-url` / `--qdrant-api-key` | `None` | Qdrant Cloud (overrides host/port) |

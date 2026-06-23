@@ -1,7 +1,7 @@
 import EntityBadge from './EntityBadge';
 import SkeletonBlock from './SkeletonBlock';
 import type { EntitySummary } from '../lib/types';
-import { secondaryLine } from '../lib/summary';
+import { useDomain } from '../lib/domainContext';
 import styles from './RelatedRail.module.css';
 
 interface Props {
@@ -23,6 +23,7 @@ export default function RelatedRail({
   onItemClick,
   onViewAll,
 }: Props) {
+  const domain = useDomain();
   const shown = items.slice(0, 5);
   return (
     <section className={styles.section}>
@@ -48,7 +49,7 @@ export default function RelatedRail({
               >
                 <EntityBadge type={e.entityType} size="sm" />
                 <span className={styles.title}>{e.title}</span>
-                <span className={styles.secondary}>{secondaryLine(e)}</span>
+                <span className={styles.secondary}>{domain.secondaryLine(e)}</span>
               </button>
             </li>
           ))}

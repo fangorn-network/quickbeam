@@ -1,7 +1,7 @@
 {
   "schemas": [
     {
-      "name": "fangorn.mb.area.v3",
+      "name": "fangorn.mb.area.v4",
       "definition": {
         "areaType": {
           "@type": "string"
@@ -36,7 +36,7 @@
       }
     },
     {
-      "name": "fangorn.mb.artist.v3",
+      "name": "fangorn.mb.artist.v4",
       "definition": {
         "area": {
           "@type": "string"
@@ -86,7 +86,7 @@
       }
     },
     {
-      "name": "fangorn.mb.event.v3",
+      "name": "fangorn.mb.event.v4",
       "definition": {
         "cancelled": {
           "@type": "boolean"
@@ -127,7 +127,7 @@
       }
     },
     {
-      "name": "fangorn.mb.instrument.v3",
+      "name": "fangorn.mb.instrument.v4",
       "definition": {
         "description": {
           "@type": "string"
@@ -159,7 +159,7 @@
       }
     },
     {
-      "name": "fangorn.mb.place.v3",
+      "name": "fangorn.mb.place.v4",
       "definition": {
         "address": {
           "@type": "string"
@@ -203,7 +203,7 @@
       }
     },
     {
-      "name": "fangorn.mb.recording.v3",
+      "name": "fangorn.mb.recording.v4",
       "definition": {
         "byArtist": {
           "@type": "string"
@@ -244,7 +244,7 @@
       }
     },
     {
-      "name": "fangorn.mb.releasegroup.v3",
+      "name": "fangorn.mb.releasegroup.v4",
       "definition": {
         "byArtist": {
           "@type": "string"
@@ -279,7 +279,7 @@
       }
     },
     {
-      "name": "fangorn.mb.release.v3",
+      "name": "fangorn.mb.release.v4",
       "definition": {
         "barcode": {
           "@type": "string"
@@ -317,7 +317,7 @@
       }
     },
     {
-      "name": "fangorn.mb.work.v3",
+      "name": "fangorn.mb.work.v4",
       "definition": {
         "disambiguation": {
           "@type": "string"
@@ -350,24 +350,48 @@
     }
   ],
   "bundle": {
-    "name": "fangorn.mb.creativecore.v3",
+    "name": "fangorn.mb.creativecore.v4",
     "kind": "bundle",
     "bundle": {
       "nodes": {
-        "Area": "fangorn.mb.area.v3",
-        "Artist": "fangorn.mb.artist.v3",
-        "Event": "fangorn.mb.event.v3",
-        "Instrument": "fangorn.mb.instrument.v3",
-        "Place": "fangorn.mb.place.v3",
-        "Recording": "fangorn.mb.recording.v3",
-        "ReleaseGroup": "fangorn.mb.releasegroup.v3",
-        "Release": "fangorn.mb.release.v3",
-        "Work": "fangorn.mb.work.v3"
+        "Area": "fangorn.mb.area.v4",
+        "Artist": "fangorn.mb.artist.v4",
+        "Event": "fangorn.mb.event.v4",
+        "Instrument": "fangorn.mb.instrument.v4",
+        "Place": "fangorn.mb.place.v4",
+        "Recording": "fangorn.mb.recording.v4",
+        "ReleaseGroup": "fangorn.mb.releasegroup.v4",
+        "Release": "fangorn.mb.release.v4",
+        "Work": "fangorn.mb.work.v4"
       },
       "edges": [
         {
           "rel": "hasTrack",
           "from": "Release",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "byArtist",
+          "from": "Recording",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "performance",
+          "from": "Recording",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "byArtist",
+          "from": "Release",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "instrument",
+          "from": "Artist",
           "to": "Recording",
           "min": 0
         },
@@ -379,38 +403,8 @@
         },
         {
           "rel": "byArtist",
-          "from": "Release",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "byArtist",
           "from": "ReleaseGroup",
           "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "byArtist",
-          "from": "Recording",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "instrument",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "performance",
-          "from": "Recording",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "producer",
-          "from": "Artist",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -426,6 +420,12 @@
           "min": 0
         },
         {
+          "rel": "producer",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "recorded at",
           "from": "Place",
           "to": "Recording",
@@ -438,19 +438,7 @@
           "min": 0
         },
         {
-          "rel": "mix",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "engineer",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "recording",
+          "rel": "conductor",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -462,19 +450,25 @@
           "min": 0
         },
         {
-          "rel": "instrument",
+          "rel": "mix",
           "from": "Artist",
-          "to": "Release",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "main performer",
+          "rel": "recording",
           "from": "Artist",
-          "to": "Event",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "arranger",
+          "rel": "engineer",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "performing orchestra",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -486,7 +480,31 @@
           "min": 0
         },
         {
-          "rel": "conductor",
+          "rel": "arranger",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "performer",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "instrument",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "parts",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "editor",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -498,14 +516,26 @@
           "min": 0
         },
         {
-          "rel": "performing orchestra",
+          "rel": "remixer",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "performer",
+          "rel": "main performer",
           "from": "Artist",
+          "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "recorded at",
+          "from": "Event",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "recorded in",
+          "from": "Area",
           "to": "Recording",
           "min": 0
         },
@@ -522,15 +552,15 @@
           "min": 0
         },
         {
-          "rel": "recorded at",
-          "from": "Event",
-          "to": "Recording",
-          "min": 0
-        },
-        {
           "rel": "mastering",
           "from": "Artist",
           "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "remix",
+          "from": "Recording",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -540,7 +570,19 @@
           "min": 0
         },
         {
-          "rel": "remixer",
+          "rel": "balance",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "sound",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "programming",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -549,18 +591,6 @@
           "rel": "held at",
           "from": "Event",
           "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "parts",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "editor",
-          "from": "Artist",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -576,15 +606,33 @@
           "min": 0
         },
         {
-          "rel": "recorded in",
-          "from": "Area",
+          "rel": "arranger",
+          "from": "Artist",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "mix-DJ",
+          "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "programming",
+          "rel": "is person",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "phonographic copyright",
           "from": "Artist",
           "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "orchestrator",
+          "from": "Artist",
+          "to": "Work",
           "min": 0
         },
         {
@@ -612,9 +660,15 @@
           "min": 0
         },
         {
-          "rel": "recorded at",
-          "from": "Place",
-          "to": "Release",
+          "rel": "orchestrator",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "other version",
+          "from": "Work",
+          "to": "Work",
           "min": 0
         },
         {
@@ -624,13 +678,19 @@
           "min": 0
         },
         {
+          "rel": "recorded at",
+          "from": "Place",
+          "to": "Release",
+          "min": 0
+        },
+        {
           "rel": "included in",
           "from": "ReleaseGroup",
           "to": "ReleaseGroup",
           "min": 0
         },
         {
-          "rel": "phonographic copyright",
+          "rel": "instrument arranger",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -648,6 +708,18 @@
           "min": 0
         },
         {
+          "rel": "karaoke",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "music video",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "recording",
           "from": "Artist",
           "to": "Release",
@@ -660,14 +732,20 @@
           "min": 0
         },
         {
-          "rel": "arranger",
+          "rel": "chorus master",
           "from": "Artist",
-          "to": "Work",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "sound",
-          "from": "Artist",
+          "rel": "edit",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "engineered at",
+          "from": "Place",
           "to": "Recording",
           "min": 0
         },
@@ -678,15 +756,21 @@
           "min": 0
         },
         {
-          "rel": "art direction",
+          "rel": "translator",
           "from": "Artist",
-          "to": "Release",
+          "to": "Work",
           "min": 0
         },
         {
-          "rel": "balance",
+          "rel": "arrangement",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "art direction",
           "from": "Artist",
-          "to": "Recording",
+          "to": "Release",
           "min": 0
         },
         {
@@ -696,9 +780,27 @@
           "min": 0
         },
         {
+          "rel": "teacher",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "compilation",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "illustration",
           "from": "Artist",
           "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "produced at",
+          "from": "Place",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -708,21 +810,21 @@
           "min": 0
         },
         {
-          "rel": "instrument arranger",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "remix",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
           "rel": "parts",
           "from": "Event",
           "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "librettist",
+          "from": "Artist",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "misc",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -732,19 +834,37 @@
           "min": 0
         },
         {
+          "rel": "samples material",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "based on",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "studied at",
+          "from": "Artist",
+          "to": "Place",
+          "min": 0
+        },
+        {
           "rel": "misc",
           "from": "Artist",
           "to": "Release",
           "min": 0
         },
         {
-          "rel": "mix-DJ",
-          "from": "Artist",
+          "rel": "DJ-mix",
+          "from": "Recording",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "orchestrator",
+          "rel": "instrument technician",
           "from": "Artist",
           "to": "Recording",
           "min": 0
@@ -762,147 +882,9 @@
           "min": 0
         },
         {
-          "rel": "engineered at",
-          "from": "Place",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "teacher",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "other version",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "writer",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "is person",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "performer",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "mix-DJ",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "produced at",
-          "from": "Place",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "orchestrator",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "studied at",
-          "from": "Artist",
-          "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "arrangement",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "music video",
+          "rel": "mashes up",
           "from": "Recording",
           "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "based on",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "arranger",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "printed in",
-          "from": "Area",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "compiler",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "translator",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "samples material",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "misc",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "mixed at",
-          "from": "Place",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "karaoke",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "video shot at",
-          "from": "Event",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "recorded at",
-          "from": "Event",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "guest performer",
-          "from": "Artist",
-          "to": "Event",
           "min": 0
         },
         {
@@ -918,6 +900,126 @@
           "min": 0
         },
         {
+          "rel": "writer",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "performer",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "concertmaster",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "video shot at",
+          "from": "Event",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "mix-DJ",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "video director",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "parent",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "audio",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "sibling",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "vocal arranger",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "arranger",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "video appearance",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "printed in",
+          "from": "Area",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "compiler",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "voice actor",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "mixed at",
+          "from": "Place",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "recorded at",
+          "from": "Event",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "guest performer",
+          "from": "Artist",
+          "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "married",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "collaboration",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
           "rel": "programming",
           "from": "Artist",
           "to": "Release",
@@ -930,21 +1032,9 @@
           "min": 0
         },
         {
-          "rel": "vocal arranger",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
           "rel": "available at",
           "from": "Event",
           "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "chorus master",
-          "from": "Artist",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -960,15 +1050,33 @@
           "min": 0
         },
         {
-          "rel": "parent",
-          "from": "Artist",
-          "to": "Artist",
+          "rel": "arranged in",
+          "from": "Area",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "medley",
+          "from": "Work",
+          "to": "Work",
           "min": 0
         },
         {
           "rel": "held in",
           "from": "Area",
           "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "founder",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "taught at",
+          "from": "Artist",
+          "to": "Place",
           "min": 0
         },
         {
@@ -984,25 +1092,25 @@
           "min": 0
         },
         {
-          "rel": "sibling",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "edit",
+          "rel": "instrumental",
           "from": "Recording",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "audio",
-          "from": "Artist",
+          "rel": "remixed at",
+          "from": "Place",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "librettist",
+          "rel": "conductor position",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "dedication",
           "from": "Artist",
           "to": "Work",
           "min": 0
@@ -1014,33 +1122,39 @@
           "min": 0
         },
         {
-          "rel": "concertmaster",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "collaboration",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
           "rel": "engineer position",
           "from": "Artist",
           "to": "Place",
           "min": 0
         },
         {
-          "rel": "taught at",
+          "rel": "audio director",
           "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "instrumental supporting musician",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "parts",
+          "from": "Place",
           "to": "Place",
           "min": 0
         },
         {
-          "rel": "video appearance",
+          "rel": "art direction",
           "from": "Artist",
           "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "instrument arranger",
+          "from": "Artist",
+          "to": "Work",
           "min": 0
         },
         {
@@ -1056,49 +1170,49 @@
           "min": 0
         },
         {
-          "rel": "parts",
-          "from": "Place",
-          "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "married",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "remixed at",
-          "from": "Place",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "instrument technician",
+          "rel": "field recordist",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "dedication",
+          "rel": "mixed in",
+          "from": "Area",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "publishing",
           "from": "Artist",
           "to": "Work",
           "min": 0
         },
         {
-          "rel": "conductor position",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "video director",
+          "rel": "samples from artist",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "voice actor",
+          "rel": "creative direction",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "revised by",
+          "from": "Artist",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "founder",
+          "from": "Artist",
+          "to": "Place",
+          "min": 0
+        },
+        {
+          "rel": "subgroup",
           "from": "Artist",
           "to": "Artist",
           "min": 0
@@ -1116,87 +1230,9 @@
           "min": 0
         },
         {
-          "rel": "instrumental supporting musician",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "founder",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
           "rel": "host",
           "from": "Artist",
           "to": "Event",
-          "min": 0
-        },
-        {
-          "rel": "DJ-mix",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "audio director",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "compilation",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "founder",
-          "from": "Artist",
-          "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "premiere",
-          "from": "Event",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "publishing",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "mixed in",
-          "from": "Area",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "glass mastered at",
-          "from": "Place",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "instrument arranger",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "sound",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "remixer",
-          "from": "Artist",
-          "to": "Release",
           "min": 0
         },
         {
@@ -1206,9 +1242,27 @@
           "min": 0
         },
         {
-          "rel": "performing orchestra",
+          "rel": "audio director",
           "from": "Artist",
           "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "premiere",
+          "from": "Event",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "produced in",
+          "from": "Area",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "artists and repertoire",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1218,9 +1272,39 @@
           "min": 0
         },
         {
-          "rel": "mashes up",
-          "from": "Recording",
-          "to": "Recording",
+          "rel": "glass mastered at",
+          "from": "Place",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "sound",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "tribute",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "musical quotation",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "remixer",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "performing orchestra",
+          "from": "Artist",
+          "to": "Release",
           "min": 0
         },
         {
@@ -1230,33 +1314,9 @@
           "min": 0
         },
         {
-          "rel": "orchestrator",
+          "rel": "supporting musician",
           "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "medley",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "samples from artist",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "conductor",
-          "from": "Artist",
-          "to": "Event",
-          "min": 0
-        },
-        {
-          "rel": "recorded in",
-          "from": "Area",
-          "to": "Release",
+          "to": "Artist",
           "min": 0
         },
         {
@@ -1266,9 +1326,51 @@
           "min": 0
         },
         {
-          "rel": "produced in",
+          "rel": "orchestrator",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "revision of",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "orchestration",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "composed at",
+          "from": "Place",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "conductor",
+          "from": "Artist",
+          "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "vocal supporting musician",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "premiere",
+          "from": "Artist",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "recorded in",
           "from": "Area",
-          "to": "Recording",
+          "to": "Release",
           "min": 0
         },
         {
@@ -1284,145 +1386,25 @@
           "min": 0
         },
         {
-          "rel": "lacquer cut at",
-          "from": "Place",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "lacquer cut",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "art direction",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "booking",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "musical quotation",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "orchestra",
-          "from": "Artist",
-          "to": "Event",
-          "min": 0
-        },
-        {
-          "rel": "creative direction",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "artists and repertoire",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "instrumental",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "field recordist",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "creative direction",
-          "from": "Artist",
-          "to": "ReleaseGroup",
-          "min": 0
-        },
-        {
-          "rel": "premiere",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "dedicated to",
-          "from": "Artist",
-          "to": "ReleaseGroup",
-          "min": 0
-        },
-        {
-          "rel": "revised by",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "audio director",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "written in",
-          "from": "Area",
-          "to": "Work",
-          "min": 0
-        },
-        {
           "rel": "mastering",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "audio",
+          "rel": "compiler",
           "from": "Artist",
-          "to": "Release",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "composed at",
-          "from": "Place",
+          "rel": "previous attribution",
+          "from": "Artist",
           "to": "Work",
           "min": 0
         },
         {
-          "rel": "replaced by",
-          "from": "Release",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "premiere",
-          "from": "Area",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "supporting musician",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "subgroup",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "manufactured at",
+          "rel": "lacquer cut at",
           "from": "Place",
           "to": "Release",
           "min": 0
@@ -1434,15 +1416,111 @@
           "min": 0
         },
         {
+          "rel": "lacquer cut",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "booking",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "artist rename",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "orchestra",
+          "from": "Artist",
+          "to": "Event",
+          "min": 0
+        },
+        {
+          "rel": "premiere",
+          "from": "Area",
+          "to": "Work",
+          "min": 0
+        },
+        {
           "rel": "engineered in",
           "from": "Area",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "vocal supporting musician",
+          "rel": "involved with",
           "from": "Artist",
           "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "creative direction",
+          "from": "Artist",
+          "to": "ReleaseGroup",
+          "min": 0
+        },
+        {
+          "rel": "dedicated to",
+          "from": "Artist",
+          "to": "ReleaseGroup",
+          "min": 0
+        },
+        {
+          "rel": "video shot in",
+          "from": "Area",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "arranged at",
+          "from": "Place",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "written in",
+          "from": "Area",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "illustration",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "audio",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "replaced by",
+          "from": "Release",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "manufactured at",
+          "from": "Place",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "artistic director",
+          "from": "Artist",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "animation",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1458,27 +1536,9 @@
           "min": 0
         },
         {
-          "rel": "involved with",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "arranged at",
-          "from": "Place",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "orchestration",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "sound effects",
-          "from": "Artist",
-          "to": "Release",
+          "rel": "rescheduled as",
+          "from": "Event",
+          "to": "Event",
           "min": 0
         },
         {
@@ -1488,15 +1548,21 @@
           "min": 0
         },
         {
-          "rel": "previous attribution",
+          "rel": "sound effects",
           "from": "Artist",
-          "to": "Work",
+          "to": "Release",
           "min": 0
         },
         {
-          "rel": "video shot in",
-          "from": "Area",
+          "rel": "artwork",
+          "from": "Artist",
           "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "vocal arranger",
+          "from": "Artist",
+          "to": "Work",
           "min": 0
         },
         {
@@ -1506,26 +1572,26 @@
           "min": 0
         },
         {
+          "rel": "sound effects",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "cover",
           "from": "ReleaseGroup",
           "to": "ReleaseGroup",
           "min": 0
         },
         {
-          "rel": "rescheduled as",
-          "from": "Event",
-          "to": "Event",
-          "min": 0
-        },
-        {
-          "rel": "samples from artist",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "revision of",
+          "rel": "lyrical quotation",
           "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "misc",
+          "from": "Artist",
           "to": "Work",
           "min": 0
         },
@@ -1536,9 +1602,27 @@
           "min": 0
         },
         {
+          "rel": "samples from artist",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "organist",
+          "from": "Artist",
+          "to": "Place",
+          "min": 0
+        },
+        {
           "rel": "edited at",
           "from": "Place",
           "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "named after artist",
+          "from": "Artist",
+          "to": "Artist",
           "min": 0
         },
         {
@@ -1554,9 +1638,21 @@
           "min": 0
         },
         {
+          "rel": "commentary",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "live performance",
           "from": "ReleaseGroup",
           "to": "ReleaseGroup",
+          "min": 0
+        },
+        {
+          "rel": "a cappella",
+          "from": "Recording",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1572,13 +1668,13 @@
           "min": 0
         },
         {
-          "rel": "tribute",
+          "rel": "primary concert venue",
           "from": "Artist",
-          "to": "Artist",
+          "to": "Place",
           "min": 0
         },
         {
-          "rel": "organist",
+          "rel": "associated with",
           "from": "Artist",
           "to": "Place",
           "min": 0
@@ -1590,27 +1686,27 @@
           "min": 0
         },
         {
-          "rel": "translator",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
           "rel": "supporting DJ",
           "from": "Artist",
           "to": "Event",
           "min": 0
         },
         {
-          "rel": "primary concert venue",
+          "rel": "translator",
           "from": "Artist",
-          "to": "Place",
+          "to": "Release",
           "min": 0
         },
         {
-          "rel": "vocal arranger",
+          "rel": "reconstructed by",
           "from": "Artist",
           "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "edited in",
+          "from": "Area",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1632,33 +1728,15 @@
           "min": 0
         },
         {
-          "rel": "artist rename",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "lyrical quotation",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
           "rel": "concertmaster",
           "from": "Artist",
           "to": "Release",
           "min": 0
         },
         {
-          "rel": "misc",
+          "rel": "production coordinator",
           "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "artistic director",
-          "from": "Artist",
-          "to": "Artist",
+          "to": "Release",
           "min": 0
         },
         {
@@ -1674,13 +1752,7 @@
           "min": 0
         },
         {
-          "rel": "production coordinator",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "associated with",
+          "rel": "composer-in-residence",
           "from": "Artist",
           "to": "Place",
           "min": 0
@@ -1692,33 +1764,9 @@
           "min": 0
         },
         {
-          "rel": "mastered in",
-          "from": "Area",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "transfer",
-          "from": "Artist",
-          "to": "Release",
-          "min": 0
-        },
-        {
           "rel": "relocated to",
           "from": "Place",
           "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "sound effects",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "artwork",
-          "from": "Artist",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -1728,21 +1776,51 @@
           "min": 0
         },
         {
-          "rel": "compiler",
+          "rel": "first track release",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "transfer",
+          "from": "Artist",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "mastered in",
+          "from": "Area",
+          "to": "Release",
+          "min": 0
+        },
+        {
+          "rel": "design",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "named after artist",
+          "rel": "adapter",
           "from": "Artist",
-          "to": "Artist",
+          "to": "Work",
           "min": 0
         },
         {
-          "rel": "composer-in-residence",
-          "from": "Artist",
-          "to": "Place",
+          "rel": "remaster",
+          "from": "Recording",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "included works",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "lyrics written in",
+          "from": "Area",
+          "to": "Work",
           "min": 0
         },
         {
@@ -1752,32 +1830,14 @@
           "min": 0
         },
         {
-          "rel": "illustration",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "arranged in",
-          "from": "Area",
-          "to": "Recording",
-          "min": 0
-        },
-        {
           "rel": "remixed at",
           "from": "Place",
           "to": "Release",
           "min": 0
         },
         {
-          "rel": "anthem",
-          "from": "Area",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "commentary",
-          "from": "Recording",
+          "rel": "design/illustration",
+          "from": "Artist",
           "to": "Recording",
           "min": 0
         },
@@ -1788,15 +1848,21 @@
           "min": 0
         },
         {
-          "rel": "produced in",
-          "from": "Area",
-          "to": "Release",
+          "rel": "graphic design",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "lyrics written in",
+          "rel": "anthem",
           "from": "Area",
           "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "produced in",
+          "from": "Area",
+          "to": "Release",
           "min": 0
         },
         {
@@ -1812,21 +1878,9 @@
           "min": 0
         },
         {
-          "rel": "adapter",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
           "rel": "re\u2010recording",
           "from": "ReleaseGroup",
           "to": "ReleaseGroup",
-          "min": 0
-        },
-        {
-          "rel": "edited in",
-          "from": "Area",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -1836,15 +1890,21 @@
           "min": 0
         },
         {
-          "rel": "animation",
+          "rel": "video copyright",
           "from": "Artist",
           "to": "Recording",
           "min": 0
         },
         {
-          "rel": "reconstructed by",
+          "rel": "choreographer",
           "from": "Artist",
-          "to": "Work",
+          "to": "Recording",
+          "min": 0
+        },
+        {
+          "rel": "cinematographer",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1854,21 +1914,21 @@
           "min": 0
         },
         {
-          "rel": "included works",
-          "from": "Work",
+          "rel": "named after artist",
+          "from": "Artist",
           "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "composer-in-residence",
+          "from": "Artist",
+          "to": "Artist",
           "min": 0
         },
         {
           "rel": "mixed in",
           "from": "Area",
           "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "a cappella",
-          "from": "Recording",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -1890,27 +1950,39 @@
           "min": 0
         },
         {
+          "rel": "named after work",
+          "from": "Artist",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "school director at",
+          "from": "Artist",
+          "to": "Place",
+          "min": 0
+        },
+        {
           "rel": "launch event",
           "from": "Event",
           "to": "Release",
           "min": 0
         },
         {
-          "rel": "video copyright",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "named after artist",
-          "from": "Artist",
+          "rel": "adaptation",
+          "from": "Work",
           "to": "Work",
           "min": 0
         },
         {
-          "rel": "composer-in-residence",
-          "from": "Artist",
-          "to": "Artist",
+          "rel": "named after work",
+          "from": "Work",
+          "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "commissioned",
+          "from": "Place",
+          "to": "Work",
           "min": 0
         },
         {
@@ -1926,45 +1998,15 @@
           "min": 0
         },
         {
-          "rel": "named after work",
-          "from": "Work",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "design",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "named after work",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "design/illustration",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "remaster",
-          "from": "Recording",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "school director at",
-          "from": "Artist",
-          "to": "Place",
-          "min": 0
-        },
-        {
-          "rel": "commissioned",
+          "rel": "lyrics written at",
           "from": "Place",
           "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "legal representation",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -1980,9 +2022,9 @@
           "min": 0
         },
         {
-          "rel": "first track release",
-          "from": "Recording",
-          "to": "Recording",
+          "rel": "scriptwriter",
+          "from": "Artist",
+          "to": "Work",
           "min": 0
         },
         {
@@ -2022,6 +2064,12 @@
           "min": 0
         },
         {
+          "rel": "remixed in",
+          "from": "Area",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "named after work",
           "from": "ReleaseGroup",
           "to": "Work",
@@ -2034,27 +2082,15 @@
           "min": 0
         },
         {
-          "rel": "related to",
-          "from": "Instrument",
-          "to": "Instrument",
-          "min": 0
-        },
-        {
-          "rel": "lyrics written at",
-          "from": "Place",
-          "to": "Work",
-          "min": 0
-        },
-        {
           "rel": "teacher",
           "from": "Artist",
           "to": "Event",
           "min": 0
         },
         {
-          "rel": "cinematographer",
-          "from": "Artist",
-          "to": "Recording",
+          "rel": "related to",
+          "from": "Instrument",
+          "to": "Instrument",
           "min": 0
         },
         {
@@ -2064,33 +2100,15 @@
           "min": 0
         },
         {
+          "rel": "dedication",
+          "from": "Artist",
+          "to": "Recording",
+          "min": 0
+        },
+        {
           "rel": "invented",
           "from": "Artist",
           "to": "Instrument",
-          "min": 0
-        },
-        {
-          "rel": "graphic design",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "scriptwriter",
-          "from": "Artist",
-          "to": "Work",
-          "min": 0
-        },
-        {
-          "rel": "legal representation",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "remixed in",
-          "from": "Area",
-          "to": "Recording",
           "min": 0
         },
         {
@@ -2100,15 +2118,15 @@
           "min": 0
         },
         {
-          "rel": "engineer",
+          "rel": "booking",
           "from": "Artist",
-          "to": "Event",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "adaptation",
-          "from": "Work",
-          "to": "Work",
+          "rel": "engineer",
+          "from": "Artist",
+          "to": "Event",
           "min": 0
         },
         {
@@ -2118,9 +2136,9 @@
           "min": 0
         },
         {
-          "rel": "choreographer",
-          "from": "Artist",
-          "to": "Recording",
+          "rel": "arranged at",
+          "from": "Place",
+          "to": "Work",
           "min": 0
         },
         {
@@ -2136,39 +2154,21 @@
           "min": 0
         },
         {
-          "rel": "edited in",
-          "from": "Area",
-          "to": "Release",
-          "min": 0
-        },
-        {
           "rel": "artist-in-residence",
           "from": "Artist",
           "to": "Place",
           "min": 0
         },
         {
-          "rel": "dedication",
-          "from": "Artist",
-          "to": "Recording",
-          "min": 0
-        },
-        {
-          "rel": "booking",
-          "from": "Artist",
-          "to": "Recording",
+          "rel": "edited in",
+          "from": "Area",
+          "to": "Release",
           "min": 0
         },
         {
           "rel": "children",
           "from": "Instrument",
           "to": "Instrument",
-          "min": 0
-        },
-        {
-          "rel": "arranged at",
-          "from": "Place",
-          "to": "Work",
           "min": 0
         },
         {
@@ -2181,6 +2181,12 @@
           "rel": "dedication",
           "from": "Place",
           "to": "Work",
+          "min": 0
+        },
+        {
+          "rel": "photography",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
@@ -2202,15 +2208,15 @@
           "min": 0
         },
         {
-          "rel": "transferred in",
-          "from": "Area",
-          "to": "Release",
+          "rel": "publishing",
+          "from": "Artist",
+          "to": "Recording",
           "min": 0
         },
         {
-          "rel": "photography",
-          "from": "Artist",
-          "to": "Recording",
+          "rel": "transferred in",
+          "from": "Area",
+          "to": "Release",
           "min": 0
         },
         {
@@ -2256,20 +2262,20 @@
           "min": 0
         },
         {
-          "rel": "publishing",
+          "rel": "artist-in-residence",
           "from": "Artist",
-          "to": "Recording",
+          "to": "Artist",
+          "min": 0
+        },
+        {
+          "rel": "revised at",
+          "from": "Place",
+          "to": "Work",
           "min": 0
         },
         {
           "rel": "lacquer cut in",
           "from": "Area",
-          "to": "Release",
-          "min": 0
-        },
-        {
-          "rel": "lyrics written at",
-          "from": "Place",
           "to": "Release",
           "min": 0
         },
@@ -2280,15 +2286,9 @@
           "min": 0
         },
         {
-          "rel": "artist-in-residence",
-          "from": "Artist",
-          "to": "Artist",
-          "min": 0
-        },
-        {
-          "rel": "revised at",
+          "rel": "lyrics written at",
           "from": "Place",
-          "to": "Work",
+          "to": "Release",
           "min": 0
         },
         {
@@ -2304,9 +2304,9 @@
           "min": 0
         },
         {
-          "rel": "programmed at",
-          "from": "Place",
-          "to": "Recording",
+          "rel": "libretto written in",
+          "from": "Area",
+          "to": "Work",
           "min": 0
         },
         {
@@ -2316,9 +2316,9 @@
           "min": 0
         },
         {
-          "rel": "libretto written in",
-          "from": "Area",
-          "to": "Work",
+          "rel": "programmed at",
+          "from": "Place",
+          "to": "Recording",
           "min": 0
         }
       ]

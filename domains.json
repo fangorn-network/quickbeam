@@ -2,11 +2,24 @@
   "domains": {
     "music": {
       "description": "MusicBrainz creative core — recordings & artists",
-      "filter": { "entityType": ["Recording", "Artist"] }
+      "filter": { "entityType": ["Recording", "Artist"] },
+      "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v4.json",
+      "presentation": {
+        "types": {
+          "Recording": { "icon": "≋", "accent": "#7aa2f7", "singular": "Recording", "plural": "Recordings" },
+          "Artist": { "icon": "🎤", "accent": "#f7768e", "singular": "Artist", "plural": "Artists" }
+        },
+        "fieldLabels": { "byArtist": "By", "durationMs": "Length", "mbid": "MusicBrainz ID" },
+        "externalUrl": {
+          "Recording": "https://musicbrainz.org/recording/{mbid}",
+          "Artist": "https://musicbrainz.org/artist/{mbid}"
+        }
+      }
     },
     "venues": {
       "description": "Places & events",
-      "filter": { "entityType": ["Place", "Event"] }
+      "filter": { "entityType": ["Place", "Event"] },
+      "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v4.json"
     }
   }
 }

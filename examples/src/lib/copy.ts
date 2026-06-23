@@ -1,8 +1,8 @@
 // UI microcopy, from LANGUAGE.md §4.
 export const COPY = {
   search: {
-    placeholder: 'Search artists, albums, recordings, places…',
-    subtext: 'Searches by name and meaning — try "jazz piano trios from Chicago"',
+    placeholder: 'Search by name or keyword…',
+    subtext: 'Keyword search over names, artists, tags & places — open an entry for meaning-based “similar” items',
     keyboardHint: 'Press / to focus',
     clearAria: 'Clear search',
   },

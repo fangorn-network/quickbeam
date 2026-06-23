@@ -3,9 +3,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import Breadcrumb from '../components/Breadcrumb';
 import ResultCard from '../components/ResultCard';
 import SkeletonBlock from '../components/SkeletonBlock';
-import { ENTITY_TYPES, isEntityType } from '../lib/types';
 import type { EntitySummary, EntityType, PageRef } from '../lib/types';
-import { ENTITY_META } from '../lib/entityMeta';
+import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import { scroll, search, toSummary, typeClause, QdrantError } from '../lib/qdrant';
 import type { Filter } from '../lib/qdrant';
@@ -21,10 +20,11 @@ const PAGE_SIZE = 20;
 
 export default function Results({ onVisit, browseType }: Props) {
   const navigate = useNavigate();
+  const domain = useDomain();
   const [params] = useSearchParams();
   const q = params.get('q') ?? '';
   const typeParam = browseType ?? params.get('type') ?? '';
-  const activeType: EntityType | '' = isEntityType(typeParam) ? typeParam : '';
+  const activeType: EntityType | '' = domain.hasType(typeParam) ? typeParam : '';
   const isBrowse = !!browseType;
 
   const [items, setItems] = useState<EntitySummary[]>([]);
@@ -95,11 +95,11 @@ export default function Results({ onVisit, browseType }: Props) {
   }
 
   const crumbs = isBrowse
-    ? [{ label: 'Browse', href: '/' }, { label: activeType ? ENTITY_META[activeType].plural : 'All' }]
+    ? [{ label: 'Browse', href: '/' }, { label: activeType ? domain.pluralOf(activeType) : 'All' }]
     : [{ label: 'Browse', href: '/' }, { label: `Search results for "${q}"` }];
 
   const headline = isBrowse
-    ? `${activeType ? ENTITY_META[activeType].plural : 'All entries'}`
+    ? `${activeType ? domain.pluralOf(activeType) : 'All entries'}`
     : `Query: "${q}"`;
 
   return (
@@ -116,14 +116,14 @@ export default function Results({ onVisit, browseType }: Props) {
           >
             {COPY.filter.allTypes}
           </button>
-          {ENTITY_TYPES.map((t) => (
+          {domain.entityTypes.map((t) => (
             <button
               key={t}
               type="button"
               className={`${styles.filter} ${activeType === t ? styles.filterActive : ''}`}
               onClick={() => switchType(t)}
             >
-              {ENTITY_META[t].plural}
+              {domain.pluralOf(t)}
             </button>
           ))}
         </aside>
@@ -131,7 +131,7 @@ export default function Results({ onVisit, browseType }: Props) {
         <div className={styles.results}>
           <div className={styles.summary}>
             {headline}
-            {activeType && !isBrowse && <> · Type: {ENTITY_META[activeType].plural}</>}
+            {activeType && !isBrowse && <> · Type: {domain.pluralOf(activeType)}</>}
             {!loading && <> · {items.length}{offset ? '+' : ''} results</>}
           </div>
 

@@ -30,6 +30,11 @@ import time
 from qdrant_client import QdrantClient
 from qdrant_client import models as qmodels
 
+from quickbeam.roles import infer_roles
+
+# How many baked records to sample for per-domain role inference.
+ROLE_SAMPLE_SIZE = 500
+
 
 # ---------------------------------------------------------------------------
 # SHARED — Qdrant client (mirrors server.py's cloud/local selection)
@@ -91,12 +96,42 @@ def _bake_args():
                    help="Bake only this domain (default: every domain in --config).")
     p.add_argument("--shard-size", type=int, default=50000,
                    help="Points per shard file.")
+    p.add_argument("--limit", type=int, default=0,
+                   help="Cap total points baked per domain (0 = all). Use a small value "
+                        "to bake a lightweight snapshot for in-browser clients.")
     p.add_argument("--scroll-batch", type=int, default=2000,
                    help="Qdrant scroll page size.")
     p.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5",
                    help="Recorded in the manifest (Qdrant doesn't store the model name).")
     _add_qdrant_args(p)
     return p.parse_args()
+
+
+def _load_bundle_schema(path):
+    """Load a Fangorn bundle schema JSON and return its {nodes, edges} block, or
+    None. Baking this into the manifest lets an offline client render typed
+    connections (the relationship vocabulary) without the live schema registry.
+
+    Accepts either a full schema doc ({name, kind, bundle:{nodes,edges}}) or a
+    bare {nodes, edges} block."""
+    if not path:
+        return None
+    if not os.path.exists(path):
+        print(f"[bake]   warning: bundle_schema not found: {path!r} (skipping)")
+        return None
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except Exception as e:  # noqa: BLE001
+        print(f"[bake]   warning: could not read bundle_schema {path!r}: {e}")
+        return None
+    b = data.get("bundle", data)
+    out = {}
+    if isinstance(b.get("nodes"), (dict, list)):
+        out["nodes"] = b["nodes"]
+    if isinstance(b.get("edges"), list):
+        out["edges"] = b["edges"]
+    return out or None
 
 
 def _shard_row(point) -> dict:
@@ -113,7 +148,7 @@ def _shard_row(point) -> dict:
 
 
 def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_batch,
-                 model, dim, distance):
+                 model, dim, distance, limit=0):
     """Scroll the filtered collection into rolling gzipped NDJSON shards under a
     temp dir, then atomically swap it into place. Returns the catalog entry."""
     q_filter = _build_filter(spec.get("filter"))
@@ -128,6 +163,11 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
     shard_idx = -1
     fh = None
     count_in_shard = 0
+    # Per-domain self-description, accumulated over the baked points (free — we
+    # already scroll every point). `role_sample` feeds role inference; `type_counts`
+    # becomes the entityType vocabulary the client uses for its type-browse grid.
+    role_sample: list[dict] = []
+    type_counts: dict[str, int] = {}
 
     def _close_shard():
         nonlocal fh, total_bytes
@@ -173,11 +213,26 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
             fh.write(line)
             count_in_shard += 1
             total += 1
+            # Accumulate self-description from the baked points only.
+            et = (pt.payload or {}).get("entityType")
+            if et:
+                type_counts[et] = type_counts.get(et, 0) + 1
+            if len(role_sample) < ROLE_SAMPLE_SIZE:
+                role_sample.append(row["fields"])
+            if limit and total >= limit:
+                break
         if total and (total % 100000 < scroll_batch):
             print(f"[bake]   {name}: {total} points...", flush=True)
-        if offset is None:
+        if offset is None or (limit and total >= limit):
             break
     _close_shard()
+
+    # Self-description so a pulled domain is renderable offline with no live
+    # schema registry: inferred semantic roles (same inference the server does at
+    # runtime, but over this domain's own sample) + the entityType vocabulary.
+    role_map = infer_roles(role_sample)
+    entity_types = [{"type": t, "count": c}
+                    for t, c in sorted(type_counts.items(), key=lambda kv: -kv[1])]
 
     manifest = {
         "name": name,
@@ -188,8 +243,20 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         "distance": distance,
         "filter": spec.get("filter", {}),
         "created_at": int(time.time()),
+        "role_map": role_map,
+        "entity_types": entity_types,
         "shards": shards,
     }
+    # Optional: relationship/type vocabulary from a bundle schema JSON.
+    bundle = _load_bundle_schema(spec.get("bundle_schema"))
+    if bundle is not None:
+        manifest["bundle"] = bundle
+    # Optional: presentation overlay (icons / accent colors / label & external-URL
+    # overrides). Passed through verbatim — the client falls back to inferred
+    # defaults when absent.
+    if spec.get("presentation"):
+        manifest["presentation"] = spec["presentation"]
+
     with open(os.path.join(tmp_dir, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
 
@@ -197,8 +264,10 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
     os.replace(tmp_dir, out_dir)
+    type_names = [e["type"] for e in entity_types]
     print(f"[bake] domain {name!r}: {total} points in {len(shards)} shard(s), "
-          f"{total_bytes / 1e6:.1f} MB.")
+          f"{total_bytes / 1e6:.1f} MB; types={type_names}; "
+          f"title<-{role_map.get('title')!r} tags<-{role_map.get('tags')}")
     return {
         "name": name,
         "description": spec.get("description", ""),
@@ -206,6 +275,7 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         "dim": dim,
         "bytes": total_bytes,
         "shard_count": len(shards),
+        "entity_types": type_names,
         "manifest": f"{name}/manifest.json",
     }
 
@@ -250,7 +320,7 @@ def bake_main():
             qdrant, args.collection, name, spec,
             os.path.join(args.cdn_dir, name),
             args.shard_size, args.scroll_batch,
-            args.embedding_model, dim, distance,
+            args.embedding_model, dim, distance, limit=args.limit,
         )
         catalog[name] = entry
 

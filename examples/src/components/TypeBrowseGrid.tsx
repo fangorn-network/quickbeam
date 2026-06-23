@@ -1,5 +1,4 @@
-import { ENTITY_TYPES } from '../lib/types';
-import { ENTITY_META, accentColor } from '../lib/entityMeta';
+import { useDomain } from '../lib/domainContext';
 import type { EntityType } from '../lib/types';
 import styles from './TypeBrowseGrid.module.css';
 
@@ -9,17 +8,18 @@ interface Props {
 }
 
 export default function TypeBrowseGrid({ typeCounts, onTypeSelect }: Props) {
+  const domain = useDomain();
   return (
     <div className={styles.grid}>
-      {ENTITY_TYPES.map((t) => {
-        const meta = ENTITY_META[t];
+      {domain.entityTypes.map((t) => {
+        const meta = domain.typeMeta(t);
         const count = typeCounts[t];
         return (
           <button
             key={t}
             type="button"
             className={styles.tile}
-            style={{ '--accent': accentColor(t) } as React.CSSProperties}
+            style={{ '--accent': meta.accent } as React.CSSProperties}
             onClick={() => onTypeSelect(t)}
           >
             <span className={styles.icon}>{meta.icon}</span>

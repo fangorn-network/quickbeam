@@ -1,41 +1,22 @@
-// Core domain types for the schema browser.
+// Core domain types for the schema browser. Entity types are no longer a fixed
+// enum — they are discovered per-domain (see lib/domain.ts), so `EntityType` is just
+// a string alias kept for readability at call sites.
 
-export const ENTITY_TYPES = [
-  'Artist',
-  'Recording',
-  'Release',
-  'ReleaseGroup',
-  'Work',
-  'Place',
-  'Event',
-  'Area',
-  'Instrument',
-] as const;
+export type EntityType = string;
 
-export type EntityType = (typeof ENTITY_TYPES)[number];
-
-export function isEntityType(v: string): v is EntityType {
-  return (ENTITY_TYPES as readonly string[]).includes(v);
-}
-
-// A single Qdrant point payload. fields is loosely typed because the set
-// of fields varies per entity type; scalar fields are strings/numbers/bools,
-// and projection fields are arrays.
+// A single Qdrant point payload. `fields` is loosely typed because the set of fields
+// varies per entity type and per domain; scalar fields are strings/numbers/bools and
+// projection fields are arrays.
 export interface EntityFields {
   title?: string;
   text?: string;
   mbid?: string;
-  tags?: string;
-  disambiguation?: string;
-  byArtist?: string;
-  area?: string;
-  rating?: number;
   [key: string]: string | number | boolean | unknown[] | undefined;
 }
 
 export interface EntityPayload {
-  id?: string; // mbid uuid (NOT the qdrant point id)
-  entityType?: EntityType | string;
+  id?: string; // stable record id (e.g. mbid) — NOT the qdrant point id
+  entityType?: EntityType;
   owner?: string;
   meta?: { manifestCid?: string; [k: string]: unknown };
   fields?: EntityFields;
@@ -53,7 +34,7 @@ export interface QdrantPoint {
 // Flattened summary used by cards, rails, palette.
 export interface EntitySummary {
   pointId: string;
-  entityType: EntityType | string;
+  entityType: EntityType;
   title: string;
   mbid?: string;
   fields: EntityFields;
@@ -64,35 +45,8 @@ export interface EntitySummary {
 export interface PageRef {
   kind: 'entity' | 'search' | 'browse';
   pointId?: string;
-  entityType?: EntityType | string;
+  entityType?: EntityType;
   label: string;
   query?: string;
   href: string;
-}
-
-// ---- Schema JSON shapes ----
-export interface FieldSchemaDef {
-  '@type'?: string;
-  [k: string]: unknown;
-}
-
-export interface TypeSchema {
-  name: string;
-  definition: Record<string, FieldSchemaDef>;
-}
-
-export interface EdgeDef {
-  rel: string;
-  from: string;
-  to: string;
-  min?: number;
-}
-
-export interface CreativeCoreBundle {
-  name: string;
-  kind: string;
-  bundle: {
-    nodes: Record<string, string>;
-    edges: EdgeDef[];
-  };
 }

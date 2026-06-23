@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ENTITY_TYPES } from '../lib/types';
-import type { EntityType, PageRef } from '../lib/types';
-import { ENTITY_META } from '../lib/entityMeta';
+import type { PageRef } from '../lib/types';
+import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import { search, toSummary } from '../lib/qdrant';
 import { browseHref, entityHref, entityPageRef } from '../lib/nav';
-import { secondaryLine } from '../lib/summary';
 import EntityBadge from './EntityBadge';
 import styles from './CommandPalette.module.css';
 
@@ -29,6 +27,7 @@ interface Item {
 
 export default function CommandPalette({ open, onClose, recent, onVisit }: Props) {
   const navigate = useNavigate();
+  const domain = useDomain();
   const [q, setQ] = useState('');
   const [results, setResults] = useState<Item[]>([]);
   const [cursor, setCursor] = useState(0);
@@ -60,7 +59,7 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
               group: COPY.cmdk.groupResults,
               badge: s.entityType,
               label: s.title,
-              secondary: secondaryLine(s),
+              secondary: domain.secondaryLine(s),
               href: entityHref(s.pointId),
               page: entityPageRef(s),
             };
@@ -71,20 +70,20 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
       }
     }, 200);
     return () => clearTimeout(handle);
-  }, [q, open]);
+  }, [q, open, domain]);
 
   const typeItems: Item[] = useMemo(() => {
     const lc = q.trim().toLowerCase();
-    return ENTITY_TYPES.filter(
-      (t) => !lc || ENTITY_META[t].plural.toLowerCase().includes(lc),
-    ).map((t: EntityType) => ({
+    return domain.entityTypes.filter(
+      (t) => !lc || domain.pluralOf(t).toLowerCase().includes(lc),
+    ).map((t) => ({
       key: `t-${t}`,
       group: COPY.cmdk.groupTypes,
       badge: t,
-      label: `Browse ${ENTITY_META[t].plural}`,
+      label: `Browse ${domain.pluralOf(t)}`,
       href: browseHref(t),
     }));
-  }, [q]);
+  }, [q, domain]);
 
   const recentItems: Item[] = useMemo(
     () =>

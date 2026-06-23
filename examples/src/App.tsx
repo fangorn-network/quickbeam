@@ -5,7 +5,7 @@ import LeftRail from './components/LeftRail';
 import CommandPalette from './components/CommandPalette';
 import { useBackStack, pushPage } from './hooks/useBackStack';
 import { useTypeCounts } from './hooks/useTypeCounts';
-import { isEntityType } from './lib/types';
+import { useDomain } from './lib/domainContext';
 import type { EntityType, PageRef } from './lib/types';
 import { browseHref } from './lib/nav';
 import Landing from './pages/Landing';
@@ -13,26 +13,23 @@ import EntityPage from './pages/EntityPage';
 import Results from './pages/Results';
 import styles from './App.module.css';
 
-function activeTypeFromPath(pathname: string, search: string): EntityType | null {
+// The raw type token from the path/query, if any (validated against the domain below).
+function rawTypeFromPath(pathname: string, search: string): string | null {
   const browseMatch = pathname.match(/^\/browse\/([^/]+)/);
-  if (browseMatch) {
-    const t = decodeURIComponent(browseMatch[1]);
-    if (isEntityType(t)) return t;
-  }
-  const params = new URLSearchParams(search);
-  const t = params.get('type');
-  if (t && isEntityType(t)) return t;
-  return null;
+  if (browseMatch) return decodeURIComponent(browseMatch[1]);
+  return new URLSearchParams(search).get('type');
 }
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const domain = useDomain();
   const { recent, pop, canGoBack } = useBackStack();
   const { counts, connectionError } = useTypeCounts();
   const [cmdkOpen, setCmdkOpen] = useState(false);
 
-  const activeType = activeTypeFromPath(location.pathname, location.search);
+  const rawType = rawTypeFromPath(location.pathname, location.search);
+  const activeType: EntityType | null = rawType && domain.hasType(rawType) ? rawType : null;
 
   // Global Cmd-K / Ctrl-K.
   useEffect(() => {

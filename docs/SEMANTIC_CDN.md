@@ -65,7 +65,13 @@ Supported filter keys: `entityType` (list) and `owner` (list); each is a Qdrant
   "domains": {
     "music": {
       "description": "MusicBrainz creative core — recordings & artists",
-      "filter": { "entityType": ["Recording", "Artist"] }
+      "filter": { "entityType": ["Recording", "Artist"] },
+      "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v3.json",
+      "presentation": {
+        "types": { "Artist": { "icon": "🎤", "accent": "#f7768e" } },
+        "fieldLabels": { "byArtist": "By", "durationMs": "Length" },
+        "externalUrl": { "Artist": "https://musicbrainz.org/artist/{mbid}" }
+      }
     },
     "venues": {
       "description": "Places & events",
@@ -74,6 +80,23 @@ Supported filter keys: `entityType` (list) and `owner` (list); each is a Qdrant
   }
 }
 ```
+
+Two optional, per-domain keys make a baked domain **self-describing for offline,
+schema-agnostic clients** (so the renderer needs no per-domain code):
+
+- **`bundle_schema`** — path to a Fangorn bundle schema JSON (or a bare
+  `{nodes, edges}` block). Its type + relationship vocabulary is copied into the
+  manifest's `bundle` field so a client can render typed Connections without the live
+  schema registry. Omit it and `bundle` is simply absent.
+- **`presentation`** — an optional overlay (icons / accent colors / `fieldLabels` /
+  `externalUrl` templates) copied verbatim into the manifest. It is pure polish: with
+  no overlay the client falls back to inferred labels + generic visuals.
+
+Regardless of these, every manifest also gets an inferred **`role_map`**
+(title/subtitle/tags/temporal/spatial/… — the same inference [`server.py`] does at
+runtime, but over this domain's own sample) and an **`entity_types`** vocabulary with
+per-type counts. Together these let a pulled domain drive a generic browser with zero
+hardcoding.
 
 Domains can overlap, slice by publisher (`"owner": ["0x…"]`), or mirror your
 [root profiles](../quickbeam/embeddings.py) (track / artist / place / event …). The
@@ -98,9 +121,10 @@ Output layout:
 
 ```
 cdn/
-  catalog.json                 # [{name, description, count, dim, bytes, shard_count}]
+  catalog.json                 # [{name, description, count, dim, bytes, shard_count, entity_types}]
   music/
-    manifest.json              # {name, count, dim, model, distance, filter, shards:[{file,count,bytes,sha256}]}
+    manifest.json              # {name, count, dim, model, distance, filter, role_map, entity_types,
+                               #  shards:[{file,count,bytes,sha256}], bundle?, presentation?}
     shard-0000.ndjson.gz       # gzipped NDJSON, /bundle/export row shape
     shard-0001.ndjson.gz
   venues/
@@ -128,6 +152,7 @@ Useful flags:
 | `--collection` | `fangorn` | Source Qdrant collection |
 | `--domain NAME` | all | Bake just one domain (others' catalog entries preserved) |
 | `--shard-size N` | 50000 | Points per shard — smaller = more parallel/resumable downloads |
+| `--limit N` | 0 | Cap total points baked per domain (0 = all). Bake a small, browser-friendly snapshot |
 | `--scroll-batch N` | 2000 | Qdrant scroll page size |
 | `--qdrant-url`/`-api-key` | — | Bake from Qdrant Cloud instead of local |
 

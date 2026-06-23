@@ -1,14 +1,15 @@
 // Loads per-type counts once (with light caching) and tracks Qdrant reachability.
+// The set of types comes from the active Domain, not a hardcoded list.
 import { useEffect, useState } from 'react';
-import { ENTITY_TYPES } from '../lib/types';
-import type { EntityType } from '../lib/types';
 import { countByType, QdrantError } from '../lib/qdrant';
+import { useDomain } from '../lib/domainContext';
 
-type Counts = Partial<Record<EntityType, number | null>>;
+type Counts = Record<string, number | null>;
 
 let cache: Counts | null = null;
 
 export function useTypeCounts() {
+  const domain = useDomain();
   const [counts, setCounts] = useState<Counts>(cache ?? {});
   const [connectionError, setConnectionError] = useState(false);
 
@@ -19,7 +20,7 @@ export function useTypeCounts() {
       const next: Counts = {};
       let sawNetworkError = false;
       await Promise.all(
-        ENTITY_TYPES.map(async (t) => {
+        domain.entityTypes.map(async (t) => {
           try {
             next[t] = await countByType(t);
           } catch (e) {
@@ -36,7 +37,7 @@ export function useTypeCounts() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [domain]);
 
   return { counts, connectionError };
 }
