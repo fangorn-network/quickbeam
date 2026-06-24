@@ -1,0 +1,300 @@
+/* ==========================================================================
+   Eagle River / Northwoods Theme
+   Vintage tourism guide + supper club + lake country
+   ========================================================================== */
+
+:root {
+  /* ------------------------------------------------------------------------
+     Surface
+     ------------------------------------------------------------------------ */
+
+  --bg-base: #e8e5e1;
+  --bg-surface: #f3f1ed;
+  --bg-elevated: #ffffff;
+
+  --bg-hover: #ddd8d2;
+  --bg-active: #cec8c1;
+
+  /* ------------------------------------------------------------------------
+     Borders
+     ------------------------------------------------------------------------ */
+
+  --border-subtle: #cdc7bf;
+  --border-strong: #a59c92;
+
+  /* ------------------------------------------------------------------------
+     Text
+     ------------------------------------------------------------------------ */
+
+  --text-primary: #22201b;
+  --text-secondary: #504a42;
+  --text-muted: #786f63;
+
+  --text-link: #9b4254;
+  --text-link-hover: #b85b6e;
+
+  /* ------------------------------------------------------------------------
+     Brand
+     ------------------------------------------------------------------------ */
+
+  /* Pine forest */
+  --brand-forest: #2f5d50;
+  --brand-forest-deep: #22453b;
+
+  /* Lake water */
+  --brand-teal: #3f7085;
+  --brand-teal-deep: #305868;
+
+  /* Wisconsin cranberry */
+  --brand-amber: #9b4254;
+  --brand-amber-deep: #7a3342;
+
+  /* Brass / lodge signage */
+  --brand-honey: #b28a45;
+  --brand-terracotta: #9b4254;
+
+  --brand-ink: #22201b;
+  --brand-paper: #f6f2ea;
+
+  /* ------------------------------------------------------------------------
+     Category accents
+     ------------------------------------------------------------------------ */
+
+  --accent-restaurant: #9b4254;
+  --accent-bar: #6b4f3a;
+  --accent-cafe: #b28a45;
+  --accent-brewery: #2f5d50;
+  --accent-breakfast: #d2a65e;
+  --accent-dessert: #c86b8d;
+  --accent-market: #3f7085;
+  --accent-outdoors: #557a3f;
+
+  /* Keep compatibility with existing code */
+  --accent-artist: #9b4254;
+  --accent-recording: #2f5d50;
+  --accent-release: #3f7085;
+  --accent-releasegroup: #7a3342;
+  --accent-work: #b28a45;
+  --accent-place: #d2a65e;
+  --accent-event: #9b4254;
+  --accent-area: #3f7085;
+  --accent-instrument: #557a3f;
+
+  /* ------------------------------------------------------------------------
+     Semantic
+     ------------------------------------------------------------------------ */
+
+  --color-success: #3f7a52;
+  --color-warning: #b28a45;
+  --color-error: #a33f3f;
+  --color-info: #3f7085;
+
+  /* ------------------------------------------------------------------------
+     Typography
+     ------------------------------------------------------------------------ */
+
+  --font-display: 'Bricolage Grotesque', 'Inter', 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-serif: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia,
+    serif;
+  --font-sans: 'Inter', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  /* ------------------------------------------------------------------------
+     Type scale
+     ------------------------------------------------------------------------ */
+
+  --text-xs: 0.6875rem;
+  --text-sm: 0.8125rem;
+  --text-base: 0.9375rem;
+  --text-md: 1.0625rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.625rem;
+  --text-2xl: 2.25rem;
+  --text-3xl: clamp(2.4rem, 7vw, 3.6rem);
+
+  /* ------------------------------------------------------------------------
+     Spacing
+     ------------------------------------------------------------------------ */
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+
+  /* ------------------------------------------------------------------------
+     Radius
+     ------------------------------------------------------------------------ */
+
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 18px;
+  --radius-2xl: 24px;
+
+  /* ------------------------------------------------------------------------
+     Shadows
+     ------------------------------------------------------------------------ */
+
+  --shadow-tile:
+    0 1px 2px rgba(34, 32, 27, 0.05),
+    0 6px 18px rgba(34, 32, 27, 0.08);
+
+  --shadow-tile-hover:
+    0 2px 8px rgba(34, 32, 27, 0.10),
+    0 16px 36px rgba(34, 32, 27, 0.14);
+
+  /* ------------------------------------------------------------------------
+     Primary accent
+     ------------------------------------------------------------------------ */
+
+  --accent: var(--brand-amber);
+
+  /* ------------------------------------------------------------------------
+     Motion
+     ------------------------------------------------------------------------ */
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 80ms;
+  --duration-std: 140ms;
+}
+
+/* ==========================================================================
+   Dark Theme
+   Northwoods supper club after sunset
+   ========================================================================== */
+
+[data-theme='dark'] {
+  --bg-base: #191714;
+  --bg-surface: #24201c;
+  --bg-elevated: #302a24;
+
+  --bg-hover: #3a332b;
+  --bg-active: #443b31;
+
+  --border-subtle: #453b31;
+  --border-strong: #675746;
+
+  --text-primary: #f3ede2;
+  --text-secondary: #c4b7a3;
+  --text-muted: #91816b;
+
+  --text-link: #d17a8c;
+  --text-link-hover: #e79cab;
+
+  --brand-forest: #78b19a;
+  --brand-forest-deep: #94c6b1;
+
+  --brand-teal: #7eaec2;
+  --brand-teal-deep: #9bc0d1;
+
+  --brand-amber: #d17a8c;
+  --brand-amber-deep: #e79cab;
+
+  --brand-honey: #d6b36b;
+  --brand-terracotta: #d17a8c;
+
+  --brand-ink: #f3ede2;
+  --brand-paper: #24201c;
+
+  --accent-artist: #d17a8c;
+  --accent-recording: #78b19a;
+  --accent-release: #7eaec2;
+  --accent-releasegroup: #e79cab;
+  --accent-work: #d6b36b;
+  --accent-place: #e2c27e;
+  --accent-event: #d17a8c;
+  --accent-area: #7eaec2;
+  --accent-instrument: #8db06d;
+
+  --color-success: #78b987;
+  --color-warning: #d6b36b;
+  --color-error: #d97878;
+  --color-info: #7eaec2;
+
+  --shadow-tile:
+    0 1px 2px rgba(0, 0, 0, 0.42),
+    0 8px 22px rgba(0, 0, 0, 0.48);
+
+  --shadow-tile-hover:
+    0 2px 8px rgba(0, 0, 0, 0.52),
+    0 18px 40px rgba(0, 0, 0, 0.58);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  /* Faint, fixed two-tone wash (pine + lake teal) gives the page organic depth so
+     it never reads as a flat, over-minimal sheet — both stops are cool to keep any
+     gold cast off the page. Tinted by tokens, so it adapts to the active theme. */
+  background:
+    radial-gradient(120% 85% at 0% 0%, color-mix(in srgb, var(--brand-forest) 7%, transparent), transparent 55%),
+    radial-gradient(115% 90% at 100% 0%, color-mix(in srgb, var(--brand-teal) 7%, transparent), transparent 52%),
+    var(--bg-base);
+  background-attachment: fixed;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--text-link);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--text-link-hover);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* Shared shimmer for skeletons */
+@keyframes sb-shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+
+.sb-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--bg-surface) 0%,
+    var(--bg-hover) 40%,
+    var(--bg-surface) 80%
+  );
+  background-size: 800px 100%;
+  animation: sb-shimmer 1.4s linear infinite;
+  border-radius: var(--radius-sm);
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

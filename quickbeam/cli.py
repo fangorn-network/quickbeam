@@ -11,6 +11,11 @@ data_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(data_app, name="data", help="Generate seed / test data from public data sources.")
+cdn_app = typer.Typer(
+    help="Semantic CDN: bake the embedded graph into static, pullable domain shards.",
+    no_args_is_help=True,
+)
+app.add_typer(cdn_app, name="cdn", help="Semantic CDN: distribute domains as static shards.")
 
 # All commands with existing argparse parsers use passthrough so their own --help
 # and argument validation are preserved verbatim.
@@ -99,6 +104,30 @@ def export(ctx: typer.Context):
     main()
 
 
+@cdn_app.command("bake", **_PASSTHROUGH)
+def cdn_bake(ctx: typer.Context):
+    """Bake a Qdrant collection into immutable Semantic CDN domain shards."""
+    _fwd("quickbeam cdn bake", ctx.args)
+    from quickbeam.cdn import bake_main
+    bake_main()
+
+
+@cdn_app.command("serve", **_PASSTHROUGH)
+def cdn_serve(ctx: typer.Context):
+    """Serve baked Semantic CDN shards as static, resumable files."""
+    _fwd("quickbeam cdn serve", ctx.args)
+    from quickbeam.cdn import serve_main
+    serve_main()
+
+
+@app.command(**_PASSTHROUGH)
+def pull(ctx: typer.Context):
+    """Pull a domain from a Semantic CDN into a local Qdrant collection."""
+    _fwd("quickbeam pull", ctx.args)
+    from quickbeam.pull import main
+    main()
+
+
 @app.command()
 def migrate():
     """Migrate a local Qdrant collection to Qdrant Cloud."""
@@ -120,6 +149,62 @@ def mb(ctx: typer.Context):
     _fwd("quickbeam data mb", ctx.args)
     from quickbeam.pipelines.mb import run_bounded_pipeline
     run_bounded_pipeline()
+
+
+@data_app.command(**_PASSTHROUGH)
+def mbpg(ctx: typer.Context):
+    """Convert a MusicBrainz Postgres DB into a Fangorn creative-core graph."""
+    _fwd("quickbeam data mbpg", ctx.args)
+    from quickbeam.pipelines.mb_pg import run
+    run()
+
+
+@data_app.command(**_PASSTHROUGH)
+def schemagen(ctx: typer.Context):
+    """Generate Fangorn schemas + a bundle shape from an extracted node/edge graph."""
+    _fwd("quickbeam data schemagen", ctx.args)
+    from quickbeam.pipelines.fangorn_schema import run
+    run()
+
+
+@data_app.command("places-fetch", **_PASSTHROUGH)
+def places_fetch(ctx: typer.Context):
+    """Scrape Google Places (new API) for an area into Postgres places_raw."""
+    _fwd("quickbeam data places-fetch", ctx.args)
+    from quickbeam.pipelines.places import main
+    main()
+
+
+@data_app.command(**_PASSTHROUGH)
+def placespg(ctx: typer.Context):
+    """Convert Postgres places_raw (Google Places) into a Fangorn graph."""
+    _fwd("quickbeam data placespg", ctx.args)
+    from quickbeam.pipelines.places_pg import run
+    run()
+
+
+@data_app.command("events-fetch", **_PASSTHROUGH)
+def events_fetch(ctx: typer.Context):
+    """Scrape Eventbrite organizers / Tribe calendars into Postgres events_raw."""
+    _fwd("quickbeam data events-fetch", ctx.args)
+    from quickbeam.pipelines.events import main
+    main()
+
+
+@data_app.command(**_PASSTHROUGH)
+def eventspg(ctx: typer.Context):
+    """Convert events_raw (Eventbrite/Tribe) into a Fangorn graph, merged with places."""
+    _fwd("quickbeam data eventspg", ctx.args)
+    from quickbeam.pipelines.events_pg import run
+    run()
+
+
+@data_app.command(**_PASSTHROUGH)
+def prebake(ctx: typer.Context):
+    """Embed local volume node files straight into Qdrant (offline build)."""
+    _fwd("quickbeam data prebake", ctx.args)
+    from quickbeam.pipelines.prebake import run
+    run()
 
 
 @data_app.command(**_PASSTHROUGH)

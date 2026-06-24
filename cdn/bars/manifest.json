@@ -1,0 +1,226 @@
+{
+  "name": "bars",
+  "description": "Bars & events in Eagle River, WI \u2014 Google Places + Eventbrite/Tribe",
+  "count": 402,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {
+    "entityType": [
+      "Business",
+      "Event"
+    ]
+  },
+  "created_at": 1782338547,
+  "role_map": {
+    "identity": "placeId",
+    "title": "title",
+    "subtitle": "primaryType",
+    "temporal": null,
+    "spatial": "locality",
+    "media": "googleMapsUri",
+    "tags": [
+      "categories"
+    ],
+    "measures": [
+      "rating",
+      "userRatingCount"
+    ],
+    "relations": [],
+    "text": [
+      "text",
+      "editorialSummary"
+    ],
+    "labels": {
+      "title": "Title",
+      "subtitle": "User Rating Count",
+      "temporal": "End Date",
+      "spatial": "Coordinate",
+      "media": "Source",
+      "tags": "Reviews, Reviewers, Businesses, Events, Categories, Localities",
+      "measures": "Price Max, Price Min, Rating",
+      "text": "Hours, Image Url, Summary, Text"
+    },
+    "fields": [
+      "address",
+      "amenities",
+      "businessStatus",
+      "businesses",
+      "categories",
+      "coordinates",
+      "dateLabel",
+      "editorialSummary",
+      "endDate",
+      "entityType",
+      "eventId",
+      "events",
+      "googleMapsUri",
+      "hostBusinessId",
+      "hostBusinessName",
+      "hours",
+      "imageUrl",
+      "isFree",
+      "isPast",
+      "localities",
+      "locality",
+      "organizerName",
+      "phone",
+      "placeId",
+      "priceLevel",
+      "priceMax",
+      "priceMin",
+      "primaryType",
+      "rating",
+      "reviewers",
+      "reviews",
+      "schemaVersion",
+      "shortAddress",
+      "source",
+      "startDate",
+      "startISO",
+      "startTime",
+      "summary",
+      "text",
+      "ticketUrl",
+      "timezone",
+      "title",
+      "userRatingCount",
+      "venueName",
+      "website"
+    ]
+  },
+  "entity_types": [
+    {
+      "type": "Event",
+      "count": 342
+    },
+    {
+      "type": "Business",
+      "count": 60
+    }
+  ],
+  "shards": [
+    {
+      "file": "shard-0000-ec436c500746.ndjson.gz",
+      "count": 402,
+      "bytes": 1169819,
+      "sha256": "ec436c5007462b7af02feff9ac3fb1789f365d1eadeefbb9a65dadfaaa1f26e0"
+    }
+  ],
+  "bundle": {
+    "nodes": {
+      "Business": "fangorn.places.business.v1",
+      "Category": "fangorn.places.category.v1",
+      "Locality": "fangorn.places.locality.v1",
+      "Reviewer": "fangorn.places.reviewer.v1",
+      "Review": "fangorn.places.review.v1",
+      "Event": "fangorn.places.event.v1",
+      "Organizer": "fangorn.places.organizer.v1"
+    },
+    "edges": [
+      {
+        "rel": "inCategory",
+        "from": "Event",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Business",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "hostedBy",
+        "from": "Event",
+        "to": "Organizer",
+        "min": 0
+      },
+      {
+        "rel": "hasReview",
+        "from": "Business",
+        "to": "Review",
+        "min": 0
+      },
+      {
+        "rel": "byAuthor",
+        "from": "Review",
+        "to": "Reviewer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Event",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "near",
+        "from": "Business",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "hostedAt",
+        "from": "Event",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "hostsEvent",
+        "from": "Business",
+        "to": "Event",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Business",
+        "to": "Locality",
+        "min": 0
+      }
+    ]
+  },
+  "presentation": {
+    "types": {
+      "Business": {
+        "icon": "\ud83c\udf7a",
+        "accent": "#d98a2b",
+        "singular": "Bar",
+        "plural": "Bars"
+      },
+      "Event": {
+        "icon": "\ud83c\udfab",
+        "accent": "#c2562b",
+        "singular": "Event",
+        "plural": "Events"
+      },
+      "Organizer": {
+        "icon": "\ud83d\udce3",
+        "accent": "#2f7d57",
+        "singular": "Organizer",
+        "plural": "Organizers"
+      }
+    },
+    "fieldLabels": {
+      "editorialSummary": "Summary",
+      "userRatingCount": "Reviews",
+      "priceLevel": "Price",
+      "primaryType": "Type",
+      "dateLabel": "When",
+      "venueName": "Venue",
+      "priceMin": "From",
+      "ticketUrl": "Tickets",
+      "organizerName": "Hosted by"
+    },
+    "hideConnections": [
+      "businesses",
+      "localities",
+      "reviewers",
+      "events"
+    ],
+    "externalUrl": {
+      "Business": "{googleMapsUri}",
+      "Event": "{ticketUrl}"
+    }
+  }
+}

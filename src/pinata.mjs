@@ -10,6 +10,9 @@
  *   delete <id...>                Delete one or more files by their Pinata file ID
  *   delete-pattern <prefix>       Bulk-delete every file whose name starts with <prefix>
  *   delete-all                    Delete every file in the account (prompts for confirmation)
+ * 
+ * e.g. PINATA_DELETE_RATE_PER_MIN=178 node src/pinata.mjs delete-pattern "manifest:bundle:"
+ * 
  */
 
 import "dotenv/config";
@@ -71,17 +74,41 @@ async function* listAll(pinata, namePrefix) {
   }
 }
 
-/** Delete files in batches of up to 100 IDs (Pinata's documented limit). */
+// Pinata's SDK delete is latency-bound: passing an array of IDs makes it issue
+// one DELETE per id SEQUENTIALLY with a hardcoded 300ms pause between each. So we
+// instead fire single-id deletes in parallel chunks, throttled to stay under
+// Pinata's ~180 req/min rate cap (which is the real throughput ceiling).
+// Override with PINATA_DELETE_CONCURRENCY / PINATA_DELETE_RATE_PER_MIN.
+const DELETE_CONCURRENCY  = parseInt(process.env.PINATA_DELETE_CONCURRENCY ?? "15", 10);
+const DELETE_RATE_PER_MIN = parseInt(process.env.PINATA_DELETE_RATE_PER_MIN ?? "165", 10); // margin under 180
+
 async function deleteBatch(pinata, ids) {
-  const BATCH = 100;
-  let deleted = 0;
-  for (let i = 0; i < ids.length; i += BATCH) {
-    const slice = ids.slice(i, i + BATCH);
-    await pinata.files.public.delete(slice);
-    deleted += slice.length;
-    process.stdout.write(`\r  deleted ${deleted}/${ids.length} files`);
+  // Each chunk of DELETE_CONCURRENCY must span at least this long to respect the
+  // per-minute cap; we sleep only the remainder after the requests resolve.
+  const minChunkMs = Math.ceil((DELETE_CONCURRENCY / DELETE_RATE_PER_MIN) * 60_000);
+  let deleted = 0, failed = 0;
+
+  for (let i = 0; i < ids.length; i += DELETE_CONCURRENCY) {
+    const chunk = ids.slice(i, i + DELETE_CONCURRENCY);
+    const t0 = Date.now();
+
+    const results = await Promise.allSettled(
+      chunk.map(id => pinata.files.public.delete([id]))
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") deleted++;
+      else { failed++; if (failed <= 10) console.error(`\n  delete failed: ${r.reason?.message ?? r.reason}`); }
+    }
+    process.stdout.write(`\r  deleted ${deleted}/${ids.length}${failed ? ` (${failed} failed)` : ""}   `);
+
+    // Throttle to the rate cap (skip the wait after the final chunk).
+    const elapsed = Date.now() - t0;
+    if (i + DELETE_CONCURRENCY < ids.length && elapsed < minChunkMs) {
+      await new Promise(r => setTimeout(r, minChunkMs - elapsed));
+    }
   }
   if (ids.length) process.stdout.write("\n");
+  if (failed) console.log(`  ${failed} deletion(s) failed (likely already deleted or transient rate-limit).`);
 }
 
 // ---------------------------------------------------------------------------

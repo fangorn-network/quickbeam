@@ -1,0 +1,23 @@
+{
+  "name": "fangorn.places.reviewer.v1",
+  "definition": {
+    "entityType": {
+      "@type": "string"
+    },
+    "profileUri": {
+      "@type": "string"
+    },
+    "reviewerId": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

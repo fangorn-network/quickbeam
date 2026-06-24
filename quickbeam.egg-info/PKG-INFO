@@ -8,6 +8,7 @@ Requires-Dist: fastapi
 Requires-Dist: httpx
 Requires-Dist: musicbrainzngs
 Requires-Dist: numpy
+Requires-Dist: psycopg[binary]
 Requires-Dist: qdrant-client
 Requires-Dist: requests
 Requires-Dist: tqdm
@@ -18,3 +19,11 @@ Provides-Extra: gpu
 Requires-Dist: fastembed-gpu; extra == "gpu"
 Provides-Extra: cpu
 Requires-Dist: fastembed; extra == "cpu"
+Provides-Extra: agent
+Requires-Dist: fastmcp; extra == "agent"
+Requires-Dist: eth-account; extra == "agent"
+Requires-Dist: httpx; extra == "agent"
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"
+Requires-Dist: fastmcp; extra == "dev"
+Requires-Dist: eth-account; extra == "dev"

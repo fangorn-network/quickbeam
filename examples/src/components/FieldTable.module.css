@@ -1,0 +1,137 @@
+.wrap {
+  width: 100%;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.thField,
+.thValue,
+.thType {
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.thType {
+  text-align: right;
+  width: 90px;
+}
+
+.field {
+  color: var(--text-secondary);
+  padding: var(--space-2) var(--space-3);
+  white-space: nowrap;
+  vertical-align: top;
+  width: 160px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.value {
+  color: var(--text-primary);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+}
+
+/* Phones: a narrower, wrapping field column + tighter cell padding so long
+   values (URLs, addresses) don't force horizontal scroll. */
+@media (max-width: 600px) {
+  .field {
+    width: 38%;
+    white-space: normal;
+  }
+  .field,
+  .value,
+  .type {
+    padding: var(--space-2);
+  }
+}
+
+.type {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  text-align: right;
+  padding: var(--space-2) var(--space-3);
+  vertical-align: top;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.emptyRow {
+  opacity: 0.5;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.num {
+  font-family: var(--font-mono);
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.pills {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.pill {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  padding: 1px var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.softLink {
+  background: transparent;
+  border: none;
+  color: var(--text-link);
+  font-size: var(--text-sm);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-bottom: 1px dashed color-mix(in srgb, var(--text-link) 50%, transparent);
+}
+
+.softLink:hover {
+  color: var(--text-link-hover);
+}
+
+.searchIcon {
+  font-size: var(--text-xs);
+}
+
+.actions {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+}
+
+.toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  padding: 0;
+}
+
+.toggle:hover {
+  color: var(--text-link-hover);
+}

@@ -1,0 +1,32 @@
+{
+  "name": "fangorn.places.organizer.v1",
+  "definition": {
+    "bio": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "facebook": {
+      "@type": "string"
+    },
+    "organizerId": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "source": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "website": {
+      "@type": "string"
+    }
+  }
+}

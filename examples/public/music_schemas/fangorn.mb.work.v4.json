@@ -1,0 +1,32 @@
+{
+  "name": "fangorn.mb.work.v4",
+  "definition": {
+    "disambiguation": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "iswcCodes": {
+      "@type": "string"
+    },
+    "mbid": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "tags": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "workType": {
+      "@type": "string"
+    }
+  }
+}

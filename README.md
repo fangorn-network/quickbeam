@@ -14,6 +14,7 @@ This repo contains infrastructure for building and serving vector search over on
 - **`quickbeam watch`**: live daemon that polls the subgraph for new events and embeds them automatically as they arrive. Keeps the GPU model loaded between cycles; uses `blockNumber_gt` to only query genuinely new events.
 - **`quickbeam serve`**: read-only API server. Connects to Qdrant and serves search, browse, and catalog endpoints. It does not ingest on startup, but instead expects the collection to already be populated, either by the builder or by seeding from a snapshot. Can optionally run the watcher alongside it (`serve --watch`) so one process both ingests and serves, and can gate the search routes behind [x402 payments](#x402-payment-gating).
 - **`quickbeam mcp`**: a [Model Context Protocol](#mcp-server) layer over the API. A thin, stateless HTTP client of `quickbeam serve` that exposes semantic search to agents as well-typed tools, attaches on-chain provenance to every result, and can optionally charge the calling agent per tool call via [x402](#x402-payment-gating).
+- **`quickbeam cdn` + `quickbeam pull`**: the [Semantic CDN](#semantic-cdn) — instead of running queries on the server (where the node sees every query = intent), the operator *bakes* the embedded graph into immutable, content-addressed shard files (a "domain") and *serves* them as static, resumable downloads. A user *pulls* a domain into their own local Qdrant and queries it offline. Knowledge moves to the user; the network never sees a query. See [docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md).
 
 The builder produces the same record shape — `{ track_id, fields, meta }` — through one of two interchangeable join phases:
 
@@ -42,9 +43,11 @@ quickbeam build    Build embeddings from subgraph / IPFS data into Qdrant
 quickbeam watch    Live daemon: poll subgraph for new events and embed automatically
 quickbeam serve    Start the Fangorn search API server (optionally with --watch + x402)
 quickbeam mcp      Run the MCP server exposing search as agent tools (x402-aware)
+quickbeam cdn      Semantic CDN: bake the embedded graph into static, pullable domain shards
+quickbeam pull     Pull a domain from a Semantic CDN into a local Qdrant collection
 quickbeam export   Export the Qdrant collection as an NDJSON bundle
 quickbeam migrate  Migrate a local Qdrant collection to Qdrant Cloud
-quickbeam data     Generate seed / test data from public data sources
+quickbeam data     An ETL pipeline to generate seed / test data from public data sources
 ```
 
 The `mcp` and x402 layers need extra dependencies (FastMCP + EIP-712 signing):
@@ -59,6 +62,8 @@ pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-su
 ## Quickstart
 
 ### 1. Run Qdrant
+
+quickbeam build --bundle "fangorn.mb.creativecore.v4=0xba5436c0aac6cf01d35f5da35ca2a8011d3da7dda14b5e52548b73075ec08f54" --root-type Recording --reset
 
 ```sh
 docker run -d -p 6333:6333 -p 6334:6334 \
@@ -76,6 +81,8 @@ export LD_LIBRARY_PATH=\
 $VIRTUAL_ENV/lib/python3.12/site-packages/nvidia/cudnn/lib:\
 $VIRTUAL_ENV/lib/python3.12/site-packages/nvidia/cublas/lib:\
 $LD_LIBRARY_PATH
+# verify Cuda is available
+python -c "import onnxruntime as ort; print('Available Providers:', ort.get_available_providers())"
 ```
 
 #### From flat schemas
@@ -96,13 +103,13 @@ quickbeam build \
 
 ```sh
 quickbeam build \
-  --bundle test.sond3r.track.bundle.1=0x9f2c...e0143 \
+  --bundle fangorn.mb.creativecore.v1=0xac92db425c174e4301cd41e81e16d99fd2c5f4e2f13b739004996e95875e990d \
   --root-type Track \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
+  --graph-api-key b66e8b18ae3fe2c5a91929098b290d69 \
+  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
   --dim 256 \
   --umap \
-  --reset
+  --reset 
 ```
 
 `--bundle` and `--schema`/`--primary` are mutually exclusive. When `--bundle` is set the builder takes the edge-walk path.
@@ -273,6 +280,53 @@ curl -N http://host-a:8080/bundle/export \
        -H "Content-Type: application/x-ndjson" \
        --data-binary @-
 ```
+
+---
+
+## Semantic CDN
+
+The search server runs queries **server-side** — which means the node observes every
+query vector, and a semantic query *is* intent. The Semantic CDN inverts this: the
+operator distributes the **public** embeddings as static, content-addressed artifacts;
+the user pulls a slice into their **own** local Qdrant and queries it offline. Knowledge
+moves to the user, the network never sees a query. Full walkthrough in
+[docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md); the short version:
+
+```sh
+# (operator) declare domains as filters over the collection
+cat > domains.json <<'JSON'
+{ "domains": {
+  "music":  { "description": "Recordings & artists", "filter": { "entityType": ["Recording","Artist"] } },
+  "venues": { "description": "Places & events",       "filter": { "entityType": ["Place","Event"] } }
+} }
+JSON
+
+# (operator) bake immutable shards from Qdrant, then serve them statically
+quickbeam cdn bake  --config domains.json --cdn-dir ./cdn --collection fangorn
+quickbeam cdn serve --cdn-dir ./cdn --port 8090
+
+# (user) pull a domain into a LOCAL collection, then query it offline
+quickbeam pull music --cdn-url http://localhost:8090 --collection music_local
+quickbeam serve --collection music_local      # local search — CDN sees nothing
+```
+
+A **domain** is operator-declared (a named `entityType`/`owner` filter, in `domains.json`).
+`bake` writes `cdn/<domain>/shard-NNNN.ndjson.gz` (reusing the `/bundle/export` row shape)
+plus a `manifest.json` carrying a **sha256 per shard**, and a top-level `catalog.json`.
+
+Each `manifest.json` is also **self-describing** so a pulled domain drives a generic,
+schema-agnostic client with no hardcoding: an inferred `role_map`
+(title/subtitle/tags/spatial/…) and an `entity_types` vocabulary with per-type counts are
+always baked in. Two optional per-domain keys in `domains.json` add more — `bundle_schema`
+(path to a Fangorn bundle schema → copies its type + relationship vocabulary into
+`manifest.bundle`) and `presentation` (an overlay of icons / accent colors / `fieldLabels` /
+`externalUrl` templates, passed through verbatim for UI polish). See
+[docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md#1-declare-domains-domainsjson).
+`serve` is a separate minimal FastAPI app exposing only static reads (`/catalog`,
+`/domains/{name}/manifest`, `/domains/{name}/shards/{file}`) with HTTP **Range** support,
+so shards are cacheable and downloads resume. `pull` verifies every shard against its
+sha256 and loads it into the local collection with deterministic point ids, so an
+interrupted or repeated pull is safe.
 
 ---
 
@@ -638,6 +692,47 @@ Env equivalents: `QUICKBEAM_API_URL`, `QUICKBEAM_CORPUS`, `QUICKBEAM_DOMAIN`.
 | `--out` | `bundle.ndjson` | Output file path |
 | `--owner` | `None` | Filter export to a single owner address |
 | `--embeddings-only` | `false` | Export only `track_id` + `embedding`, omit fields and metadata |
+
+### `quickbeam cdn bake`
+
+| Flag | Default | Description |
+|---|---|---|
+| `--config` | `domains.json` | Operator domain config: `name → { description, filter }` |
+| `--cdn-dir` | `./cdn` | Output directory for baked shards |
+| `--collection` | `fangorn` | Source Qdrant collection to bake from |
+| `--domain` | all | Bake only this one domain from the config |
+| `--shard-size` | `50000` | Points per shard file |
+| `--limit` | `0` | Cap total points baked per domain (0 = all). Use a small value for a lightweight in-browser snapshot. |
+| `--scroll-batch` | `2000` | Qdrant scroll page size |
+| `--embedding-model` | `nomic-ai/nomic-embed-text-v1.5` | Recorded in the manifest (Qdrant doesn't store it) |
+| `--qdrant-url` / `--qdrant-api-key` | `None` | Qdrant Cloud (overrides host/port) |
+| `--qdrant-host` / `--qdrant-port` / `--qdrant-grpc-port` | `localhost`/`6333`/`6334` | Local Qdrant |
+
+A domain's `filter` accepts `entityType: [...]` and `owner: [...]` (each a `MatchAny`);
+multiple keys are AND-ed. An empty/missing filter selects the whole collection.
+
+### `quickbeam cdn serve`
+
+| Flag | Default | Description |
+|---|---|---|
+| `--cdn-dir` | `./cdn` | Directory of baked shards to serve |
+| `--host` | `0.0.0.0` | Bind host |
+| `--port` | `8090` | Bind port |
+| `--cors` | `false` | Enable permissive CORS (for browser-based pulls) |
+
+### `quickbeam pull`
+
+| Flag | Default | Description |
+|---|---|---|
+| `domain` | required | Positional — domain name to pull (see the CDN's `/catalog`) |
+| `--cdn-url` | `http://localhost:8090` | Base URL of the Semantic CDN |
+| `--collection` | domain name | Local Qdrant collection to load into |
+| `--cache-dir` | `./db/cdn_cache` | Where downloaded shards are cached |
+| `--concurrency` | `4` | Parallel shard downloads |
+| `--batch` | `500` | Upsert batch size |
+| `--reset` | `false` | Recreate the local collection before loading |
+| `--download-only` | `false` | Fetch + verify shards but don't load into Qdrant |
+| `--qdrant-url` / `--qdrant-api-key` / `--qdrant-host` / `--qdrant-port` / `--qdrant-grpc-port` | local | Target Qdrant for the local collection |
 
 ---
 

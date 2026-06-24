@@ -1,0 +1,116 @@
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  z-index: 100;
+}
+
+.modal {
+  width: 560px;
+  max-width: 92vw;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+.input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  outline: none;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+  padding: var(--space-4);
+}
+
+.input::placeholder {
+  color: var(--text-muted);
+}
+
+.list {
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.group {
+  margin-bottom: var(--space-2);
+}
+
+.groupTitle {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  padding: var(--space-1) var(--space-2);
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  padding: var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.active {
+  background: var(--bg-active);
+}
+
+.rowLabel {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Magnifier glyph for the "Search «q»" action row, sized to match EntityBadge sm. */
+.searchIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--brand-forest) 12%, transparent);
+  color: var(--brand-forest);
+  font-size: var(--text-sm);
+}
+
+.rowSecondary {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+
+.footer {
+  border-top: 1px solid var(--border-subtle);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}

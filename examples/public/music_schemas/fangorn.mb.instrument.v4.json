@@ -1,0 +1,32 @@
+{
+  "name": "fangorn.mb.instrument.v4",
+  "definition": {
+    "description": {
+      "@type": "string"
+    },
+    "disambiguation": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "instrumentType": {
+      "@type": "string"
+    },
+    "mbid": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "tags": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

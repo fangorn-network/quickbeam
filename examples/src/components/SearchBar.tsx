@@ -1,0 +1,89 @@
+import { useEffect, useRef, useState } from 'react';
+import type { EntityType } from '../lib/types';
+import { useDomain } from '../lib/domainContext';
+import { COPY } from '../lib/copy';
+import styles from './SearchBar.module.css';
+
+interface Props {
+  initialValue?: string;
+  initialType?: EntityType | '';
+  onSearch: (q: string, type?: EntityType) => void;
+}
+
+export default function SearchBar({ initialValue = '', initialType = '', onSearch }: Props) {
+  const domain = useDomain();
+  const [q, setQ] = useState(initialValue);
+  const [type, setType] = useState<EntityType | ''>(initialType);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // "Press / to focus"
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === '/' && document.activeElement?.tagName !== 'INPUT') {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    onSearch(q.trim(), type || undefined);
+  }
+
+  return (
+    <form className={styles.wrap} onSubmit={submit}>
+      <div className={styles.row}>
+        <span className={styles.icon}>⌕</span>
+        <input
+          ref={inputRef}
+          className={styles.input}
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={COPY.search.placeholder}
+          aria-label="Search"
+          inputMode="search"
+          enterKeyHint="search"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
+        />
+        {q && (
+          <button
+            type="button"
+            className={styles.clear}
+            aria-label={COPY.search.clearAria}
+            onClick={() => setQ('')}
+          >
+            ×
+          </button>
+        )}
+        <select
+          className={styles.select}
+          value={type}
+          onChange={(e) => setType(e.target.value as EntityType | '')}
+          aria-label={COPY.filter.label}
+        >
+          <option value="">{COPY.filter.allTypes}</option>
+          {domain.entityTypes.map((t) => (
+            <option key={t} value={t}>
+              {domain.pluralOf(t)}
+            </option>
+          ))}
+        </select>
+        {/* Explicit submit — mobile keyboards don't reliably submit a form via
+            the return key, so a tappable button guarantees search works there. */}
+        <button type="submit" className={styles.go} aria-label="Search">
+          ⌕
+        </button>
+      </div>
+      <div className={styles.subtext}>
+        {COPY.search.subtext} · {COPY.search.keyboardHint}
+      </div>
+    </form>
+  );
+}

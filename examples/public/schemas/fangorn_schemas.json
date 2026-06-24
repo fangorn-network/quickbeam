@@ -1,0 +1,224 @@
+{
+  "schemas": [
+    {
+      "name": "fangorn.places.business.v1",
+      "definition": {
+        "address": {
+          "@type": "string"
+        },
+        "amenities": {
+          "@type": "string"
+        },
+        "businessStatus": {
+          "@type": "string"
+        },
+        "categories": {
+          "@type": "string"
+        },
+        "coordinates": {
+          "@type": "string"
+        },
+        "editorialSummary": {
+          "@type": "string"
+        },
+        "entityType": {
+          "@type": "string"
+        },
+        "googleMapsUri": {
+          "@type": "string"
+        },
+        "hours": {
+          "@type": "string"
+        },
+        "locality": {
+          "@type": "string"
+        },
+        "phone": {
+          "@type": "string"
+        },
+        "placeId": {
+          "@type": "string"
+        },
+        "priceLevel": {
+          "@type": "string"
+        },
+        "primaryType": {
+          "@type": "string"
+        },
+        "rating": {
+          "@type": "number"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "shortAddress": {
+          "@type": "string"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        },
+        "userRatingCount": {
+          "@type": "number"
+        },
+        "website": {
+          "@type": "string"
+        }
+      }
+    },
+    {
+      "name": "fangorn.places.category.v1",
+      "definition": {
+        "categoryId": {
+          "@type": "string"
+        },
+        "entityType": {
+          "@type": "string"
+        },
+        "rawType": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        }
+      }
+    },
+    {
+      "name": "fangorn.places.locality.v1",
+      "definition": {
+        "entityType": {
+          "@type": "string"
+        },
+        "localityId": {
+          "@type": "string"
+        },
+        "region": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        }
+      }
+    },
+    {
+      "name": "fangorn.places.reviewer.v1",
+      "definition": {
+        "entityType": {
+          "@type": "string"
+        },
+        "profileUri": {
+          "@type": "string"
+        },
+        "reviewerId": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        }
+      }
+    },
+    {
+      "name": "fangorn.places.review.v1",
+      "definition": {
+        "author": {
+          "@type": "string"
+        },
+        "body": {
+          "@type": "string"
+        },
+        "businessId": {
+          "@type": "string"
+        },
+        "entityType": {
+          "@type": "string"
+        },
+        "publishTime": {
+          "@type": "string"
+        },
+        "rating": {
+          "@type": "number"
+        },
+        "relativeTime": {
+          "@type": "string"
+        },
+        "reviewId": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        }
+      }
+    }
+  ],
+  "bundle": {
+    "name": "fangorn.places.localcore.v1",
+    "kind": "bundle",
+    "bundle": {
+      "nodes": {
+        "Business": "fangorn.places.business.v1",
+        "Category": "fangorn.places.category.v1",
+        "Locality": "fangorn.places.locality.v1",
+        "Reviewer": "fangorn.places.reviewer.v1",
+        "Review": "fangorn.places.review.v1"
+      },
+      "edges": [
+        {
+          "rel": "inCategory",
+          "from": "Business",
+          "to": "Category",
+          "min": 0
+        },
+        {
+          "rel": "hasReview",
+          "from": "Business",
+          "to": "Review",
+          "min": 0
+        },
+        {
+          "rel": "byAuthor",
+          "from": "Review",
+          "to": "Reviewer",
+          "min": 0
+        },
+        {
+          "rel": "near",
+          "from": "Business",
+          "to": "Business",
+          "min": 0
+        },
+        {
+          "rel": "locatedIn",
+          "from": "Business",
+          "to": "Locality",
+          "min": 0
+        }
+      ]
+    }
+  }
+}

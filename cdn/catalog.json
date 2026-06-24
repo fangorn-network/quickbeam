@@ -1,0 +1,41 @@
+{
+  "generated_at": 1782338547,
+  "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
+  "collection": "fangorn",
+  "domains": [
+    {
+      "name": "music",
+      "description": "MusicBrainz creative core \u2014 recordings & artists",
+      "count": 3000,
+      "dim": 256,
+      "bytes": 7690738,
+      "shard_count": 1,
+      "entity_types": [
+        "Recording"
+      ],
+      "manifest": "music/manifest.json"
+    },
+    {
+      "name": "venues",
+      "description": "Places & events",
+      "count": 10000,
+      "dim": 256,
+      "bytes": 26315665,
+      "shard_count": 2,
+      "manifest": "venues/manifest.json"
+    },
+    {
+      "name": "bars",
+      "description": "Bars & events in Eagle River, WI \u2014 Google Places + Eventbrite/Tribe",
+      "count": 402,
+      "dim": 256,
+      "bytes": 1169819,
+      "shard_count": 1,
+      "entity_types": [
+        "Event",
+        "Business"
+      ],
+      "manifest": "bars/manifest.json"
+    }
+  ]
+}

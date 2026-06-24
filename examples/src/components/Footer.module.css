@@ -1,0 +1,162 @@
+.footer {
+  margin-top: auto;
+  /* A faint forest wash rising out of the page into the footer band. */
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    color-mix(in srgb, var(--brand-forest) 5%, var(--bg-surface))
+  );
+  border-top: 1px solid var(--border-subtle);
+}
+
+.inner {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: var(--space-12) var(--space-6) var(--space-8);
+}
+
+.cols {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-12);
+  justify-content: space-between;
+}
+
+.brandCol {
+  max-width: 30em;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.mark {
+  color: var(--brand-forest);
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+}
+
+.community {
+  font-family: var(--font-display);
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+  margin-top: var(--space-2);
+}
+
+.blurb {
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--text-muted);
+  margin: var(--space-2) 0 0;
+}
+
+/* The project ethos, as a quiet pill. */
+.ethos {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: var(--space-4);
+  padding: 5px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-base);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+
+.ethosDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--brand-forest);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand-forest) 18%, transparent);
+}
+
+.linkCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.colTitle {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--brand-forest);
+  font-weight: 600;
+  margin-bottom: var(--space-2);
+}
+
+.link {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  width: fit-content;
+  transition: color 0.15s ease;
+}
+.link:hover {
+  color: var(--text-link);
+}
+
+.arrow {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+.link:hover .arrow {
+  transform: translate(1px, -1px);
+}
+
+.legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--border-subtle);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.powered {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.markSm {
+  color: var(--brand-forest);
+  font-size: var(--text-sm);
+  line-height: 1;
+}
+
+.poweredLink {
+  color: var(--text-secondary);
+  transition: color 0.15s ease;
+}
+.poweredLink:hover {
+  color: var(--text-link);
+}
+
+@media (max-width: 600px) {
+  .inner {
+    padding: var(--space-8) var(--space-4) var(--space-6);
+  }
+  .cols {
+    gap: var(--space-6);
+  }
+  .legal {
+    margin-top: var(--space-6);
+  }
+}
