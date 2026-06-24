@@ -14,6 +14,45 @@
   }
 }
 
+/* The overlay only exists on mobile, behind the drawer. */
+.overlay {
+  display: none;
+}
+
+/* Below the tablet breakpoint the rail becomes an off-canvas drawer toggled by
+   the TopBar hamburger; it slides over the content rather than reserving width. */
+@media (max-width: 768px) {
+  .rail {
+    position: fixed;
+    top: 52px; /* below the TopBar */
+    left: 0;
+    bottom: 0;
+    width: min(80vw, 260px);
+    flex-basis: auto;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform var(--duration-std) var(--ease-out);
+    box-shadow: 2px 0 24px rgba(0, 0, 0, 0.45);
+  }
+  .railOpen {
+    transform: translateX(0);
+  }
+  .overlay {
+    display: block;
+    position: fixed;
+    inset: 52px 0 0 0;
+    background: rgba(0, 0, 0, 0.5);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--duration-std) var(--ease-out);
+    z-index: 49;
+  }
+  .overlayShown {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 .section {
   margin-bottom: var(--space-6);
 }

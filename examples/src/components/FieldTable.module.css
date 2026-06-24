@@ -39,6 +39,21 @@
   color: var(--text-primary);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: anywhere;
+}
+
+/* Phones: a narrower, wrapping field column + tighter cell padding so long
+   values (URLs, addresses) don't force horizontal scroll. */
+@media (max-width: 600px) {
+  .field {
+    width: 38%;
+    white-space: normal;
+  }
+  .field,
+  .value,
+  .type {
+    padding: var(--space-2);
+  }
 }
 
 .type {

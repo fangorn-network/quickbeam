@@ -1,66 +1,9 @@
-// Field label map + display formatting, from LANGUAGE.md §2.
-import type { EntityType } from './types';
+// Generic, domain-agnostic display helpers. Per-domain label maps, field ordering,
+// and external-URL patterns now live in the Domain (lib/domain.ts), driven by the
+// inferred role map + optional presentation overlay.
 
-export interface FieldLabel {
-  label: string;
-  type: 'string' | 'number' | 'boolean' | 'link';
-}
-
-// Human labels for fields. Fields that are rendered specially (title, text,
-// entityType, schemaVersion) are intentionally omitted / marked suppressed.
-export const FIELD_LABELS: Record<string, FieldLabel> = {
-  mbid: { label: 'MusicBrainz ID', type: 'string' },
-  tags: { label: 'Tags', type: 'string' },
-  disambiguation: { label: 'Note', type: 'string' },
-  beginYear: { label: 'Active from', type: 'string' },
-  endYear: { label: 'Active until', type: 'string' },
-  rating: { label: 'Community rating', type: 'number' },
-  area: { label: 'Origin / Location', type: 'link' },
-  artistType: { label: 'Type', type: 'string' },
-  gender: { label: 'Gender', type: 'string' },
-  sortName: { label: 'Sort name', type: 'string' },
-  byArtist: { label: 'By', type: 'link' },
-  durationMs: { label: 'Length', type: 'number' },
-  isrcCodes: { label: 'ISRC', type: 'string' },
-  video: { label: 'Video recording', type: 'boolean' },
-  datePublished: { label: 'Date', type: 'string' },
-  labelName: { label: 'Label', type: 'string' },
-  status: { label: 'Status', type: 'string' },
-  barcode: { label: 'Barcode', type: 'string' },
-  primaryType: { label: 'Format', type: 'string' },
-  iswcCodes: { label: 'ISWC', type: 'string' },
-  workType: { label: 'Work type', type: 'string' },
-  eventType: { label: 'Event type', type: 'string' },
-  time: { label: 'Time', type: 'string' },
-  setlist: { label: 'Setlist', type: 'string' },
-  cancelled: { label: 'Cancelled', type: 'boolean' },
-  placeType: { label: 'Venue type', type: 'string' },
-  address: { label: 'Address', type: 'string' },
-  coordinates: { label: 'Location', type: 'string' },
-  areaType: { label: 'Area type', type: 'string' },
-  instrumentType: { label: 'Instrument type', type: 'string' },
-  description: { label: 'Description', type: 'string' },
-};
-
-// Fields that are never shown as labelled rows in the FieldTable.
-export const SUPPRESSED_FIELDS = new Set([
-  'title',
-  'text',
-  'entityType',
-  'schemaVersion',
-  'description', // rendered as body text in lede area for Instrument
-]);
-
-// Fields whose values are name-strings → clicking runs a SEARCH (soft link).
-export const SOFT_LINK_FIELDS = new Set(['byArtist', 'area']);
-
-export function fieldLabel(key: string): string {
-  return FIELD_LABELS[key]?.label ?? humanise(key);
-}
-
-// Humanise a raw key/rel: hyphens/underscores → spaces, title-case.
+// Humanise a raw key/rel: hyphens/underscores → spaces, split camelCase, title-case.
 export function humanise(raw: string): string {
-  // also split camelCase
   const spaced = raw
     .replace(/[-_]+/g, ' ')
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2');
@@ -70,8 +13,6 @@ export function humanise(raw: string): string {
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ');
 }
-
-// ---- Display formatting helpers (LANGUAGE.md §2) ----
 
 export function formatDuration(ms: number): string {
   const totalSec = Math.round(ms / 1000);
@@ -84,18 +25,6 @@ export function formatRating(r: number): string {
   return `${r.toFixed(1)} / 5`;
 }
 
-export function formatActive(
-  beginYear?: string | number,
-  endYear?: string | number,
-): string | null {
-  const b = beginYear != null && `${beginYear}`.length ? `${beginYear}` : null;
-  const e = endYear != null && `${endYear}`.length ? `${endYear}` : null;
-  if (b && e) return `Active · ${b}–${e}`;
-  if (b && !e) return `Active · ${b}–present`;
-  if (!b && e) return `Dissolved · ${e}`;
-  return null;
-}
-
 export function splitList(v: string): string[] {
   return v
     .split(',')
@@ -103,96 +32,89 @@ export function splitList(v: string): string[] {
     .filter(Boolean);
 }
 
-// MusicBrainz URL patterns (LANGUAGE.md §5).
-export const MB_URL_SEGMENT: Record<string, string> = {
-  Artist: 'artist',
-  Recording: 'recording',
-  Release: 'release',
-  ReleaseGroup: 'release-group',
-  Work: 'work',
-  Event: 'event',
-  Place: 'place',
-  Area: 'area',
-  Instrument: 'instrument',
-};
-
-export function mbUrl(entityType: string, mbid: string): string | null {
-  const seg = MB_URL_SEGMENT[entityType];
-  if (!seg) return null;
-  return `https://musicbrainz.org/${seg}/${mbid}`;
+// Some scalar string fields hold a JSON-encoded array (e.g. amenities:
+// '["live music","dine-in"]'). Parse those back into items; return null if the
+// value isn't a JSON array so callers can fall through to plain rendering.
+export function parseJsonArray(v: unknown): string[] | null {
+  if (typeof v !== 'string') return null;
+  const t = v.trim();
+  if (!t.startsWith('[')) return null;
+  try {
+    const a = JSON.parse(t);
+    return Array.isArray(a) ? a.map(String) : null;
+  } catch {
+    return null;
+  }
 }
 
-// Field rendering order priority (lower = earlier). Unknown fields sort last.
-const FIELD_ORDER = [
-  'area',
-  'byArtist',
-  'artistType',
-  'gender',
-  'sortName',
-  'beginYear',
-  'endYear',
-  'primaryType',
-  'status',
-  'labelName',
-  'datePublished',
-  'durationMs',
-  'workType',
-  'eventType',
-  'time',
-  'placeType',
-  'areaType',
-  'instrumentType',
-  'address',
-  'coordinates',
-  'rating',
-  'isrcCodes',
-  'iswcCodes',
-  'barcode',
-  'video',
-  'cancelled',
-  'setlist',
-  'disambiguation',
-  'tags',
-  'mbid',
+const DAY_NAMES = [
+  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
 ];
 
-export function fieldSortKey(key: string): number {
-  const i = FIELD_ORDER.indexOf(key);
-  return i === -1 ? FIELD_ORDER.length + 1 : i;
+// Parse a clock time like "11:00 AM" / "2 PM" (tolerating the narrow/no-break
+// spaces Google uses) into minutes since midnight. Null if unparseable.
+function timeToMinutes(s: string): number | null {
+  const m = s.match(/(\d{1,2})(?::(\d{2}))?\s*([AP])M/i);
+  if (!m) return null;
+  let h = parseInt(m[1], 10) % 12;
+  if (m[3].toUpperCase() === 'P') h += 12;
+  return h * 60 + parseInt(m[2] ?? '0', 10);
 }
 
-// Projection list fields used for the Connections section.
-export const LIST_FIELDS = [
-  'artists',
-  'events',
-  'recordings',
-  'places',
-  'works',
-  'releases',
-  'tracks',
-] as const;
+// Decide whether a place is open right now from parsed hours rows, using the
+// viewer's local clock (a demo simplification — we don't know the place's TZ).
+// Returns null when hours can't be interpreted. Handles "Closed", "Open 24
+// hours", multiple ranges per day, and overnight ranges that cross midnight.
+export function isOpenNow(rows: { day: string; hours: string }[] | null): boolean | null {
+  if (!rows || rows.length === 0) return null;
+  const now = new Date();
+  const today = now.getDay();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
 
-// Map an entity type to a plural display noun (LANGUAGE.md §1).
-export const PLURAL_NOUN: Record<EntityType, string> = {
-  Artist: 'Artists',
-  Recording: 'Recordings',
-  Release: 'Releases',
-  ReleaseGroup: 'Albums',
-  Work: 'Works',
-  Place: 'Places',
-  Event: 'Events',
-  Area: 'Areas',
-  Instrument: 'Instruments',
-};
+  const byDay = new Map<number, { start: number; end: number }[]>();
+  let parsedAny = false;
+  for (const r of rows) {
+    const di = DAY_NAMES.indexOf(r.day.trim());
+    if (di < 0) continue;
+    const norm = r.hours.replace(/[   ]/g, ' ').replace(/[–—]/g, '-');
+    if (/closed/i.test(norm)) { parsedAny = true; continue; }
+    if (/24\s*hours/i.test(norm)) { byDay.set(di, [{ start: 0, end: 1440 }]); parsedAny = true; continue; }
+    for (const part of norm.split(',')) {
+      const dash = part.indexOf('-');
+      if (dash < 0) continue;
+      const start = timeToMinutes(part.slice(0, dash));
+      const end = timeToMinutes(part.slice(dash + 1));
+      if (start == null || end == null) continue;
+      parsedAny = true;
+      if (!byDay.has(di)) byDay.set(di, []);
+      byDay.get(di)!.push({ start, end });
+    }
+  }
+  if (!parsedAny) return null;
 
-export const SINGULAR_NOUN: Record<EntityType, string> = {
-  Artist: 'Artist',
-  Recording: 'Recording',
-  Release: 'Release',
-  ReleaseGroup: 'Album',
-  Work: 'Work',
-  Place: 'Place',
-  Event: 'Event',
-  Area: 'Area',
-  Instrument: 'Instrument',
-};
+  for (const { start, end } of byDay.get(today) ?? []) {
+    if (end > start ? nowMin >= start && nowMin < end : nowMin >= start) return true;
+  }
+  // A range from yesterday that crosses midnight may still be open this morning.
+  for (const { start, end } of byDay.get((today + 6) % 7) ?? []) {
+    if (end <= start && nowMin < end) return true;
+  }
+  return false;
+}
+
+// Parse a Google-style opening-hours string ("Monday: 9 AM – 5 PM; Tuesday:
+// Closed; …") into day/hours rows. Returns null if it doesn't look like one.
+export function parseHours(v: unknown): { day: string; hours: string }[] | null {
+  if (typeof v !== 'string' || !v.includes(':')) return null;
+  const rows = v
+    .split(';')
+    .map((part) => {
+      const i = part.indexOf(':');
+      if (i < 0) return null;
+      const day = part.slice(0, i).trim();
+      const hours = part.slice(i + 1).trim();
+      return day && hours ? { day, hours } : null;
+    })
+    .filter((r): r is { day: string; hours: string } => r !== null);
+  return rows.length ? rows : null;
+}

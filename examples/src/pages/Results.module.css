@@ -12,6 +12,28 @@
   flex: 0 0 160px;
 }
 
+/* Phones: stack the filter rail above the results, and lay its type buttons out
+   as a horizontal wrapping row of chips instead of a tall vertical list. */
+@media (max-width: 768px) {
+  .layout {
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .rail {
+    flex: none;
+    width: 100%;
+    border-bottom: 1px solid var(--border-subtle);
+    padding-bottom: var(--space-3);
+  }
+  .rail > .filter {
+    display: inline-block;
+    width: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    margin: 0 var(--space-1) var(--space-1) 0;
+  }
+}
+
 .railTitle {
   font-size: var(--text-xs);
   text-transform: uppercase;
@@ -39,6 +61,74 @@
 
 .filterActive {
   background: var(--bg-active);
+  color: var(--text-primary);
+}
+
+.facetGroup {
+  margin-top: var(--space-4);
+}
+
+.facetTitle {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.facetValue {
+  color: var(--text-secondary);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent, #e0af68);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.chip {
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.chipActive {
+  background: var(--bg-active);
+  border-color: var(--accent, #e0af68);
+  color: var(--text-primary);
+}
+
+.clearFilters {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  padding: 0;
+  margin-top: var(--space-3);
+}
+
+.clearFilters:hover {
   color: var(--text-primary);
 }
 

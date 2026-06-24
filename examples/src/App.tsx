@@ -5,34 +5,45 @@ import LeftRail from './components/LeftRail';
 import CommandPalette from './components/CommandPalette';
 import { useBackStack, pushPage } from './hooks/useBackStack';
 import { useTypeCounts } from './hooks/useTypeCounts';
-import { isEntityType } from './lib/types';
+import { useDomain } from './lib/domainContext';
 import type { EntityType, PageRef } from './lib/types';
 import { browseHref } from './lib/nav';
+import { warmEmbedder } from './lib/embed';
+import { IS_MOCK } from './lib/config';
 import Landing from './pages/Landing';
 import EntityPage from './pages/EntityPage';
 import Results from './pages/Results';
 import styles from './App.module.css';
 
-function activeTypeFromPath(pathname: string, search: string): EntityType | null {
+// The raw type token from the path/query, if any (validated against the domain below).
+function rawTypeFromPath(pathname: string, search: string): string | null {
   const browseMatch = pathname.match(/^\/browse\/([^/]+)/);
-  if (browseMatch) {
-    const t = decodeURIComponent(browseMatch[1]);
-    if (isEntityType(t)) return t;
-  }
-  const params = new URLSearchParams(search);
-  const t = params.get('type');
-  if (t && isEntityType(t)) return t;
-  return null;
+  if (browseMatch) return decodeURIComponent(browseMatch[1]);
+  return new URLSearchParams(search).get('type');
 }
 
 export default function App() {
   const navigate = useNavigate();
   const location = useLocation();
+  const domain = useDomain();
   const { recent, pop, canGoBack } = useBackStack();
   const { counts, connectionError } = useTypeCounts();
   const [cmdkOpen, setCmdkOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(false); // mobile nav drawer
 
-  const activeType = activeTypeFromPath(location.pathname, location.search);
+  // Close the mobile nav drawer on any navigation.
+  useEffect(() => {
+    setRailOpen(false);
+  }, [location.pathname, location.search]);
+
+  const rawType = rawTypeFromPath(location.pathname, location.search);
+  const activeType: EntityType | null = rawType && domain.hasType(rawType) ? rawType : null;
+
+  // Start downloading the query-embedding model in the background so the first
+  // semantic search isn't blocked on a cold model load. Mock mode never embeds.
+  useEffect(() => {
+    if (!IS_MOCK) warmEmbedder();
+  }, []);
 
   // Global Cmd-K / Ctrl-K.
   useEffect(() => {
@@ -62,9 +73,10 @@ export default function App() {
   const onVisit = useCallback((page: PageRef) => pushPage(page), []);
 
   function toggleTheme() {
+    // Default (no attribute) is the light "paper" theme, so flip to dark first.
     const root = document.documentElement;
-    const cur = root.getAttribute('data-theme');
-    root.setAttribute('data-theme', cur === 'light' ? 'dark' : 'light');
+    const isDark = root.getAttribute('data-theme') === 'dark';
+    root.setAttribute('data-theme', isDark ? 'light' : 'dark');
   }
 
   return (
@@ -75,6 +87,8 @@ export default function App() {
         canGoBack={canGoBack}
         connectionError={connectionError}
         onToggleTheme={toggleTheme}
+        onMenu={() => setRailOpen((o) => !o)}
+        onHome={() => navigate('/')}
       />
       <div className={styles.body}>
         <LeftRail
@@ -82,6 +96,8 @@ export default function App() {
           counts={counts}
           recent={recent}
           onTypeSelect={onTypeSelect}
+          open={railOpen}
+          onClose={() => setRailOpen(false)}
         />
         <main className={styles.main}>
           <Routes>
@@ -92,6 +108,9 @@ export default function App() {
           </Routes>
         </main>
       </div>
+      {/* <div> */}
+        {/* <Footer /> */}
+      {/* </div> */}
       <CommandPalette
         open={cmdkOpen}
         onClose={() => setCmdkOpen(false)}

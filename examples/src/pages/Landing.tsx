@@ -2,9 +2,10 @@ import { useNavigate } from 'react-router-dom';
 import SearchBar from '../components/SearchBar';
 import TypeBrowseGrid from '../components/TypeBrowseGrid';
 import EntityBadge from '../components/EntityBadge';
-import Breadcrumb from '../components/Breadcrumb';
 import type { EntityType, PageRef } from '../lib/types';
 import { COPY } from '../lib/copy';
+import { COMMUNITY, communityFull } from '../lib/community';
+import { useDomain } from '../lib/domainContext';
 import { browseHref, searchHref, searchPageRef } from '../lib/nav';
 import { useBackStack } from '../hooks/useBackStack';
 import styles from './Landing.module.css';
@@ -16,6 +17,7 @@ interface Props {
 
 export default function Landing({ counts, onVisit }: Props) {
   const navigate = useNavigate();
+  const domain = useDomain();
   const { recent } = useBackStack();
 
   function onSearch(q: string, type?: EntityType) {
@@ -26,11 +28,33 @@ export default function Landing({ counts, onVisit }: Props) {
 
   return (
     <div className={styles.page}>
-      <Breadcrumb crumbs={[{ label: 'Browse' }]} />
+      {/* Branded community hero */}
+      <section className={styles.hero}>
+        <div className={styles.eyebrow}>
+          <span className={styles.eyebrowMark}>◇</span> SOND3R · {communityFull}
+        </div>
+        <h1 className={styles.title}>Discover {COMMUNITY.name}</h1>
+        <p className={styles.tagline}>{COMMUNITY.tagline}</p>
 
-      <div className={styles.searchArea}>
-        <SearchBar onSearch={onSearch} />
-      </div>
+        <div className={styles.searchArea}>
+          <SearchBar onSearch={onSearch} />
+        </div>
+
+        <div className={styles.pills}>
+          {domain.entityTypes.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className={styles.pill}
+              onClick={() => navigate(browseHref(t))}
+              style={{ '--accent': domain.accentColor(t) } as React.CSSProperties}
+            >
+              <span className={styles.pillCount}>{counts[t] ?? '—'}</span>
+              {domain.pluralOf(t)}
+            </button>
+          ))}
+        </div>
+      </section>
 
       <h2 className={styles.h2}>{COPY.browse.heading}</h2>
       <TypeBrowseGrid
@@ -60,6 +84,16 @@ export default function Landing({ counts, onVisit }: Props) {
           ))}
         </ul>
       )}
+
+      {/* Roadmap teaser — the "claim your business" vision. */}
+      <div className={styles.claim}>
+        <span className={styles.claimDot} aria-hidden="true">◇</span>
+        Run a bar or host events in {COMMUNITY.name}?{' '}
+        <strong>Claiming your profile &amp; self-serve events are coming soon.</strong>
+        <br></br>
+        <br></br>
+        <strong>Get in touch at <a href='mailto:fangorn@fangorn.network'>fangorn@fangorn.network</a></strong>
+      </div>
     </div>
   );
 }

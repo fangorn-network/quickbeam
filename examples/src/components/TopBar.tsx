@@ -1,4 +1,5 @@
 import { COPY } from '../lib/copy';
+import { communityChip } from '../lib/community';
 import StatusBadge from './StatusBadge';
 import styles from './TopBar.module.css';
 
@@ -8,6 +9,8 @@ interface Props {
   canGoBack: boolean;
   connectionError?: boolean;
   onToggleTheme: () => void;
+  onMenu?: () => void;
+  onHome?: () => void;
 }
 
 export default function TopBar({
@@ -16,10 +19,21 @@ export default function TopBar({
   canGoBack,
   connectionError,
   onToggleTheme,
+  onMenu,
+  onHome,
 }: Props) {
   return (
     <header className={`${styles.bar} ${connectionError ? styles.errored : ''}`}>
       <div className={styles.left}>
+        <button
+          type="button"
+          className={styles.menuBtn}
+          onClick={onMenu}
+          aria-label="Menu"
+          title="Menu"
+        >
+          ☰
+        </button>
         <button
           type="button"
           className={styles.backBtn}
@@ -30,7 +44,25 @@ export default function TopBar({
         >
           ←
         </button>
-        <span className={styles.logo}>▣ schema-browser</span>
+        <button
+          type="button"
+          className={styles.logo}
+          onClick={onHome}
+          aria-label="Home"
+          title="Home"
+        >
+          <span className={styles.mark}>◇</span>
+          <span className={styles.logoText}>SOND3R</span>
+        </button>
+        <span className={styles.divider} aria-hidden="true" />
+        <button
+          type="button"
+          className={styles.community}
+          onClick={onHome}
+          title={`${communityChip} — home`}
+        >
+          {communityChip}
+        </button>
       </div>
 
       <button type="button" className={styles.ghost} onClick={onCmdK}>
@@ -47,9 +79,9 @@ export default function TopBar({
           className={styles.gear}
           onClick={onToggleTheme}
           aria-label="Toggle theme"
-          title="Toggle theme"
+          title="Toggle light / dark"
         >
-          ⚙
+          ◐
         </button>
       </div>
     </header>

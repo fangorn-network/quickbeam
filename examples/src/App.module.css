@@ -16,3 +16,17 @@
   overflow-y: auto;
   padding: var(--space-4) var(--space-8);
 }
+
+/* On phones the rail is an overlay drawer, so main spans the full width with
+   tighter side padding. */
+@media (max-width: 768px) {
+  .main {
+    padding: var(--space-4);
+  }
+}
+
+@media (max-width: 480px) {
+  .main {
+    padding: var(--space-3);
+  }
+}

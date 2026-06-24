@@ -53,6 +53,102 @@
   margin-top: var(--space-2);
 }
 
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+}
+
+.statItem:not(:last-child)::after {
+  content: '·';
+  margin-left: var(--space-2);
+  color: var(--text-muted);
+}
+
+.stat {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.open {
+  color: #4caf6d;
+  font-weight: 600;
+}
+
+.closed {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.address {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+
+.amenities {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.amenity {
+  background: var(--bg-active);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs);
+}
+
+.contact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.contactLink {
+  font-size: var(--text-sm);
+  color: var(--text-link);
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.contactLink:hover {
+  color: var(--text-link-hover);
+}
+
+.hours {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+}
+
+.hours td {
+  padding: var(--space-1) 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.hoursDay {
+  color: var(--text-secondary);
+  width: 9rem;
+}
+
+.hoursTime {
+  color: var(--text-primary);
+}
+
+.hoursClosed .hoursTime {
+  color: var(--text-muted);
+}
+
 .dis {
   color: var(--text-muted);
   font-size: var(--text-sm);
@@ -109,9 +205,113 @@
   line-height: 1.5;
 }
 
+.linkInline {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--text-link);
+  cursor: pointer;
+}
+.linkInline:hover {
+  color: var(--text-link-hover);
+}
+
+/* Events section on a venue page */
+.eventList {
+  display: flex;
+  flex-direction: column;
+}
+
+.eventGroupLabel {
+  margin-top: var(--space-4);
+  margin-bottom: var(--space-1);
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.eventRow {
+  display: grid;
+  grid-template-columns: 12rem 1fr auto;
+  gap: var(--space-3);
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-bottom: 1px solid var(--border-subtle);
+  padding: var(--space-2) 0;
+  cursor: pointer;
+  font-family: inherit;
+}
+.eventRow:hover {
+  background: var(--bg-active);
+}
+
+.eventWhen {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.eventName {
+  color: var(--text-link);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.eventWhere {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.eventNext {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: #4caf6d;
+  color: #fff;
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+
+.eventCancelled {
+  margin-left: var(--space-2);
+  padding: 1px var(--space-2);
+  border-radius: var(--radius-sm);
+  background: var(--bg-active);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 .error {
   color: var(--text-secondary);
   font-size: var(--text-base);
+}
+
+/* Phones */
+@media (max-width: 600px) {
+  .header {
+    padding: var(--space-4);
+  }
+  .headerTop {
+    margin-bottom: var(--space-2);
+  }
+  /* Event rows: stack date / name / venue instead of a 3-column grid. */
+  .eventRow {
+    grid-template-columns: 1fr;
+    gap: 2px;
+    padding: var(--space-3) 0;
+  }
+  .eventWhen {
+    order: -1;
+    color: var(--accent, var(--text-secondary));
+  }
+  .section {
+    padding: var(--space-4);
+  }
 }
 
 .link {

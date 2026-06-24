@@ -5,6 +5,7 @@ import react from '@vitejs/plugin-react';
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ["untrainable-milton-gawky.ngrok-free.dev"],
     proxy: {
       '/qdrant': {
         target: 'http://localhost:6333',

@@ -148,7 +148,10 @@ def parse_args():
     )
     p.add_argument("--input-dir", default="./stage_volumes",
                    help="Directory containing volume_<n>_*.json node files + an edges file.")
-    p.add_argument("--volume", type=int, default=1)
+    p.add_argument("--volume", type=int, default=1,
+                   help="Volume to scan (0 = ALL volumes — merges node types across "
+                        "volumes and combines every edges file; use when one bundle "
+                        "spans several *_pg shapers, e.g. places + events).")
     p.add_argument("--out-dir", default="./stage_volumes/schemas")
     p.add_argument("--prefix", default="fangorn.mb",
                    help="Schema name prefix → <prefix>.<type>.<version>")
@@ -168,7 +171,8 @@ def parse_args():
 def run():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
-    pat = os.path.join(args.input_dir, f"volume_{args.volume}_*.json")
+    pat = (os.path.join(args.input_dir, "volume_*_*.json") if args.volume == 0
+           else os.path.join(args.input_dir, f"volume_{args.volume}_*.json"))
     files = sorted(glob.glob(pat))
     node_files = [f for f in files if not f.endswith("_edges.json")]
     edge_files = [f for f in files if f.endswith("_edges.json")]
@@ -179,23 +183,35 @@ def run():
         return f"{args.prefix}.{type_name.lower()}.{args.version}"
 
     # ── Node schemas ────────────────────────────────────────────────────────
+    # When scanning all volumes, several files can share a type (e.g. a places
+    # `categories` file and an events `event_categories` file both → Category):
+    # merge their field definitions into the union so the schema covers both.
     print(f"🔎 Inferring schemas from {len(node_files)} node file(s)...")
-    schemas, type_to_schema = [], {}
+    merged: dict[str, dict] = {}
+    counts: dict[str, int] = {}
     for path in node_files:
         type_name, definition, count = infer_schema(path, args.sample, args.all_strings)
+        merged.setdefault(type_name, {}).update(definition)
+        counts[type_name] = counts.get(type_name, 0) + count
+
+    schemas, type_to_schema = [], {}
+    for type_name, definition in merged.items():
         name = schema_name(type_name)
         type_to_schema[type_name] = name
         schemas.append({"name": name, "definition": definition})
         out = os.path.join(args.out_dir, f"{name}.json")
         with open(out, "w", encoding="utf-8") as f:
             json.dump({"name": name, "definition": definition}, f, indent=2)
-        print(f"   ✅ {type_name:<14} → {name}  ({len(definition)} fields, sampled {count:,})")
+        print(f"   ✅ {type_name:<14} → {name}  ({len(definition)} fields, sampled {counts[type_name]:,})")
 
     # ── Bundle shape ────────────────────────────────────────────────────────
     bundle_edges = []
     if edge_files:
-        print(f"\n🔗 Inferring bundle edges from {os.path.basename(edge_files[0])}...")
-        triples = infer_bundle_edges(edge_files[0], args.edge_scan)
+        from collections import Counter
+        print(f"\n🔗 Inferring bundle edges from {len(edge_files)} edges file(s)...")
+        triples: Counter = Counter()
+        for ef in edge_files:
+            triples.update(infer_bundle_edges(ef, args.edge_scan))
         for (rel, ft, tt), n in sorted(triples.items(), key=lambda kv: -kv[1]):
             if ft not in type_to_schema or tt not in type_to_schema:
                 print(f"   ⚠️  edge {rel} {ft}→{tt}: endpoint type not among node schemas, skipping")

@@ -1,41 +1,51 @@
-/* Design tokens + global styles (DESIGN.md §2). */
+/* Design tokens — SOND3R "Northwoods editorial" (warm paper light by default,
+   forest + amber accents, editorial serif display). */
 :root {
-  /* Surface */
-  --bg-base: #0d0f12;
-  --bg-surface: #14171c;
-  --bg-elevated: #1c2028;
-  --bg-hover: #22272f;
-  --bg-active: #272d38;
+  /* Surface — warm paper */
+  --bg-base: #f1e9db;
+  --bg-surface: #faf6ef;
+  --bg-elevated: #fffdf8;
+  --bg-hover: #efe6d6;
+  --bg-active: #e6dabf;
 
   /* Borders */
-  --border-subtle: #252a33;
-  --border-strong: #363d4a;
+  --border-subtle: #e6dcc8;
+  --border-strong: #ccc0a4;
 
-  /* Text */
-  --text-primary: #e8eaf0;
-  --text-secondary: #8b93a6;
-  --text-muted: #555f72;
-  --text-link: #7eb8f7;
-  --text-link-hover: #aad2ff;
+  /* Text — ink on paper */
+  --text-primary: #232018;
+  --text-secondary: #5b5443;
+  --text-muted: #938a73;
+  --text-link: #1f6f4f;
+  --text-link-hover: #2a8c64;
 
-  /* Accent: entity type identity */
-  --accent-artist: #a78bfa;
-  --accent-recording: #34d399;
-  --accent-release: #60a5fa;
-  --accent-releasegroup: #f472b6;
-  --accent-work: #fbbf24;
-  --accent-place: #fb923c;
-  --accent-event: #f87171;
-  --accent-area: #38bdf8;
-  --accent-instrument: #a3e635;
+  /* Brand */
+  --brand-forest: #1f6f4f;
+  --brand-forest-deep: #16543b;
+  --brand-amber: #d98a2b;
+  --brand-amber-deep: #b5701d;
+  --brand-ink: #232018;
+  --brand-paper: #faf6ef;
+
+  /* Accent: entity type identity (kept for the music domain) */
+  --accent-artist: #8a5a2b;
+  --accent-recording: #1f6f4f;
+  --accent-release: #2f6f8f;
+  --accent-releasegroup: #9c4f6a;
+  --accent-work: #c08a2b;
+  --accent-place: #d98a2b;
+  --accent-event: #c2562b;
+  --accent-area: #3f7f7a;
+  --accent-instrument: #6f8f3f;
 
   /* Semantic */
-  --color-success: #34d399;
-  --color-warning: #fbbf24;
-  --color-error: #f87171;
-  --color-info: #60a5fa;
+  --color-success: #2f8f5e;
+  --color-warning: #d98a2b;
+  --color-error: #b3402f;
+  --color-info: #2f6f8f;
 
   /* Typography */
+  --font-display: 'Fraunces', 'Iowan Old Style', 'Palatino Linotype', Georgia, serif;
   --font-sans: 'Inter', 'Helvetica Neue', Arial, sans-serif;
   --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
@@ -46,6 +56,8 @@
   --text-md: 1.0625rem;
   --text-lg: 1.25rem;
   --text-xl: 1.625rem;
+  --text-2xl: 2.25rem;
+  --text-3xl: clamp(2.4rem, 7vw, 3.6rem);
 
   /* Spacing */
   --space-1: 0.25rem;
@@ -67,17 +79,25 @@
   --duration-std: 140ms;
 }
 
-[data-theme='light'] {
-  --bg-base: #f4f6fa;
-  --bg-surface: #ffffff;
-  --bg-elevated: #f0f2f7;
-  --bg-hover: #e8ecf4;
-  --bg-active: #dfe6f2;
-  --border-subtle: #dde2ed;
-  --border-strong: #c5ccd9;
-  --text-primary: #1a1e26;
-  --text-secondary: #4a5568;
-  --text-muted: #8b95a6;
+/* Northwoods night — warm, low-glare dark variant (toggled via the top bar). */
+[data-theme='dark'] {
+  --bg-base: #14130e;
+  --bg-surface: #1d1b14;
+  --bg-elevated: #25221a;
+  --bg-hover: #2b2820;
+  --bg-active: #353026;
+  --border-subtle: #2f2b21;
+  --border-strong: #463f30;
+  --text-primary: #efe9da;
+  --text-secondary: #b1a78d;
+  --text-muted: #7a7159;
+  --text-link: #6fc79b;
+  --text-link-hover: #93e0bb;
+  --brand-forest: #5bbf8e;
+  --brand-amber: #e6a64a;
+  --brand-amber-deep: #d98a2b;
+  --brand-ink: #efe9da;
+  --brand-paper: #1d1b14;
 }
 
 * {

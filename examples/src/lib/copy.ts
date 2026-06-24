@@ -1,8 +1,8 @@
 // UI microcopy, from LANGUAGE.md §4.
 export const COPY = {
   search: {
-    placeholder: 'Search artists, albums, recordings, places…',
-    subtext: 'Searches by name and meaning — try "jazz piano trios from Chicago"',
+    placeholder: 'Search bars, events & places…',
+    subtext: 'Search by name or meaning — try “live music this weekend” or “patio with food”',
     keyboardHint: 'Press / to focus',
     clearAria: 'Clear search',
   },
@@ -11,10 +11,10 @@ export const COPY = {
     allTypes: 'All types',
   },
   cmdk: {
-    ghost: 'Cmd-K — Search anything…',
-    groupTypes: 'Entity Types',
+    ghost: 'Search bars & events…',
+    groupTypes: 'Browse',
     groupRecent: 'Recent',
-    groupResults: 'Search results',
+    groupResults: 'Results',
     placeholder: 'Search or jump to a type…',
   },
   similar: {
@@ -34,7 +34,7 @@ export const COPY = {
   link: {
     softTooltip: (v: string) => `Search for "${v}"`,
     hardTooltip: (title: string) => `View ${title}`,
-    externalTooltip: 'View on MusicBrainz',
+    externalTooltip: 'View source',
   },
   states: {
     loadingEntity: 'Loading…',
@@ -46,8 +46,8 @@ export const COPY = {
     connectionError: 'Connection error — retrying…',
   },
   browse: {
-    heading: 'Browse by type',
-    recentHeading: 'Recent activity',
-    recentEmpty: 'No recent activity yet. Search or pick a type to begin.',
+    heading: 'Explore',
+    recentHeading: 'Recently viewed',
+    recentEmpty: 'Nothing yet — search or pick a category to begin.',
   },
 } as const;

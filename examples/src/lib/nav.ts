@@ -1,6 +1,5 @@
 // Centralised href + PageRef builders.
 import type { EntitySummary, PageRef } from './types';
-import { secondaryLine } from './summary';
 
 export function entityHref(pointId: string): string {
   return `/entity/${encodeURIComponent(pointId)}`;
@@ -15,6 +14,20 @@ export function searchHref(q: string, type?: string): string {
 
 export function browseHref(type: string): string {
   return `/browse/${encodeURIComponent(type)}`;
+}
+
+// Geographic proximity search: rank entries by distance from a "lat,lng" point.
+export function nearHref(coords: string): string {
+  return `/search?near=${encodeURIComponent(coords)}`;
+}
+
+export function nearPageRef(coords: string, label: string): PageRef {
+  return {
+    kind: 'search',
+    label: `Near ${label}`,
+    query: coords,
+    href: nearHref(coords),
+  };
 }
 
 export function entityPageRef(e: EntitySummary): PageRef {
@@ -35,8 +48,4 @@ export function searchPageRef(q: string, type?: string): PageRef {
     query: q,
     href: searchHref(q, type),
   };
-}
-
-export function summaryFor(e: EntitySummary): string {
-  return secondaryLine(e);
 }

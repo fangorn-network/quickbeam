@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
-import { ENTITY_TYPES } from '../lib/types';
 import type { EntityType, PageRef } from '../lib/types';
-import { ENTITY_META, accentColor } from '../lib/entityMeta';
+import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import { browseHref } from '../lib/nav';
 import EntityBadge from './EntityBadge';
@@ -12,11 +11,27 @@ interface Props {
   counts: Partial<Record<EntityType, number | null>>;
   recent: PageRef[];
   onTypeSelect: (t: EntityType | null) => void;
+  open?: boolean; // mobile drawer open
+  onClose?: () => void;
 }
 
-export default function LeftRail({ activeType, counts, recent, onTypeSelect }: Props) {
+export default function LeftRail({
+  activeType,
+  counts,
+  recent,
+  onTypeSelect,
+  open,
+  onClose,
+}: Props) {
+  const domain = useDomain();
   return (
-    <nav className={styles.rail}>
+    <>
+      <div
+        className={`${styles.overlay} ${open ? styles.overlayShown : ''}`}
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <nav className={`${styles.rail} ${open ? styles.railOpen : ''}`}>
       <div className={styles.section}>
         <div className={styles.sectionTitle}>Types</div>
         <ul className={styles.typeList}>
@@ -30,7 +45,7 @@ export default function LeftRail({ activeType, counts, recent, onTypeSelect }: P
               <span className={styles.typeName}>{COPY.filter.allTypes}</span>
             </Link>
           </li>
-          {ENTITY_TYPES.map((t) => {
+          {domain.entityTypes.map((t) => {
             const count = counts[t];
             return (
               <li key={t}>
@@ -38,10 +53,10 @@ export default function LeftRail({ activeType, counts, recent, onTypeSelect }: P
                   to={browseHref(t)}
                   className={`${styles.typeRow} ${activeType === t ? styles.active : ''}`}
                   onClick={() => onTypeSelect(t)}
-                  title={ENTITY_META[t].plural}
+                  title={domain.pluralOf(t)}
                 >
-                  <span className={styles.dot} style={{ background: accentColor(t) }} />
-                  <span className={styles.typeName}>{ENTITY_META[t].plural}</span>
+                  <span className={styles.dot} style={{ background: domain.accentColor(t) }} />
+                  <span className={styles.typeName}>{domain.pluralOf(t)}</span>
                   <span className={styles.count}>
                     {count == null ? '' : count}
                   </span>
@@ -71,6 +86,7 @@ export default function LeftRail({ activeType, counts, recent, onTypeSelect }: P
           </ul>
         )}
       </div>
-    </nav>
+      </nav>
+    </>
   );
 }

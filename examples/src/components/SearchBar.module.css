@@ -24,15 +24,35 @@
 
 .input {
   flex: 1;
+  min-width: 0;
   background: transparent;
   border: none;
   outline: none;
   color: var(--text-primary);
-  font-size: var(--text-base);
+  /* 16px keeps iOS Safari from auto-zooming the page when the field is focused. */
+  font-size: 16px;
 }
 
 .input::placeholder {
   color: var(--text-muted);
+}
+
+.go {
+  flex: 0 0 auto;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  height: 30px;
+  min-width: 36px;
+  font-size: var(--text-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.go:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .clear {

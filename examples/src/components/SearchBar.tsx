@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { ENTITY_TYPES } from '../lib/types';
 import type { EntityType } from '../lib/types';
-import { ENTITY_META } from '../lib/entityMeta';
+import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import styles from './SearchBar.module.css';
 
@@ -12,6 +11,7 @@ interface Props {
 }
 
 export default function SearchBar({ initialValue = '', initialType = '', onSearch }: Props) {
+  const domain = useDomain();
   const [q, setQ] = useState(initialValue);
   const [type, setType] = useState<EntityType | ''>(initialType);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -40,10 +40,17 @@ export default function SearchBar({ initialValue = '', initialType = '', onSearc
         <input
           ref={inputRef}
           className={styles.input}
+          type="text"
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder={COPY.search.placeholder}
           aria-label="Search"
+          inputMode="search"
+          enterKeyHint="search"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="none"
+          spellCheck={false}
         />
         {q && (
           <button
@@ -62,12 +69,17 @@ export default function SearchBar({ initialValue = '', initialType = '', onSearc
           aria-label={COPY.filter.label}
         >
           <option value="">{COPY.filter.allTypes}</option>
-          {ENTITY_TYPES.map((t) => (
+          {domain.entityTypes.map((t) => (
             <option key={t} value={t}>
-              {ENTITY_META[t].plural}
+              {domain.pluralOf(t)}
             </option>
           ))}
         </select>
+        {/* Explicit submit — mobile keyboards don't reliably submit a form via
+            the return key, so a tappable button guarantees search works there. */}
+        <button type="submit" className={styles.go} aria-label="Search">
+          ⌕
+        </button>
       </div>
       <div className={styles.subtext}>
         {COPY.search.subtext} · {COPY.search.keyboardHint}

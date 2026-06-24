@@ -1,7 +1,6 @@
 import EntityBadge from './EntityBadge';
 import StatusBadge from './StatusBadge';
-import { secondaryLine } from '../lib/summary';
-import { splitList } from '../lib/labels';
+import { useDomain } from '../lib/domainContext';
 import type { EntitySummary } from '../lib/types';
 import styles from './ResultCard.module.css';
 
@@ -13,11 +12,9 @@ interface Props {
 }
 
 export default function ResultCard({ entity, score, onClick, highlighted }: Props) {
-  const secondary = secondaryLine(entity);
-  const tags =
-    typeof entity.fields.tags === 'string'
-      ? splitList(entity.fields.tags).slice(0, 4)
-      : [];
+  const domain = useDomain();
+  const secondary = domain.secondaryLine(entity);
+  const tags = domain.primaryTags(entity.fields as Record<string, unknown>).slice(0, 4);
   return (
     <button
       type="button"

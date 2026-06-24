@@ -103,6 +103,11 @@ def parse_args():
                              "needed only if you must bake coords into the Qdrant snapshot).")
     parser.add_argument("--umap-map-file", default="./db/catalog_map.json.gz",
                         help="Output path for the --umap-target file artifact (gzipped JSON).")
+    parser.add_argument("--max-manifests", type=int, default=0,
+                        help="Build at most N bundle manifests (shards) this run, then stop. "
+                             "0 = no limit. Progress is checkpointed, so a later run resumes "
+                             "with the next un-built shards. Use this to build a small number of "
+                             "shards on a memory-limited machine.")
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -273,6 +278,19 @@ def ensure_indexes(qdrant, collection):
         ("fields.byArtist", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("owner",           models.KeywordIndexParams(type="keyword")),
         ("entityType",      models.KeywordIndexParams(type="keyword")),
+        # Structured filters for hybrid search (Business records). Harmless for
+        # other entity types — the fields are simply absent, so the index stays
+        # empty and never matches.
+        ("fields.rating",     models.FloatIndexParams(type="float")),
+        ("fields.priceLevel", models.KeywordIndexParams(type="keyword")),
+        ("fields.amenities",  models.KeywordIndexParams(type="keyword")),
+        ("fields.categories", models.KeywordIndexParams(type="keyword")),
+        ("fields.locality",   models.KeywordIndexParams(type="keyword")),
+        # Event records (merged in via events_pg): browse upcoming/past + by source,
+        # and look up the events a given Business hosts (fields.hostBusinessId).
+        ("fields.source",         models.KeywordIndexParams(type="keyword")),
+        ("fields.isPast",         models.BoolIndexParams(type="bool")),
+        ("fields.hostBusinessId", models.KeywordIndexParams(type="keyword")),
     ]
     for field, schema in specs:
         try:
@@ -763,6 +781,11 @@ def _b58encode(v: bytes) -> str:
     return ('1' * leading) + bytes(reversed(res)).decode('ascii')
 
 def _cid_to_path(cid: str) -> str:
+    # Chunk dataCids are stored as full `ipfs://<dirCid>/<file>` URIs (UnixFS dir +
+    # path); strip the scheme so the gateway URL is `<gw>/ipfs/<dirCid>/<file>` and
+    # not the malformed `<gw>/ipfs/ipfs://<dirCid>/<file>` (→ 400).
+    if cid.startswith("ipfs://"):
+        cid = cid[len("ipfs://"):]
     if cid.startswith(('0x', '0X')):
         raw = bytes.fromhex(cid[2:])
         if len(raw) == 34 and raw[0] == 0x12 and raw[1] == 0x20:
@@ -853,7 +876,13 @@ ROOT_PROFILES: dict[str, dict] = {
     # the per-bar demo shard embeds. Depth 2 reaches Business→Review→Reviewer.
     "business": {
         "root_type": "Business", "max_depth": 2,
-        "include": ["Review", "Category", "Locality", "Reviewer", "Business"],
+        "include": ["Review", "Category", "Locality", "Reviewer", "Business", "Event"],
+    },
+    # events graph (events_pg), merged into the places graph: one document per
+    # Event, folding in its venue Business, organizer, category and locality.
+    "localevent": {
+        "root_type": "Event", "max_depth": 2,
+        "include": ["Business", "Organizer", "Category", "Locality"],
     },
 }
 
@@ -1141,7 +1170,21 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                     for k, v in fields.items()
                     if isinstance(v, list) and v and k != "entityType"
                 )
+                # Fold scalar role fields (subtitle + the `text` role) into the
+                # document text. The `text` role carries the rich human-readable
+                # blurb (amenities, rating, hours, editorial, price for Business
+                # records) that is otherwise invisible to vector search because
+                # it is a scalar string, not a tag/list field. Mirrors the
+                # server's runtime composer (_build_searchable_text).
+                subtitle = fields.get(role_map.get("subtitle", ""), "")
+                text_terms = "; ".join(
+                    str(fields[t]) for t in (role_map.get("text", []) or []) if fields.get(t)
+                )
                 text_str = f"Title: {fields.get(role_map.get('title', ''), '')}. Tags: {tags}"
+                if subtitle:
+                    text_str += f". Subtitle: {subtitle}"
+                if text_terms:
+                    text_str += f". {text_terms}"
                 if rels:
                     text_str += f". {rels}"
             else:
@@ -1315,6 +1358,11 @@ async def main():
             if since_flush >= CHECKPOINT_EVERY:
                 _flush()
                 since_flush = 0
+
+            if args.max_manifests and manifest_num >= args.max_manifests:
+                print(f"[Builder] Reached --max-manifests={args.max_manifests}; "
+                      f"stopping. Re-run to build the next shards (resumes from checkpoint).")
+                break
 
         # Final flush — persist whatever completed since the last batched write.
         if since_flush:

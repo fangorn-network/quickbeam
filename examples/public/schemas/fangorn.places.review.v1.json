@@ -1,0 +1,38 @@
+{
+  "name": "fangorn.places.review.v1",
+  "definition": {
+    "author": {
+      "@type": "string"
+    },
+    "body": {
+      "@type": "string"
+    },
+    "businessId": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "publishTime": {
+      "@type": "string"
+    },
+    "rating": {
+      "@type": "number"
+    },
+    "relativeTime": {
+      "@type": "string"
+    },
+    "reviewId": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

@@ -183,6 +183,30 @@ def placespg(ctx: typer.Context):
     run()
 
 
+@data_app.command("events-fetch", **_PASSTHROUGH)
+def events_fetch(ctx: typer.Context):
+    """Scrape Eventbrite organizers / Tribe calendars into Postgres events_raw."""
+    _fwd("quickbeam data events-fetch", ctx.args)
+    from quickbeam.pipelines.events import main
+    main()
+
+
+@data_app.command(**_PASSTHROUGH)
+def eventspg(ctx: typer.Context):
+    """Convert events_raw (Eventbrite/Tribe) into a Fangorn graph, merged with places."""
+    _fwd("quickbeam data eventspg", ctx.args)
+    from quickbeam.pipelines.events_pg import run
+    run()
+
+
+@data_app.command(**_PASSTHROUGH)
+def prebake(ctx: typer.Context):
+    """Embed local volume node files straight into Qdrant (offline build)."""
+    _fwd("quickbeam data prebake", ctx.args)
+    from quickbeam.pipelines.prebake import run
+    run()
+
+
 @data_app.command(**_PASSTHROUGH)
 def osm(ctx: typer.Context):
     """Fetch recent OSM changesets for a bounding box."""

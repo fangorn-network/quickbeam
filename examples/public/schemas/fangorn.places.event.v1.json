@@ -1,0 +1,83 @@
+{
+  "name": "fangorn.places.event.v1",
+  "definition": {
+    "address": {
+      "@type": "string"
+    },
+    "categories": {
+      "@type": "string"
+    },
+    "coordinates": {
+      "@type": "string"
+    },
+    "dateLabel": {
+      "@type": "string"
+    },
+    "endDate": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "eventId": {
+      "@type": "string"
+    },
+    "imageUrl": {
+      "@type": "string"
+    },
+    "isFree": {
+      "@type": "boolean"
+    },
+    "isPast": {
+      "@type": "boolean"
+    },
+    "locality": {
+      "@type": "string"
+    },
+    "organizerName": {
+      "@type": "string"
+    },
+    "priceLevel": {
+      "@type": "string"
+    },
+    "priceMax": {
+      "@type": "number"
+    },
+    "priceMin": {
+      "@type": "number"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "source": {
+      "@type": "string"
+    },
+    "startDate": {
+      "@type": "string"
+    },
+    "startISO": {
+      "@type": "string"
+    },
+    "startTime": {
+      "@type": "string"
+    },
+    "summary": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "ticketUrl": {
+      "@type": "string"
+    },
+    "timezone": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "venueName": {
+      "@type": "string"
+    }
+  }
+}

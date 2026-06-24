@@ -10,4 +10,4 @@ node_modules/
 **/__pycache__
 .pytest_cache   
 **/stage_volumes/
-personal_notes.md
+**/personal_notes/

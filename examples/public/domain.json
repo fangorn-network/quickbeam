@@ -1,0 +1,173 @@
+{
+  "collection": "fangorn",
+  "role_map": {
+    "identity": "placeId",
+    "title": "title",
+    "subtitle": "primaryType",
+    "temporal": null,
+    "spatial": "locality",
+    "media": "googleMapsUri",
+    "tags": [
+      "categories"
+    ],
+    "measures": [
+      "rating",
+      "userRatingCount"
+    ],
+    "relations": [],
+    "text": [
+      "text",
+      "editorialSummary"
+    ],
+    "labels": {},
+    "fields": []
+  },
+  "entity_types": [
+    {
+      "type": "Business"
+    },
+    {
+      "type": "Event"
+    }
+  ],
+  "bundle": {
+    "nodes": {
+      "Business": "fangorn.places.business.v1",
+      "Category": "fangorn.places.category.v1",
+      "Locality": "fangorn.places.locality.v1",
+      "Reviewer": "fangorn.places.reviewer.v1",
+      "Review": "fangorn.places.review.v1",
+      "Event": "fangorn.places.event.v1",
+      "Organizer": "fangorn.places.organizer.v1"
+    },
+    "edges": [
+      {
+        "rel": "inCategory",
+        "from": "Business",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "hasReview",
+        "from": "Business",
+        "to": "Review",
+        "min": 0
+      },
+      {
+        "rel": "byAuthor",
+        "from": "Review",
+        "to": "Reviewer",
+        "min": 0
+      },
+      {
+        "rel": "near",
+        "from": "Business",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Business",
+        "to": "Locality",
+        "min": 0
+      }
+    ]
+  },
+  "presentation": {
+    "hideConnections": ["businesses", "localities", "reviewers", "events"],
+    "types": {
+      "Business": {
+        "icon": "\ud83c\udf7a",
+        "accent": "#d98a2b",
+        "letter": "B",
+        "singular": "Bar",
+        "plural": "Bars",
+        "definition": "A physical local business \u2014 a bar, pub, or tavern \u2014 with hours, contact info, ratings, and reviews sourced from Google Places."
+      },
+      "Event": {
+        "icon": "\ud83c\udfab",
+        "accent": "#c2562b",
+        "letter": "Ev",
+        "singular": "Event",
+        "plural": "Events",
+        "definition": "An upcoming or past event \u2014 live music, a tournament, a community happening \u2014 sourced from Eventbrite organizers and the local Tribe events calendar, linked to the venue it happens at."
+      },
+      "Organizer": {
+        "icon": "\ud83d\udce3",
+        "accent": "#2f7d57",
+        "letter": "Or",
+        "singular": "Organizer",
+        "plural": "Organizers",
+        "definition": "A person or business that hosts events."
+      },
+      "Review": {
+        "icon": "\ud83d\udcac",
+        "accent": "#3f7f7a",
+        "letter": "Rv",
+        "singular": "Review",
+        "plural": "Reviews",
+        "definition": "A user-written review of a business, carrying a star rating, author, and free-text body."
+      },
+      "Category": {
+        "icon": "\ud83c\udff7",
+        "accent": "#b5701d",
+        "letter": "C",
+        "singular": "Category",
+        "plural": "Categories",
+        "definition": "A business category or type (e.g. \"Bar & Grill\") used to group similar establishments."
+      },
+      "Reviewer": {
+        "icon": "\ud83d\udc64",
+        "accent": "#6f8f3f",
+        "letter": "Rr",
+        "singular": "Reviewer",
+        "plural": "Reviewers",
+        "definition": "A person who authored one or more reviews."
+      },
+      "Locality": {
+        "icon": "\ud83d\udccd",
+        "accent": "#a0763a",
+        "letter": "L",
+        "singular": "Locality",
+        "plural": "Localities",
+        "definition": "A town or place that contextualises where a business is located."
+      }
+    },
+    "fieldLabels": {
+      "address": "Address",
+      "shortAddress": "Short address",
+      "amenities": "Amenities",
+      "businessStatus": "Status",
+      "coordinates": "Coordinates",
+      "editorialSummary": "Summary",
+      "googleMapsUri": "Google Maps",
+      "hours": "Hours",
+      "locality": "Locality",
+      "phone": "Phone",
+      "placeId": "Google Place ID",
+      "priceLevel": "Price",
+      "primaryType": "Type",
+      "rating": "Rating",
+      "userRatingCount": "Reviews",
+      "website": "Website",
+      "region": "Region",
+      "rawType": "Raw type",
+      "author": "Author",
+      "body": "Review",
+      "relativeTime": "When",
+      "publishTime": "Published",
+      "profileUri": "Profile",
+      "dateLabel": "When",
+      "startDate": "Date",
+      "startTime": "Time",
+      "venueName": "Venue",
+      "priceMin": "From",
+      "ticketUrl": "Tickets",
+      "organizerName": "Hosted by",
+      "summary": "About",
+      "bio": "About",
+      "facebook": "Facebook",
+      "source": "Source"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "name": "fangorn.places.business.v1",
+  "definition": {
+    "address": {
+      "@type": "string"
+    },
+    "amenities": {
+      "@type": "string"
+    },
+    "businessStatus": {
+      "@type": "string"
+    },
+    "categories": {
+      "@type": "string"
+    },
+    "coordinates": {
+      "@type": "string"
+    },
+    "editorialSummary": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "googleMapsUri": {
+      "@type": "string"
+    },
+    "hours": {
+      "@type": "string"
+    },
+    "locality": {
+      "@type": "string"
+    },
+    "phone": {
+      "@type": "string"
+    },
+    "placeId": {
+      "@type": "string"
+    },
+    "priceLevel": {
+      "@type": "string"
+    },
+    "primaryType": {
+      "@type": "string"
+    },
+    "rating": {
+      "@type": "number"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "shortAddress": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "userRatingCount": {
+      "@type": "number"
+    },
+    "website": {
+      "@type": "string"
+    }
+  }
+}
