@@ -1,5 +1,5 @@
 {
-  "generated_at": 1782255966,
+  "generated_at": 1782338547,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
   "collection": "fangorn",
   "domains": [
@@ -29,7 +29,7 @@
       "description": "Bars & events in Eagle River, WI \u2014 Google Places + Eventbrite/Tribe",
       "count": 402,
       "dim": 256,
-      "bytes": 1170351,
+      "bytes": 1169819,
       "shard_count": 1,
       "entity_types": [
         "Event",

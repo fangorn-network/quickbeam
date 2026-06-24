@@ -1,6 +1,7 @@
 import { COPY } from '../lib/copy';
 import { communityChip } from '../lib/community';
 import StatusBadge from './StatusBadge';
+import AuthButton from './AuthButton';
 import styles from './TopBar.module.css';
 
 interface Props {
@@ -11,6 +12,8 @@ interface Props {
   onToggleTheme: () => void;
   onMenu?: () => void;
   onHome?: () => void;
+  tripCount?: number;
+  onTrip?: () => void;
 }
 
 export default function TopBar({
@@ -21,6 +24,8 @@ export default function TopBar({
   onToggleTheme,
   onMenu,
   onHome,
+  tripCount = 0,
+  onTrip,
 }: Props) {
   return (
     <header className={`${styles.bar} ${connectionError ? styles.errored : ''}`}>
@@ -76,6 +81,16 @@ export default function TopBar({
         )}
         <button
           type="button"
+          className={styles.trip}
+          onClick={onTrip}
+          aria-label="My trip"
+          title="My trip"
+        >
+          🧭 Trip
+          {tripCount > 0 && <span className={styles.tripCount}>{tripCount}</span>}
+        </button>
+        <button
+          type="button"
           className={styles.gear}
           onClick={onToggleTheme}
           aria-label="Toggle theme"
@@ -83,6 +98,7 @@ export default function TopBar({
         >
           ◐
         </button>
+        <AuthButton />
       </div>
     </header>
   );

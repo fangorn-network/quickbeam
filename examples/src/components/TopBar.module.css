@@ -89,6 +89,41 @@
   justify-content: center;
 }
 
+.trip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  border-radius: var(--radius-sm);
+  height: 28px;
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.trip:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tripCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: var(--accent, var(--text-secondary));
+  color: var(--bg-base, #fff);
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1;
+}
+
 /* Hamburger toggles the LeftRail drawer — mobile only. */
 .menuBtn {
   display: none;

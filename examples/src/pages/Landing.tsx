@@ -89,6 +89,8 @@ export default function Landing({ counts, onVisit }: Props) {
       <div className={styles.claim}>
         <span className={styles.claimDot} aria-hidden="true">◇</span>
         Run a bar or host events in {COMMUNITY.name}?{' '}
+        <br></br>
+        <br></br>
         <strong>Claiming your profile &amp; self-serve events are coming soon.</strong>
         <br></br>
         <br></br>

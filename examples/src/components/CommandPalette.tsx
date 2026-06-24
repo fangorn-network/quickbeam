@@ -4,7 +4,7 @@ import type { PageRef } from '../lib/types';
 import { useDomain } from '../lib/domainContext';
 import { COPY } from '../lib/copy';
 import { search, toSummary } from '../lib/qdrant';
-import { browseHref, entityHref, entityPageRef } from '../lib/nav';
+import { browseHref, entityHref, entityPageRef, searchHref, searchPageRef } from '../lib/nav';
 import EntityBadge from './EntityBadge';
 import styles from './CommandPalette.module.css';
 
@@ -72,6 +72,22 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
     return () => clearTimeout(handle);
   }, [q, open, domain]);
 
+  // The unifying action: jump to the full /search results screen for the typed
+  // query — the same semantic search the main search bar runs. Placed first so a
+  // plain type-and-Enter goes to full results, while ↓ still picks a specific match.
+  const actionItems: Item[] = useMemo(() => {
+    const term = q.trim();
+    if (!term) return [];
+    return [{
+      key: 'search-all',
+      group: COPY.cmdk.groupSearch,
+      label: `Search “${term}”`,
+      secondary: 'See all results',
+      href: searchHref(term),
+      page: searchPageRef(term),
+    }];
+  }, [q]);
+
   const typeItems: Item[] = useMemo(() => {
     const lc = q.trim().toLowerCase();
     return domain.entityTypes.filter(
@@ -99,8 +115,8 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
   );
 
   const items = useMemo(
-    () => [...typeItems, ...recentItems, ...results],
-    [typeItems, recentItems, results],
+    () => [...actionItems, ...typeItems, ...recentItems, ...results],
+    [actionItems, typeItems, recentItems, results],
   );
 
   useEffect(() => {
@@ -133,7 +149,12 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
 
   // Render grouped, but track flat index for keyboard cursor.
   let flatIndex = -1;
-  const groups = [COPY.cmdk.groupTypes, COPY.cmdk.groupRecent, COPY.cmdk.groupResults];
+  const groups = [
+    COPY.cmdk.groupSearch,
+    COPY.cmdk.groupTypes,
+    COPY.cmdk.groupRecent,
+    COPY.cmdk.groupResults,
+  ];
 
   return (
     <div className={styles.overlay} onClick={onClose}>
@@ -167,7 +188,11 @@ export default function CommandPalette({ open, onClose, recent, onVisit }: Props
                       onMouseEnter={() => setCursor(idx)}
                       onClick={() => go(it)}
                     >
-                      {it.badge && <EntityBadge type={it.badge} size="sm" />}
+                      {it.group === COPY.cmdk.groupSearch ? (
+                        <span className={styles.searchIcon} aria-hidden="true">⌕</span>
+                      ) : (
+                        it.badge && <EntityBadge type={it.badge} size="sm" />
+                      )}
                       <span className={styles.rowLabel}>{it.label}</span>
                       {it.secondary && (
                         <span className={styles.rowSecondary}>{it.secondary}</span>

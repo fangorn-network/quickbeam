@@ -1,0 +1,7 @@
+# SPA fallback for static hosts that honor _redirects (IPFS subdomain gateways
+# incl. Pinata, Netlify, Cloudflare Pages). BrowserRouter uses real paths
+# (/search, /entity/:id, /trip); without this, a direct load or refresh of those
+# 404s. The CDN snapshot and hashed assets are real files and are served as-is —
+# only unknown paths fall through to index.html (200, not a redirect).
+/cdn/*  /cdn/:splat  200
+/*      /index.html  200

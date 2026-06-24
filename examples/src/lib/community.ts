@@ -20,10 +20,10 @@ export const COMMUNITY: Community = {
   regionAbbr: env.VITE_COMMUNITY_REGION_ABBR ?? 'WI',
   tagline:
     env.VITE_COMMUNITY_TAGLINE ??
-    'Bars, events & local life in the Northwoods — searched by meaning.',
+    'Bars, events & local life in the Northwoods. Search by meaning, vibe, location, anything.',
   blurb:
     env.VITE_COMMUNITY_BLURB ??
-    'A living guide to one small town, made searchable.',
+    'A living guide to Eagle River, WI and its environs, made searchable.',
 };
 
 // "Eagle River · WI" — the compact label for the top-bar chip.

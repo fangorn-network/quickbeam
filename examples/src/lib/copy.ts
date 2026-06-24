@@ -1,8 +1,8 @@
 // UI microcopy, from LANGUAGE.md §4.
 export const COPY = {
   search: {
-    placeholder: 'Search bars, events & places…',
-    subtext: 'Search by name or meaning — try “live music this weekend” or “patio with food”',
+    placeholder: 'Find your Eagle River vibe… e.g., cozy lakeside deck',
+    subtext: 'Search by feel, not just name. Try “live music on the water” or “quiet patio for a slow afternoon”',
     keyboardHint: 'Press / to focus',
     clearAria: 'Clear search',
   },
@@ -12,9 +12,10 @@ export const COPY = {
   },
   cmdk: {
     ghost: 'Search bars & events…',
+    groupSearch: 'Search',
     groupTypes: 'Browse',
     groupRecent: 'Recent',
-    groupResults: 'Results',
+    groupResults: 'Top matches',
     placeholder: 'Search or jump to a type…',
   },
   similar: {

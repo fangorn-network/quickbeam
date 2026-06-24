@@ -11,7 +11,7 @@
       "Event"
     ]
   },
-  "created_at": 1782255966,
+  "created_at": 1782338547,
   "role_map": {
     "identity": "placeId",
     "title": "title",
@@ -101,10 +101,10 @@
   ],
   "shards": [
     {
-      "file": "shard-0000.ndjson.gz",
+      "file": "shard-0000-ec436c500746.ndjson.gz",
       "count": 402,
-      "bytes": 1170351,
-      "sha256": "90c1b0d6bc28640da3ab8b2a7b1ad915b348cc13d7460a46b35ccc1e8e8dcebe"
+      "bytes": 1169819,
+      "sha256": "ec436c5007462b7af02feff9ac3fb1789f365d1eadeefbb9a65dadfaaa1f26e0"
     }
   ],
   "bundle": {

@@ -47,7 +47,7 @@ quickbeam cdn      Semantic CDN: bake the embedded graph into static, pullable d
 quickbeam pull     Pull a domain from a Semantic CDN into a local Qdrant collection
 quickbeam export   Export the Qdrant collection as an NDJSON bundle
 quickbeam migrate  Migrate a local Qdrant collection to Qdrant Cloud
-quickbeam data     Generate seed / test data from public data sources
+quickbeam data     An ETL pipeline to generate seed / test data from public data sources
 ```
 
 The `mcp` and x402 layers need extra dependencies (FastMCP + EIP-712 signing):

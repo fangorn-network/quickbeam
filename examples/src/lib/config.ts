@@ -14,3 +14,7 @@ export const USE_MOCK = IS_MOCK; // back-compat alias
 // serve`. VITE_DOMAIN empty → the first domain in the catalog.
 export const CDN_URL = (env.VITE_CDN_URL ?? 'http://localhost:8090').replace(/\/$/, '');
 export const CDN_DOMAIN = env.VITE_DOMAIN ?? '';
+
+// Privy (Phase 3). Login is OPTIONAL — it gates actions (claim/tip), never
+// discovery. Override the app id with VITE_PRIVY_APP_ID.
+export const PRIVY_APP_ID = env.VITE_PRIVY_APP_ID ?? 'cmqad9j9b00i10cl7apzw6rq8';

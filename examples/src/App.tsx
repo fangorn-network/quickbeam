@@ -10,9 +10,11 @@ import type { EntityType, PageRef } from './lib/types';
 import { browseHref } from './lib/nav';
 import { warmEmbedder } from './lib/embed';
 import { IS_MOCK } from './lib/config';
+import { useTrip } from './lib/trip';
 import Landing from './pages/Landing';
 import EntityPage from './pages/EntityPage';
 import Results from './pages/Results';
+import Trip from './pages/Trip';
 import styles from './App.module.css';
 
 // The raw type token from the path/query, if any (validated against the domain below).
@@ -28,6 +30,7 @@ export default function App() {
   const domain = useDomain();
   const { recent, pop, canGoBack } = useBackStack();
   const { counts, connectionError } = useTypeCounts();
+  const { items: tripItems } = useTrip();
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [railOpen, setRailOpen] = useState(false); // mobile nav drawer
 
@@ -89,6 +92,8 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onMenu={() => setRailOpen((o) => !o)}
         onHome={() => navigate('/')}
+        tripCount={tripItems.length}
+        onTrip={() => navigate('/trip')}
       />
       <div className={styles.body}>
         <LeftRail
@@ -104,6 +109,7 @@ export default function App() {
             <Route path="/" element={<Landing counts={counts} onVisit={onVisit} />} />
             <Route path="/browse/:entityType" element={<BrowseRoute onVisit={onVisit} />} />
             <Route path="/search" element={<Results onVisit={onVisit} />} />
+            <Route path="/trip" element={<Trip />} />
             <Route path="/entity/:pointId" element={<EntityRoute onVisit={onVisit} />} />
           </Routes>
         </main>

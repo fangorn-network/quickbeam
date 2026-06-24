@@ -14,6 +14,9 @@ import type { EntitySummary, PageRef } from '../lib/types';
 import { humanise, parseJsonArray, parseHours, isOpenNow } from '../lib/labels';
 import { COPY } from '../lib/copy';
 import { entityHref, entityPageRef, searchHref, searchPageRef, browseHref, nearHref, nearPageRef } from '../lib/nav';
+import { useTrip, tripItemFromSummary } from '../lib/trip';
+import { copyText } from '../lib/clipboard';
+import ProfileOwnership from '../components/ProfileOwnership';
 import styles from './EntityPage.module.css';
 
 interface Props {
@@ -24,6 +27,7 @@ interface Props {
 export default function EntityPage({ pointId, onVisit }: Props) {
   const navigate = useNavigate();
   const domain = useDomain();
+  const trip = useTrip();
   const [showJson, setShowJson] = useState(false);
 
   const point = useAsync(() => getPoint(pointId), [pointId]);
@@ -153,7 +157,16 @@ export default function EntityPage({ pointId, onVisit }: Props) {
     if (eventCategory) stats.push(<span key="c">{eventCategory}</span>);
     if (locality) stats.push(<span key="l">{locality}</span>);
   } else {
-    if (openNow != null) {
+    // A non-operational businessStatus (Google enum) overrides the hours-derived
+    // open/closed badge — a permanently closed place isn't "open now" even if its
+    // stale hours say so.
+    const status = str('businessStatus');
+    const closedStatus = status && status !== 'OPERATIONAL' ? status : null;
+    if (closedStatus) {
+      stats.push(
+        <span key="bs" className={styles.closed}>{statusLabel(closedStatus)}</span>,
+      );
+    } else if (openNow != null) {
       stats.push(
         <span key="o" className={openNow ? styles.open : styles.closed}>
           {openNow ? 'Open now' : 'Closed'}
@@ -190,6 +203,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
     'amenities',
     'address',
     'coordinates',
+    'businessStatus',
     hoursField,
     // Event fields surfaced in the header / stats above.
     'dateLabel', 'startDate', 'startTime', 'endDate', 'startISO', 'timezone',
@@ -235,17 +249,28 @@ export default function EntityPage({ pointId, onVisit }: Props) {
       >
         <div className={styles.headerTop}>
           <EntityBadge type={entityType} size="lg" />
-          {external && (
-            <a
-              className={styles.mbLink}
-              href={external}
-              target="_blank"
-              rel="noreferrer"
-              title={COPY.link.externalTooltip}
+          <div className={styles.headerActions}>
+            <button
+              type="button"
+              className={`${styles.actionBtn} ${trip.has(summary.pointId) ? styles.actionBtnActive : ''}`}
+              onClick={() => trip.toggle(tripItemFromSummary(summary))}
+              title={trip.has(summary.pointId) ? 'Remove from your trip' : 'Add to your trip'}
             >
-              Open source ↗
-            </a>
-          )}
+              {trip.has(summary.pointId) ? '✓ In trip' : '＋ Add to trip'}
+            </button>
+            <CopyLinkButton />
+            {external && (
+              <a
+                className={styles.mbLink}
+                href={external}
+                target="_blank"
+                rel="noreferrer"
+                title={COPY.link.externalTooltip}
+              >
+                Open source ↗
+              </a>
+            )}
+          </div>
         </div>
         <h1 className={styles.h1}>{title}</h1>
         {stats.length > 0 && (
@@ -331,6 +356,14 @@ export default function EntityPage({ pointId, onVisit }: Props) {
         )}
       </div>
 
+      {/* Ownership / claim-ready strip (businesses only) */}
+      {!isEvent && (
+        <ProfileOwnership
+          placeId={typeof f.placeId === 'string' ? f.placeId : null}
+          owner={typeof point.data.payload?.owner === 'string' ? point.data.payload.owner : null}
+        />
+      )}
+
       {/* Events at this venue (navigable, upcoming first) */}
       {!isEvent && (hostedEvents.data?.length ?? 0) > 0 && (
         <EventsSection
@@ -385,6 +418,31 @@ export default function EntityPage({ pointId, onVisit }: Props) {
 
       <JsonDrawer payload={point.data.payload ?? {}} open={showJson} onClose={() => setShowJson(false)} />
     </div>
+  );
+}
+
+// Friendly label for a Google businessStatus enum (CLOSED_TEMPORARILY, etc.).
+function statusLabel(status: string): string {
+  if (/PERMANENT/i.test(status)) return 'Permanently closed';
+  if (/TEMPORAR/i.test(status)) return 'Temporarily closed';
+  return humanise(status);
+}
+
+// Copy a deep link to this entity. No state needed — the entity page already
+// resolves its pointId against the loaded snapshot, so the current URL is the share.
+function CopyLinkButton() {
+  const [copied, setCopied] = useState(false);
+  async function onCopy() {
+    const ok = await copyText(window.location.href);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
+  }
+  return (
+    <button type="button" className={styles.actionBtn} onClick={onCopy} title="Copy link to this page">
+      {copied ? 'Copied ✓' : '🔗 Copy link'}
+    </button>
   );
 }
 

@@ -10,16 +10,21 @@
 // Query side (here): same model on "search_query: " + text (nomic is asymmetric),
 //   then the identical matryoshka. Layer-norm is scale-invariant, so it does not
 //   matter that transformers.js mean-pools without L2-normalizing first.
-import { pipeline, type FeatureExtractionPipeline } from '@huggingface/transformers';
+// Type-only import (erased at build) so the ~MB transformers.js runtime stays out
+// of the main bundle — it's pulled via dynamic import() on first use below.
+import type { FeatureExtractionPipeline } from '@huggingface/transformers';
 
 const MODEL = 'nomic-ai/nomic-embed-text-v1.5';
 const MATRYOSHKA_DIM = 256; // must match the collection / shard vector dim
 
 let _extractor: Promise<FeatureExtractionPipeline> | null = null;
 function extractor(): Promise<FeatureExtractionPipeline> {
-  // q8 keeps the model download small; embedding quality is essentially
-  // unchanged at this dim. The model is cached by the browser after first load.
-  return (_extractor ??= pipeline('feature-extraction', MODEL, { dtype: 'q8' }));
+  // Lazy-load transformers.js itself, then the model (q8 keeps the download small;
+  // quality is essentially unchanged at this dim). Both are cached after first use.
+  return (_extractor ??= (async () => {
+    const { pipeline } = await import('@huggingface/transformers');
+    return pipeline('feature-extraction', MODEL, { dtype: 'q8' });
+  })());
 }
 
 // Replicates quickbeam/embeddings.py `matryoshka()` exactly: standardize across

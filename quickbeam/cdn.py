@@ -183,8 +183,15 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         with open(path, "rb") as rf:
             for chunk in iter(lambda: rf.read(1 << 20), b""):
                 h.update(chunk)
-        shards.append({"file": os.path.basename(path), "count": count_in_shard,
-                       "bytes": size, "sha256": h.hexdigest()})
+        digest = h.hexdigest()
+        # TRUE content addressing: fold the digest into the filename so a re-bake of
+        # changed data mints a NEW url. Shards are served `immutable, max-age=1yr`, so
+        # a positional name (shard-0000) would let a browser serve last bake's bytes
+        # for a year. The hashed name forces a clean cache miss instead.
+        hashed_name = f"shard-{shard_idx:04d}-{digest[:12]}.ndjson.gz"
+        os.replace(path, os.path.join(tmp_dir, hashed_name))
+        shards.append({"file": hashed_name, "count": count_in_shard,
+                       "bytes": size, "sha256": digest})
 
     def _open_shard():
         nonlocal fh, shard_idx, count_in_shard
@@ -378,19 +385,25 @@ def build_app(cdn_dir: str, cors: bool = False):
         ok = os.path.exists(os.path.join(cdn_dir, "catalog.json"))
         return {"status": "ok" if ok else "no-catalog", "cdn_dir": cdn_dir}
 
+    # The catalog + manifests are the MUTABLE pointers to the immutable shards: a
+    # re-bake rewrites them to reference new content-hashed shard files. They must
+    # always be revalidated (cheap 304s via FileResponse's ETag) or a client would
+    # keep pulling a stale manifest and never learn the new shard names.
+    _NO_CACHE = {"Cache-Control": "no-cache"}
+
     @app.get("/catalog")
     def catalog():
         path = os.path.join(cdn_dir, "catalog.json")
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="no catalog — run `cdn bake`")
-        return FileResponse(path, media_type="application/json")
+        return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
 
     @app.get("/domains/{name}/manifest")
     def manifest(name: str):
         path = _safe(name, "manifest.json")
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail=f"unknown domain {name!r}")
-        return FileResponse(path, media_type="application/json")
+        return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
 
     @app.get("/domains/{name}/shards/{file}")
     def shard(name: str, file: str):

@@ -51,6 +51,38 @@ const DAY_NAMES = [
   'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
 ];
 
+// Inclusive [from, to] ISO-date (YYYY-MM-DD) bounds for an event date window,
+// in the viewer's local time. ISO date strings compare correctly with `<`/`>`,
+// so callers can test `startDate.slice(0,10)` directly against these.
+//   today   — just today
+//   weekend — the coming Sat–Sun (or the remaining weekend if it's already Sat/Sun)
+//   week    — today through the coming Sunday
+export function dateWindowBounds(w: 'today' | 'weekend' | 'week'): { from: string; to: string } {
+  const now = new Date();
+  const iso = (d: Date) => {
+    // Local-date ISO (avoid UTC shift from toISOString()).
+    const off = d.getTimezoneOffset() * 60000;
+    return new Date(d.getTime() - off).toISOString().slice(0, 10);
+  };
+  const day = now.getDay(); // 0 Sun … 6 Sat
+  const today = iso(now);
+  if (w === 'today') return { from: today, to: today };
+  if (w === 'week') {
+    const end = new Date(now);
+    end.setDate(now.getDate() + ((7 - day) % 7)); // through the coming Sunday
+    return { from: today, to: iso(end) };
+  }
+  // weekend
+  const toSat = (6 - day + 7) % 7;
+  const sat = new Date(now);
+  sat.setDate(now.getDate() + toSat);
+  const sun = new Date(sat);
+  sun.setDate(sat.getDate() + 1);
+  if (day === 0) return { from: today, to: today }; // Sunday: just today
+  if (day === 6) return { from: today, to: iso(sun) }; // Saturday: today + Sunday
+  return { from: iso(sat), to: iso(sun) };
+}
+
 // Parse a clock time like "11:00 AM" / "2 PM" (tolerating the narrow/no-break
 // spaces Google uses) into minutes since midnight. Null if unparseable.
 function timeToMinutes(s: string): number | null {

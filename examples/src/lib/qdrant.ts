@@ -109,6 +109,16 @@ export interface StructuredFilters {
   // Drop past events (fields.isPast === true). Businesses lack isPast, so they
   // are unaffected — only past Events are excluded.
   upcomingOnly?: boolean;
+  // Keep only free events (fields.isFree === true). Field-absent entries (e.g.
+  // businesses) are unaffected.
+  freeOnly?: boolean;
+  // Constrain Events to a date window over fields.startDate. Entries without a
+  // startDate pass through. Shards-only (the qdrant path can't range on a date
+  // string server-side; this app deploys in shards mode).
+  dateWindow?: 'today' | 'weekend' | 'week';
+  // Keep only businesses open right now (parsed from fields.hours vs. local
+  // clock). Entries without parseable hours pass through. Shards-only.
+  openNow?: boolean;
 }
 
 function structuredClauses(filters?: StructuredFilters): unknown[] {
@@ -125,6 +135,11 @@ function structuredClauses(filters?: StructuredFilters): unknown[] {
   if (filters?.localities?.length) {
     must.push(matchAnyClause('fields.locality', filters.localities));
   }
+  if (filters?.freeOnly) {
+    must.push({ key: 'fields.isFree', match: { value: true } });
+  }
+  // dateWindow / openNow are applied in-memory (shards.ts) — they can't be
+  // expressed as a Qdrant payload clause over a date string / parsed hours.
   return must;
 }
 

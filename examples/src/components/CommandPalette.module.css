@@ -84,6 +84,20 @@
   text-overflow: ellipsis;
 }
 
+/* Magnifier glyph for the "Search «q»" action row, sized to match EntityBadge sm. */
+.searchIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--brand-forest) 12%, transparent);
+  color: var(--brand-forest);
+  font-size: var(--text-sm);
+}
+
 .rowSecondary {
   color: var(--text-muted);
   font-size: var(--text-xs);

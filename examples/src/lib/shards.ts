@@ -9,6 +9,7 @@ import type { CollectionInfo, Filter, ScrollResult, StructuredFilters } from './
 import { QdrantError, sortEvents } from './qdrant';
 import { embedQuery } from './embed';
 import { parseCoords, haversineKm } from './geo';
+import { parseHours, isOpenNow, dateWindowBounds } from './labels';
 import type { DomainManifest } from './domain';
 import { CDN_URL, CDN_DOMAIN } from './config';
 
@@ -152,6 +153,20 @@ function matchesFilters(p: ShardPoint, filters?: StructuredFilters): boolean {
   }
   // Upcoming-only drops past events; businesses (no isPast) pass through.
   if (filters.upcomingOnly && f.isPast === true) return false;
+  // Free-only keeps events explicitly flagged free; field-absent entries pass through.
+  if (filters.freeOnly && f.isFree !== true && f.isFree != null) return false;
+  // Date window constrains entries that carry a startDate; others pass through.
+  if (filters.dateWindow && typeof f.startDate === 'string') {
+    const sd = f.startDate.slice(0, 10);
+    const { from, to } = dateWindowBounds(filters.dateWindow);
+    if (sd < from || sd > to) return false;
+  }
+  // Open-now constrains entries with parseable hours; others pass through.
+  if (filters.openNow) {
+    const hoursKey = Object.keys(f).find((k) => /hours/i.test(k) && typeof f[k] === 'string');
+    const rows = hoursKey ? parseHours(f[hoursKey]) : null;
+    if (rows && isOpenNow(rows) === false) return false;
+  }
   return true;
 }
 

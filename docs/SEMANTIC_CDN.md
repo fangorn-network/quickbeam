@@ -125,11 +125,11 @@ cdn/
   music/
     manifest.json              # {name, count, dim, model, distance, filter, role_map, entity_types,
                                #  shards:[{file,count,bytes,sha256}], bundle?, presentation?}
-    shard-0000.ndjson.gz       # gzipped NDJSON, /bundle/export row shape
-    shard-0001.ndjson.gz
+    shard-0000-9f3a1c2b7e04.ndjson.gz   # gzipped NDJSON; filename embeds the sha256
+    shard-0001-2d77ab90f1c5.ndjson.gz   #   prefix → a re-bake mints new urls
   venues/
     manifest.json
-    shard-0000.ndjson.gz
+    shard-0000-....ndjson.gz
 ```
 
 Each shard line reuses the existing `/bundle/export` shape verbatim
@@ -173,9 +173,9 @@ Routes:
 
 | Route | Returns |
 |---|---|
-| `GET /catalog` | the top-level catalog (domains + sizes) |
-| `GET /domains/{name}/manifest` | a domain's shard index (sha256 per shard) |
-| `GET /domains/{name}/shards/{file}` | raw shard bytes — **HTTP Range supported (206)**, `Cache-Control: immutable`, ETag |
+| `GET /catalog` | the top-level catalog (domains + sizes) — `Cache-Control: no-cache` (mutable pointer; revalidated via ETag) |
+| `GET /domains/{name}/manifest` | a domain's shard index (sha256 per shard) — `Cache-Control: no-cache` (mutable pointer) |
+| `GET /domains/{name}/shards/{file}` | raw shard bytes — **HTTP Range supported (206)**, `Cache-Control: immutable`, ETag. Filenames are sha256-stamped, so `immutable` is safe across re-bakes |
 | `GET /health` | liveness + whether a catalog is present |
 
 Because shards are immutable and content-addressed, you can put any dumb cache in front
