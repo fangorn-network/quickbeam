@@ -91,7 +91,8 @@ hit, and stores the **verbatim** API payload. Mark the pitch target with
 quickbeam data places-fetch \
   --query "bars, restaurants, and banks near Eagle River, WI" \
   --anchor "Shotskis" \
-  --max-results 500 --dry-run
+  --max-results 500 \
+  --dry-run
 ```
 
 Martin lives in:
@@ -101,7 +102,7 @@ Hofhein, Germany
 Other ways to source place IDs:
 
 ```bash
-# Nearby Search by coordinate + radius (metres) and category types
+# Nearby Search by coordinate + radius (metres) and category types - 20 result cap
 quickbeam data places-fetch --location 45.917,-89.244 --radius 2000 \
   --types "bar,restaurant,night_club" --anchor "Shotski" --dry-run
 
@@ -111,6 +112,14 @@ quickbeam data places-fetch --location 45.917,-89.244 --radius 2000 \
 # returns < 20 — at which point the area is provably captured. Sparse areas
 # stay one cheap call; dense downtowns auto-zoom. See "Sweeping…" below.
 quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "bar,restaurant,night_club" --sweep --dry-run
+
+# eagle river, wi, 10km radius
+quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "bar,restaurant,night_club" --sweep --dry-run
+
+# Hofhein, DE, 50km radius
+quickbeam data places-fetch --location 50.085145,8.446613 --radius 50000 \
   --types "bar,restaurant,night_club" --sweep --dry-run
 
 # Just one (or a few) known place IDs — skips search entirely
