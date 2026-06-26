@@ -159,4 +159,4 @@ Google/Yelp reviews on top later.
 - `quickbeam/pipelines/mb_pg.py` — the declarative-registry pattern to mirror.
 - `quickbeam/pipelines/fangorn_schema.py` — `schemagen` (union schema inference).
 - `quickbeam/embeddings.py` — `ROOT_PROFILES` (the `business` profile lives here).
-- `PLACES_GUIDE.md` — end-to-end Places pipeline walkthrough.
+- `docs/LOCAL_DISCOVERY_GUIDE.md` — end-to-end Places + Events pipeline walkthrough.
