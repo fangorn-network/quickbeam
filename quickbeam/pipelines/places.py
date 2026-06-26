@@ -26,6 +26,7 @@ import os
 import sys
 import json
 import time
+import math
 import argparse
 
 import requests
@@ -143,7 +144,6 @@ def search_text(api_key: str, query: str, max_results: int) -> list[str]:
         time.sleep(REQUEST_PAUSE_SEC)
     return ids[:max_results]
 
-
 def search_nearby(api_key: str, lat: float, lng: float, radius_m: float,
                   included_types: list[str], max_results: int) -> list[str]:
     """Nearby Search → up to `max_results` place IDs within radius_m of lat/lng."""
@@ -156,12 +156,85 @@ def search_nearby(api_key: str, lat: float, lng: float, radius_m: float,
     if included_types:
         body["includedTypes"] = included_types
     CALLS["search"] += 1
-    resp = requests.post(SEARCH_NEARBY_URL, headers=_headers(api_key, SEARCH_FIELD_MASK),
+    
+    # 🟢 FIX: Use "places.id" directly instead of SEARCH_FIELD_MASK
+    resp = requests.post(SEARCH_NEARBY_URL, headers=_headers(api_key, "places.id"),
                          json=body, timeout=30)
+    
     if resp.status_code != 200:
         print(f"   ⚠️  searchNearby {resp.status_code}: {resp.text[:300]}")
         return []
     return [p["id"] for p in resp.json().get("places", []) if p.get("id")][:max_results]
+
+# The new Nearby Search has no pagination (no nextPageToken) and a hard 20-result
+# cap per call, ranked by Google's opaque "prominence". A single call over a dense
+# area therefore silently drops everything past the top 20. The only way to sweep
+# an area to completion is to recursively subdivide any circle that comes back
+# *full* (== the cap) until each sub-circle returns fewer than the cap — at which
+# point you know you've captured everything inside it. See `sweep_area`.
+NEARBY_CAP = 20
+
+
+def _offset_latlng(lat: float, lng: float, d_north_m: float, d_east_m: float):
+    """Shift (lat,lng) by d_north_m / d_east_m metres (local flat-earth approx)."""
+    d_lat = d_north_m / 111_320.0
+    d_lng = d_east_m / (111_320.0 * math.cos(math.radians(lat)) or 1e-9)
+    return lat + d_lat, lng + d_lng
+
+
+def sweep_area(api_key: str, lat: float, lng: float, radius_m: float,
+               included_types: list[str], min_radius_m: float,
+               max_tiles: int, _seen: set[str] | None = None,
+               _depth: int = 0) -> set[str]:
+    """Recursive grid subdivision (quadtree tiling) to beat the 20-result cap.
+
+    Search the circle at (lat,lng,radius_m). If it comes back *full* (NEARBY_CAP
+    hits) the area almost certainly holds more than we can see, so split it into
+    four overlapping sub-circles (NW/NE/SW/SE) at ~0.6× the radius and recurse.
+    Stop subdividing once a circle returns fewer than the cap (we got them all)
+    or the radius would drop below `min_radius_m` (avoid infinite zoom on a single
+    hyper-dense block). `max_tiles` is a hard ceiling on total search calls.
+
+    Returns the deduped set of place IDs found across every tile.
+    """
+    seen = _seen if _seen is not None else set()
+    if CALLS["search"] >= max_tiles:
+        return seen
+
+    ids = search_nearby(api_key, lat, lng, radius_m, included_types, NEARBY_CAP)
+    new = [i for i in ids if i not in seen]
+    seen.update(ids)
+    indent = "  " * _depth
+    full = len(ids) >= NEARBY_CAP
+    print(f"   {indent}◻ r={radius_m:>6.0f}m @ {lat:.4f},{lng:.4f} → "
+          f"{len(ids):>2} hits (+{len(new)} new){'  ⚠️ FULL, subdividing' if full else ''}")
+
+    # Below the cap → captured everything in this circle, no need to dig deeper.
+    if not full:
+        return seen
+
+    # Quarters are placed diagonally (NW/NE/SW/SE), so the parent's *cardinal*
+    # edges (the N/S/E/W extremes) are the hardest points to cover. A cardinal
+    # extreme sits 0.707R from the nearest quarter centre (offset 0.5R per axis),
+    # so the sub-radius must be ≥ 0.707R to fully tile the parent — anything less
+    # leaves an uncovered gap ring and silently drops the venues inside it. Use
+    # 0.75 for a small margin over the 0.707 floor (and the flat-earth approx).
+    sub_radius = radius_m * 0.75
+    if sub_radius < min_radius_m:
+        print(f"   {indent}  ⛔ hit min radius {min_radius_m:.0f}m — some venues here "
+              f"may still be hidden by Google's cap")
+        return seen
+
+    off = radius_m * 0.5  # centre offset of each quarter from the parent centre
+    for d_n, d_e in ((off, -off), (off, off), (-off, -off), (-off, off)):  # NW NE SW SE
+        if CALLS["search"] >= max_tiles:
+            print(f"   {indent}  ⛔ hit --max-tiles {max_tiles} — sweep truncated")
+            break
+        slat, slng = _offset_latlng(lat, lng, d_n, d_e)
+        time.sleep(REQUEST_PAUSE_SEC)
+        sweep_area(api_key, slat, slng, sub_radius, included_types,
+                   min_radius_m, max_tiles, _seen=seen, _depth=_depth + 1)
+    return seen
 
 
 def place_details(api_key: str, place_id: str) -> dict | None:
@@ -204,6 +277,15 @@ def parse_args():
     p.add_argument("--location", default="",
                    help="lat,lng for Nearby Search (used when --query is omitted).")
     p.add_argument("--radius", type=float, default=2000.0, help="Nearby Search radius (meters).")
+    p.add_argument("--sweep", action="store_true", default=False,
+                   help="Adaptive recursive grid subdivision (quadtree) for Nearby Search: "
+                        "start at --location/--radius and auto-subdivide any circle that hits "
+                        "Google's 20-result cap until the whole area is captured. Beats the cap.")
+    p.add_argument("--min-radius", type=float, default=500.0,
+                   help="Sweep floor: stop subdividing once sub-circles fall below this radius "
+                        "(meters). Guards against infinite zoom on a hyper-dense block.")
+    p.add_argument("--max-tiles", type=int, default=200,
+                   help="Sweep guard: hard ceiling on total (cheap) Search calls per sweep.")
     p.add_argument("--types", default="bar,restaurant,night_club",
                    help="Comma-separated includedTypes for Nearby Search.")
     p.add_argument("--anchor", default="",
@@ -248,8 +330,15 @@ def main():
     else:
         lat, lng = (float(x) for x in args.location.split(","))
         types = [t.strip() for t in args.types.split(",") if t.strip()]
-        print(f"🔎 Nearby Search: {lat},{lng} r={args.radius}m types={types}")
-        ids = search_nearby(args.api_key, lat, lng, args.radius, types, args.max_results)
+        if args.sweep:
+            print(f"🔎 Adaptive sweep: {lat},{lng} r={args.radius}m types={types} "
+                  f"(min-radius={args.min_radius}m, max-tiles={args.max_tiles})")
+            ids = sorted(sweep_area(args.api_key, lat, lng, args.radius, types,
+                                    args.min_radius, args.max_tiles))
+            print(f"   sweep used {CALLS['search']} Search call(s)")
+        else:
+            print(f"🔎 Nearby Search: {lat},{lng} r={args.radius}m types={types}")
+            ids = search_nearby(args.api_key, lat, lng, args.radius, types, args.max_results)
         label = f"nearby:{args.location}"
     print(f"   found {len(ids)} place id(s)")
 

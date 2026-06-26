@@ -32,6 +32,12 @@ export default function EntityPage({ pointId, onVisit }: Props) {
 
   const point = useAsync(() => getPoint(pointId), [pointId]);
 
+  // Land at the top whenever a profile opens — clicking a result (or a related
+  // entity) shouldn't drop you mid-page at the previous scroll position.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [pointId]);
+
   const summary: EntitySummary | null = point.data ? toSummary(point.data) : null;
   const entityType = summary?.entityType ?? '';
 

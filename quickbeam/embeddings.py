@@ -842,6 +842,9 @@ def _track_id(fields: dict, prefer: str | None = None) -> str:
 # Node types are the entityTypes produced by the mb_pg registry: Artist,
 # ReleaseGroup, Release, Recording, Work, Area, Place, Event, Instrument.
 # ---------------------------------------------------------------------------
+
+# These are a collection of default or frequently used root profiles
+# Root profiles can be defined externally and passed as a cli arg
 ROOT_PROFILES: dict[str, dict] = {
     "track": {
         "root_type": "Recording", "max_depth": 2,
@@ -897,6 +900,7 @@ def _load_profiles(args) -> list[dict]:
             for name, prof in (json.load(f) or {}).items():
                 registry[name.lower()] = {**registry.get(name.lower(), {}), **prof}
 
+    # TODO: I think I can remove this
     if not args.root_profile:
         # Legacy: one projection, one-hop neighbor *field* fold (preserves the old
         # Recording-gets-byArtist behavior the catalog map relies on).
@@ -917,6 +921,13 @@ def _load_profiles(args) -> list[dict]:
     return profiles
 
 
+def _node_key(node: dict) -> str:
+    """Global join key for a node: its Entity URI when present else the raw local id. 
+    Keying the adjacency and projections on this resolves edges on the globally-unique identity rather than a
+    publisher-local id for cross-publisher linking."""
+    return node.get("entityUri") or node.get("id")
+
+
 def _node_label(node: dict) -> str:
     """Human label for a node — title / name / label, whichever the node carries."""
     f = node.get("fields", {}) or {}
@@ -926,7 +937,7 @@ def _node_label(node: dict) -> str:
             return v.strip()
     return ""
 
-
+# normalize group keys
 def _group_key(type_name: str) -> str:
     """Node type → camelCase plural field name. Artist→artists, Work→works,
     Place→places, ReleaseGroup→releaseGroups."""
@@ -937,7 +948,7 @@ def _group_key(type_name: str) -> str:
         return t + "es"
     return t + "s"
 
-
+# walk the graph and rebuild the bundles
 def _walk_graph(root_id, adj, max_depth, node_cap):
     """BFS from root over an (undirected) adjacency map, returning [(node_id, depth)]
     for every reachable node within `max_depth` (excluding the root). Bounded by
@@ -962,6 +973,7 @@ def _walk_graph(root_id, adj, max_depth, node_cap):
 
 
 def _project(root, nodes_by_id, adj, out, profile, defaults):
+    # TODO: remove legacy support?
     """Project a root node into a profile document. `fold` profiles reproduce the
     legacy one-hop field merge; otherwise we walk the graph and fold included
     neighbors into grouped, deduped, capped label lists."""
@@ -969,7 +981,7 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
     fields = dict(root.get("fields", {}))
 
     if profile.get("fold"):
-        for tid in out.get(root["id"], ()):
+        for tid in out.get(_node_key(root), ()):
             nb = nodes_by_id.get(tid)
             if nb:
                 fields.update(nb.get("fields", {}))
@@ -983,7 +995,7 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
     include_set = set(include) if include else None
 
     groups: dict = {}
-    for nid, _depth in _walk_graph(root["id"], adj, depth, node_cap):
+    for nid, _depth in _walk_graph(_node_key(root), adj, depth, node_cap):
         nb = nodes_by_id.get(nid)
         if not nb:
             continue
@@ -1089,10 +1101,18 @@ async def build_bundle_joined_data(
         )
 
         meta = cids_meta[mcid]
+        # Index nodes by their global Entity URI (SDK slice 0.3), falling back to
+        # the raw local id for pre-0.3 data. `id_to_key` translates edge endpoints
+        # — still emitted as local ids — onto the same global key, so the
+        # adjacency joins on identity rather than a publisher-local id.
         nodes_by_id: dict = {}
+        id_to_key: dict = {}
         for ncid in node_cids:
             for node in (chunks.get(ncid) or []):
-                nodes_by_id[node["id"]] = node
+                key = _node_key(node)
+                nodes_by_id[key] = node
+                if node.get("id") is not None:
+                    id_to_key[node["id"]] = key
         edges = []
         for ecid in edge_cids:
             edges.extend(chunks.get(ecid) or [])
@@ -1106,11 +1126,13 @@ async def build_bundle_joined_data(
         out: dict = {}
         adj: dict = {}
         for e in edges:
+            frm = id_to_key.get(e["from"], e["from"])
+            to  = id_to_key.get(e["to"], e["to"])
             if need_fold:
-                out.setdefault(e["from"], []).append(e["to"])
+                out.setdefault(frm, []).append(to)
             if need_walk:
-                adj.setdefault(e["from"], []).append(e["to"])
-                adj.setdefault(e["to"], []).append(e["from"])
+                adj.setdefault(frm, []).append(to)
+                adj.setdefault(to, []).append(frm)
 
         records = []
         for prof in profiles:
@@ -1131,7 +1153,7 @@ async def build_bundle_joined_data(
                 print(f"[Builder] Manifest {_cid_to_path(mcid)[:16]}... profile "
                       f"{prof['name']!r}: no {rt!r} root nodes.")
 
-        del chunks, nodes_by_id, edges, out, adj
+        del chunks, nodes_by_id, id_to_key, edges, out, adj
         import gc; gc.collect()
 
         if records:

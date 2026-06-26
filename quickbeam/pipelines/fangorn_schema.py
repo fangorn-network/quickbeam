@@ -24,6 +24,7 @@ build only accepts "string"/"handle". Collection fields fall back to ARRAY_TYPE.
 The mapping is the TYPE constants below — adjust to match your SDK exactly.
 """
 import os
+import re
 import json
 import glob
 import argparse
@@ -69,6 +70,51 @@ def _iter_array(path: str, limit: int = 0):
 
 
 # ===========================================================================
+# Identity inference  (mirror of the SDK's NodeIdentity, docs/CROSS_PUBLISHER_LINKING)
+#
+# A node type's `identity` declares how its records expose *global* identity so a
+# foreign edge can reference them and two datasources can join on a shared key:
+#   { "@id"?: field,  aliases?: { namespace: field } }
+# The join contract is the alias *namespace*, never the field name. We detect a
+# namespace by value shape — e.g. a field whose values are Google Place IDs
+# (`ChIJ…`) is claimed by `gplace` and, since a Place ID is canonical, promoted
+# to `@id`. This backfills the existing `ChIJ…` business ids as `gplace:` aliases
+# with no hand-authoring.
+# ===========================================================================
+ALIAS_PATTERNS = {
+    "gplace": re.compile(r"^ChIJ[0-9A-Za-z_\-]{10,}$"),   # Google Place ID
+    "isrc":   re.compile(r"^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$"),  # ISRC
+}
+# Namespaces whose key is canonical enough to also become the node's @id.
+PROMOTE_ID = ("gplace",)
+
+
+def _infer_identity(field_values: dict, threshold: float = 0.8) -> dict | None:
+    """Claim a field for an alias namespace when a strong majority of its sampled
+    non-null string values match that namespace's shape. Returns a NodeIdentity
+    dict, or None when nothing is recognized."""
+    aliases: dict[str, str] = {}
+    for field, vals in field_values.items():
+        non_null = [v for v in vals if isinstance(v, str) and v.strip()]
+        if not non_null:
+            continue
+        for ns, pat in ALIAS_PATTERNS.items():
+            if ns in aliases:        # first field to claim a namespace wins
+                continue
+            hits = sum(1 for v in non_null if pat.match(v))
+            if hits / len(non_null) >= threshold:
+                aliases[ns] = field
+    if not aliases:
+        return None
+    identity: dict = {"aliases": aliases}
+    for ns in PROMOTE_ID:
+        if ns in aliases:
+            identity["@id"] = aliases[ns]
+            break
+    return identity
+
+
+# ===========================================================================
 # Type inference
 # ===========================================================================
 def _infer_type(values, all_strings: bool) -> str:
@@ -98,7 +144,7 @@ def _infer_type(values, all_strings: bool) -> str:
 
 
 def infer_schema(path: str, sample: int, all_strings: bool):
-    """Return (type_name, SchemaDefinition) inferred from a node file."""
+    """Return (type_name, SchemaDefinition, identity|None, count) from a node file."""
     field_values = defaultdict(list)
     type_name = None
     count = 0
@@ -115,7 +161,8 @@ def infer_schema(path: str, sample: int, all_strings: bool):
         type_name = STEM_TYPE.get(stem, stem.title())
     definition = {k: {"@type": _infer_type(vs, all_strings)}
                   for k, vs in sorted(field_values.items())}
-    return type_name, definition, count
+    identity = _infer_identity(field_values)
+    return type_name, definition, identity, count
 
 
 # ===========================================================================
@@ -188,21 +235,36 @@ def run():
     # merge their field definitions into the union so the schema covers both.
     print(f"🔎 Inferring schemas from {len(node_files)} node file(s)...")
     merged: dict[str, dict] = {}
+    merged_identity: dict[str, dict] = {}
     counts: dict[str, int] = {}
     for path in node_files:
-        type_name, definition, count = infer_schema(path, args.sample, args.all_strings)
+        type_name, definition, identity, count = infer_schema(path, args.sample, args.all_strings)
         merged.setdefault(type_name, {}).update(definition)
         counts[type_name] = counts.get(type_name, 0) + count
+        # Union aliases across files sharing a type; first @id wins.
+        if identity:
+            mi = merged_identity.setdefault(type_name, {"aliases": {}})
+            mi["aliases"].update(identity.get("aliases", {}))
+            if identity.get("@id") and "@id" not in mi:
+                mi["@id"] = identity["@id"]
 
     schemas, type_to_schema = [], {}
     for type_name, definition in merged.items():
         name = schema_name(type_name)
         type_to_schema[type_name] = name
-        schemas.append({"name": name, "definition": definition})
+        entry = {"name": name, "definition": definition}
+        identity = merged_identity.get(type_name)
+        if identity and identity.get("aliases"):
+            entry["identity"] = identity
+        schemas.append(entry)
         out = os.path.join(args.out_dir, f"{name}.json")
         with open(out, "w", encoding="utf-8") as f:
-            json.dump({"name": name, "definition": definition}, f, indent=2)
-        print(f"   ✅ {type_name:<14} → {name}  ({len(definition)} fields, sampled {counts[type_name]:,})")
+            json.dump(entry, f, indent=2)
+        id_note = ""
+        if identity and identity.get("aliases"):
+            ns = ", ".join(f"{k}:{v}" for k, v in identity["aliases"].items())
+            id_note = f"  [identity @id={identity.get('@id', '<node id>')}; aliases {ns}]"
+        print(f"   ✅ {type_name:<14} → {name}  ({len(definition)} fields, sampled {counts[type_name]:,}){id_note}")
 
     # ── Bundle shape ────────────────────────────────────────────────────────
     bundle_edges = []

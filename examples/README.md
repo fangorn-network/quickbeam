@@ -78,10 +78,18 @@ is no WASM/ONNX dependency. For small snapshots, vector cosine is plain JS over 
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # tsc -b + vite build (must pass cleanly)
-npm run preview  # serve the production build
+# http://localhost:5173
+npm run dev      
+# tsc -b + vite build (must pass cleanly)
+npm run build    
+# serve the production build
+npm run preview  
+# build a static build 
+npm run build:statc
+# deploy the static build (dist) to cloudflare
+npx wrangler pages deploy dist --branch main
 ```
+
 
 > Note: `npm run preview` and any production deploy do **not** include the
 > `/qdrant` dev proxy — that proxy only exists in `vite dev`. For production

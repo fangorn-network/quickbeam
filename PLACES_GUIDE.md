@@ -89,17 +89,29 @@ hit, and stores the **verbatim** API payload. Mark the pitch target with
 ```bash
 # Text Search around the target, flagging Shotski's as the anchor
 quickbeam data places-fetch \
-  --query "bars near Eagle River, WI" \
-  --anchor "Shotski" \
-  --max-results 60
+  --query "bars, restaurants, and banks near Eagle River, WI" \
+  --anchor "Shotskis" \
+  --max-results 500 --dry-run
 ```
+
+Martin lives in:
+Hofhein, Germany
+50.085145, 8.446613
 
 Other ways to source place IDs:
 
 ```bash
 # Nearby Search by coordinate + radius (metres) and category types
 quickbeam data places-fetch --location 45.917,-89.244 --radius 2000 \
-  --types "bar,restaurant,night_club" --anchor "Shotski"
+  --types "bar,restaurant,night_club" --anchor "Shotski" --dry-run
+
+# Adaptive sweep (--sweep): beat Google's 20-result cap automatically.
+# Start with one big circle; any tile that comes back FULL (20 hits) is
+# recursively subdivided into four overlapping quarters until every tile
+# returns < 20 — at which point the area is provably captured. Sparse areas
+# stay one cheap call; dense downtowns auto-zoom. See "Sweeping…" below.
+quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "bar,restaurant,night_club" --sweep --dry-run
 
 # Just one (or a few) known place IDs — skips search entirely
 quickbeam data places-fetch --details-only "ChIJ...,ChIJ..."
@@ -108,13 +120,59 @@ quickbeam data places-fetch --details-only "ChIJ...,ChIJ..."
 Re-running is idempotent: rows upsert by `place_id`, `fetched_at` refreshes, and
 the anchor flag is sticky (a later sweep can set it but won't clear it).
 
+### Sweeping an area to completion (`--sweep`)
+
+The new Nearby Search has **no pagination** (no `nextPageToken`) and a hard **20-
+result cap** per call, ranked by Google's opaque "prominence". A single call over
+a dense area silently drops everything past the top 20 — and gives you no signal
+that you missed anything. The industry-standard fix is **recursive grid
+subdivision (quadtree tiling)**: let Google's own response tell you when to dig
+deeper.
+
+`--sweep` implements it. Using `--location`/`--radius` as the root circle:
+
+1. Search the circle. If it returns **fewer than 20** hits, you captured
+   *everything* inside it — save and move on (1 cheap call).
+2. If it returns **exactly 20**, you've hit the ceiling — there are almost
+   certainly more. Subdivide into four overlapping sub-circles (NW/NE/SW/SE) at
+   0.75× the radius (the geometric floor for fully tiling the parent is 0.707×;
+   the extra margin avoids cardinal-edge gaps) and recurse.
+3. Stop when a tile drops below the cap, or the radius would fall below
+   `--min-radius` (the floor that prevents infinite zoom on one hyper-dense
+   block).
+
+```bash
+# Sweep a 10km area to completion — auto-zooms only where the data is dense
+quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "bar,restaurant,night_club" --sweep \
+  --min-radius 500 --max-tiles 200 --anchor "Shotski"
+```
+
+Each tile prints its radius, centre, hit count, and whether it subdivided, so you
+can watch the sweep adapt. Sparse rural circles cost one call; a downtown strip
+fans out automatically until every sub-circle clears.
+
+**Cost note:** only the cheap **Essentials-tier Search** calls multiply during a
+sweep — the expensive **Place Details** call still fires just *once per unique
+business* (dedup is by `place_id`). `--max-tiles` caps total Search calls and
+`--max-details` caps billable Details calls; use `--dry-run` first to see how many
+of each a real run would make. The 20-cap, the floor, and the tile ceiling are all
+reported as the sweep runs.
+
+> **OSM alternative.** To avoid paying Google just to *find* venues, query
+> OpenStreetMap's Overpass API (free) for `amenity=bar`/`restaurant` nodes, then
+> feed those coordinates straight to `--details-only` — paying Google only for the
+> rich Details payload of businesses you already know exist. The catch: OSM
+> coverage is thin in many small localities, so `--sweep` remains the reliable
+> path where OSM is sparse.
+
 ### No-database variant
 
 Don't want Postgres? Append the raw payloads to a JSONL file instead:
 
 ```bash
 quickbeam data places-fetch --no-db --raw-out shotskis_raw.jsonl \
-  --query "bars near Eagle River, WI" --anchor "Shotski"
+  --query "bars near Eagle River, WI" --anchor "Shotski" --dry-run
 ```
 
 (`--raw-out` also works *alongside* Postgres if you want both.)

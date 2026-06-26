@@ -105,7 +105,7 @@ quickbeam build \
 quickbeam build \
   --bundle fangorn.mb.creativecore.v1=0xac92db425c174e4301cd41e81e16d99fd2c5f4e2f13b739004996e95875e990d \
   --root-type Track \
-  --graph-api-key b66e8b18ae3fe2c5a91929098b290d69 \
+  --graph-api-key <> \
   --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
   --dim 256 \
   --umap \
