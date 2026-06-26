@@ -243,6 +243,27 @@ export async function shardRecommend(pointId: string, limit = 12): Promise<Qdran
     .map(({ p, score }) => ({ ...strip(p), score }));
 }
 
+// Score every candidate against the query (semantic cosine; lexical fallback when
+// the in-browser embedder is unavailable), returning {point, score} sorted desc.
+// Lexical scores are normalized into 0..1 so they merge cleanly with cosine.
+async function rankPool(pool: ShardPoint[], q: string): Promise<Array<{ p: ShardPoint; score: number }>> {
+  try {
+    const qv = await embedQuery(q);
+    let qn = 0;
+    for (const x of qv) qn += x * x;
+    qn = Math.sqrt(qn) || 1;
+    return pool
+      .map((p) => ({ p, score: cosine(p, qv, qn) }))
+      .sort((a, b) => b.score - a.score);
+  } catch {
+    const ql = q.toLowerCase();
+    return pool
+      .map((p) => ({ p, score: lexScore(p, ql) / 100 }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score);
+  }
+}
+
 export async function shardSearch(opts: {
   q: string;
   type?: string;
@@ -251,31 +272,64 @@ export async function shardSearch(opts: {
   offset?: string | number | null;
 }): Promise<ScrollResult> {
   const { points } = await loaded();
-  const list = selectPoints(points, opts);
   const q = opts.q.trim();
-  if (!q) return paginate(list.map(strip), opts.limit ?? 20, opts.offset);
+  const limit = opts.limit ?? 20;
 
-  let ranked: QdrantPoint[];
-  try {
-    // Semantic: embed the query in-browser and cosine-rank against doc vectors.
-    const qv = await embedQuery(q);
-    let qn = 0;
-    for (const x of qv) qn += x * x;
-    qn = Math.sqrt(qn) || 1;
-    ranked = list
-      .map((p) => ({ p, score: cosine(p, qv, qn) }))
-      .sort((a, b) => b.score - a.score)
-      .map(({ p, score }) => ({ ...strip(p), score }));
-  } catch {
-    // Embedder unavailable (e.g. offline / model load failed) -> lexical fallback.
-    const ql = q.toLowerCase();
-    ranked = list
-      .map((p) => ({ p, s: lexScore(p, ql) }))
-      .filter((x) => x.s > 0)
-      .sort((a, b) => b.s - a.s)
-      .map((x) => strip(x.p));
+  // Child→parent roll-up. When the caller wants Businesses (or hasn't pinned a
+  // type), Review documents are allowed to compete in ranking and each Review hit
+  // is resolved to its parent Business (Review.fields.businessId === Business
+  // .fields.placeId). This is what lets a review's free text ("best tacos in
+  // town") surface the *place* itself rather than a standalone review card.
+  // Results are deduped to the best-scoring hit per business.
+  const rollUp = !opts.type || opts.type === 'Business';
+
+  // Reviews are search-only retrieval keys, never browsable cards: a no-query
+  // browse excludes them. (Other types follow the caller's type/structured opts.)
+  if (!q) {
+    const browse = selectPoints(points, opts).filter((p) => p.payload?.entityType !== 'Review');
+    return paginate(browse.map(strip), limit, opts.offset);
   }
-  return paginate(ranked, opts.limit ?? 20, opts.offset);
+
+  // Candidate pool. Rolling up: Businesses + Reviews compete (structured filters
+  // are applied to the *resolved* business below, not the review, so e.g. a 5★
+  // review still surfaces a place that itself passes a ratingGte filter). Not
+  // rolling up (an explicit non-Business type): the usual type+structured select.
+  const pool = rollUp
+    ? points.filter((p) => {
+        const t = p.payload?.entityType ?? '';
+        return t === 'Business' || t === 'Review';
+      })
+    : selectPoints(points, opts);
+
+  const ranked = await rankPool(pool, q);
+
+  // placeId -> Business, for resolving a Review hit to its venue.
+  const bizByPlaceId = new Map<string, ShardPoint>();
+  if (rollUp) {
+    for (const p of points) {
+      if (p.payload?.entityType !== 'Business') continue;
+      const pid = (p.payload?.fields as Record<string, unknown> | undefined)?.placeId;
+      if (typeof pid === 'string') bizByPlaceId.set(pid, p);
+    }
+  }
+
+  const seen = new Set<string>();
+  const out: QdrantPoint[] = [];
+  for (const { p, score } of ranked) {
+    let resolved: ShardPoint | undefined = p;
+    if (rollUp && p.payload?.entityType === 'Review') {
+      const bid = (p.payload?.fields as Record<string, unknown> | undefined)?.businessId;
+      resolved = typeof bid === 'string' ? bizByPlaceId.get(bid) : undefined;
+      if (!resolved) continue; // orphan review (venue not in this shard) -> drop
+    }
+    // In roll-up mode every result is a Business; apply structured filters now.
+    if (rollUp && !matchesFilters(resolved, opts.filters)) continue;
+    const id = String(resolved.id);
+    if (seen.has(id)) continue; // keep the best-scoring hit per business
+    seen.add(id);
+    out.push({ ...strip(resolved), score });
+  }
+  return paginate(out, limit, opts.offset);
 }
 
 // Rank entries by geographic proximity to a "lat,lng" origin. Structured filters

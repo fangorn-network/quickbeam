@@ -70,7 +70,7 @@ quickbeam data events-fetch --source eventbrite \
 
 # The Events Calendar (Tribe) site — the public WP REST API, paginated.
 quickbeam data events-fetch --source tribe \
-  --site https://eagleriver.org --max-events 200
+  --site https://eagleriver.org --max-events 500
 
 # Eventbrite LOCATION discovery — find events across the whole area at once,
 # without knowing any organizer ids. Pages eventbrite.com/d/<place>/all-events/

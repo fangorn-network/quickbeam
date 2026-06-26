@@ -193,18 +193,26 @@ def _eb_row(e: dict, org: dict, venue: dict) -> dict:
     }
 
 
-def eb_discovery(place: str, max_events: int) -> list[dict]:
+def eb_discovery(place: str, max_events: int, bbox: str = "") -> list[dict]:
     """Eventbrite *location* discovery: page /d/{place}/all-events/ and read
     __SERVER_DATA__.search_data.events.results. Each event carries its venue (with
     coordinates) + primary_organizer_id, so the downstream coordinate match links
-    it to whichever Business it happens at — no per-organizer ids needed."""
+    it to whichever Business it happens at — no per-organizer ids needed.
+
+    `bbox` (optional) is Eventbrite's geographic filter as
+    "west_lng,south_lat,east_lng,north_lat". When set it overrides the `place`
+    slug's geography, so any slug works as the path — pass coordinates to scrape
+    a region outside the US (e.g. Honheim, DE) even though the slug says otherwise."""
     rows: list[dict] = []
     seen: set[str] = set()
     page, page_count = 1, 1
     while len(rows) < max_events and page <= page_count:
         FETCHED["http"] += 1
+        params = {"page": page}
+        if bbox:
+            params["bbox"] = bbox
         resp = requests.get(EB_DISCOVERY.format(place=place), headers=HEADERS,
-                            params={"page": page}, timeout=30)
+                            params=params, timeout=30)
         if resp.status_code != 200:
             print(f"   ⚠️  discovery p{page} {resp.status_code}: {resp.text[:160]}")
             break
@@ -364,7 +372,13 @@ def parse_args():
                    help='Eventbrite organizer slug or URL, e.g. "shotskis-29817730199".')
     p.add_argument("--place", default="",
                    help='eventbrite-location: discovery slug, e.g. "wi--eagle-river" '
-                        '(from an eventbrite.com/d/<state>--<city>/ URL).')
+                        '(from an eventbrite.com/d/<state>--<city>/ URL). '
+                        'Defaults to "united-states" when --bbox is given.')
+    p.add_argument("--bbox", default="",
+                   help='eventbrite-location: geographic filter as '
+                        '"west_lng,south_lat,east_lng,north_lat" (overrides the slug\'s '
+                        'geography — use it to scrape non-US regions, e.g. '
+                        '"8.817042,48.415394,9.617042,49.015394" for Honheim, DE).')
     p.add_argument("--expand-past", action="store_true", default=False,
                    help="eventbrite-location: also pull past events for every "
                         "discovered organizer (discovery itself is upcoming-only).")
@@ -392,8 +406,8 @@ def main():
     args = parse_args()
     if args.source == "eventbrite" and not args.organizer:
         raise SystemExit("--source eventbrite requires --organizer.")
-    if args.source == "eventbrite-location" and not args.place:
-        raise SystemExit("--source eventbrite-location requires --place.")
+    if args.source == "eventbrite-location" and not args.place and not args.bbox:
+        raise SystemExit("--source eventbrite-location requires --place or --bbox.")
     if args.source == "tribe" and not args.site:
         raise SystemExit("--source tribe requires --site.")
     if args.no_db and not args.raw_out and not args.dry_run:
@@ -402,8 +416,10 @@ def main():
     if args.source == "eventbrite":
         rows = fetch_eventbrite(args.organizer, args.max_events)
     elif args.source == "eventbrite-location":
-        print(f"🔎 Eventbrite discovery: {args.place}")
-        rows = eb_discovery(args.place, args.max_events)
+        place = args.place or "united-states"
+        print(f"🔎 Eventbrite discovery: {place}"
+              + (f"  bbox={args.bbox}" if args.bbox else ""))
+        rows = eb_discovery(place, args.max_events, args.bbox)
         if args.expand_past:
             rows += eb_expand_past(rows, args.max_events)
     else:

@@ -875,11 +875,27 @@ ROOT_PROFILES: dict[str, dict] = {
         "include": ["Artist", "Recording", "Release"],
     },
     # local-business graph (places_pg): one document per Business, folding in its
-    # reviews, categories, locality, reviewers, and nearby businesses — the shape
-    # the per-bar demo shard embeds. Depth 2 reaches Business→Review→Reviewer.
+    # reviews, categories, locality, and reviewers — the shape the per-bar demo
+    # shard embeds. Depth 2 reaches Business→Review→Reviewer. Nearby businesses
+    # ("Business") are deliberately NOT folded: a list of 20 neighbouring bar
+    # names is pure noise that dilutes the vector and crowds review content out of
+    # the embedding's token budget. The `near` graph edges still exist for the
+    # "nearby" UI rail — they just don't pollute the embedded text.
     "business": {
         "root_type": "Business", "max_depth": 2,
-        "include": ["Review", "Category", "Locality", "Reviewer", "Business", "Event"],
+        "include": ["Review", "Category", "Locality", "Reviewer", "Event"],
+    },
+    # one document per Review, so the review *body* (the high-value free-text
+    # signal — "best tacos in town") is embedded and directly searchable. Without
+    # this, a review only ever folds into its Business as a label ("<author> on
+    # <business>") and its body is invisible to vector search. Folding the body
+    # into the Business doc alone isn't enough: dozens of long reviews can't fit a
+    # single 256-token business embedding, so each review needs its own document.
+    # Depth 1 folds in the venue Business + Reviewer for context; the Review's
+    # businessId field links a hit back to its place.
+    "review": {
+        "root_type": "Review", "max_depth": 1,
+        "include": ["Business", "Reviewer"],
     },
     # events graph (events_pg), merged into the places graph: one document per
     # Event, folding in its venue Business, organizer, category and locality.
@@ -936,6 +952,21 @@ def _node_label(node: dict) -> str:
         if isinstance(v, str) and v.strip():
             return v.strip()
     return ""
+
+
+def _node_content(node: dict) -> str:
+    """Folded value for a neighbour node. Prefer a free-form *content* field (a
+    Review `body`, an event/summary `description`) so that text becomes searchable
+    when the node is folded into a root document — without this a Review folds in
+    only its "<author> on <business>" title and the body ("best tacos in town") is
+    silently dropped. Content-less nodes (Category, Locality, Reviewer) have none
+    of these fields and fall back to their title label, so they don't bloat the doc."""
+    f = node.get("fields", {}) or {}
+    for k in ("body", "summary", "description"):
+        v = f.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return _node_label(node)
 
 # normalize group keys
 def _group_key(type_name: str) -> str:
@@ -1002,9 +1033,9 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
         t = nb.get("type")
         if include_set is not None and t not in include_set:
             continue
-        label = _node_label(nb)
-        if label:
-            groups.setdefault(_group_key(t), []).append(label)
+        value = _node_content(nb)
+        if value:
+            groups.setdefault(_group_key(t), []).append(value)
 
     for k, vals in groups.items():
         fields[k] = list(dict.fromkeys(vals))[:label_cap]  # dedupe (order-preserving) + cap

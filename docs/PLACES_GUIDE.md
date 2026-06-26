@@ -47,7 +47,7 @@ serves music serves bars.
   ```bash
   # trust auth = no password needed.
   docker run -d --name places \
-    -p 5433:5432 \
+    -p 5432:5432 \
     -e POSTGRES_HOST_AUTH_METHOD=trust \
     postgres
 
@@ -56,17 +56,24 @@ serves music serves bars.
   docker exec places psql -U postgres -c "CREATE DATABASE places_db OWNER places;"
 
   # view first 5 rows
-  psql "postgresql://places:places@localhost:5432/places_db" -c "SELECT * FROM places_raw LIMIT 5;"
+  psql "epostgresql://places:places@localhost:5432/places_db" -c "SELECT * FROM places_raw LIMIT 5;"
   # enter the postgres
   psql "postgresql://places:places@localhost:5432/places_db"  
   # view tables
   \dt
   
 
-  export PLACES_PG_DSN=postgresql://places:places@localhost:5433/places_db
+  export PLACES_PG_DSN=postgresql://places:places@localhost:5432/places_db
   ```
 
   The `places_raw` table is created automatically on first run.
+
+When testing, db cleanup can be done wiht 
+
+``` sh
+sudo systemctl disable --now postgresql
+docker restart places
+```
 
   **Gotchas:**
   - "password authentication failed" usually means you reached a *host* Postgres
@@ -95,10 +102,6 @@ quickbeam data places-fetch \
   --dry-run
 ```
 
-Martin lives in:
-Hofhein, Germany
-50.085145, 8.446613
-
 Other ways to source place IDs:
 
 ```bash
@@ -118,9 +121,17 @@ quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
 quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
   --types "bar,restaurant,night_club" --sweep --dry-run
 
-# Hofhein, DE, 50km radius
+# Hofheim, DE, 50km radius
 quickbeam data places-fetch --location 50.085145,8.446613 --radius 50000 \
   --types "bar,restaurant,night_club" --sweep --dry-run
+
+quickbeam data places-fetch --location 50.085145,8.446613 \
+  --radius 10000 \
+  --types "store,restaurant,bar,cafe,bakery,grocery_store,supermarket,convenience_store,clothing_store,electronics_store,home_goods_store,shopping_mall,pharmacy,drugstore,bank,atm,gas_station,car_repair,hair_care,beauty_salon,spa,laundry,post_office,library,community_center,fitness_center,gym,medical_clinic,dentist,doctor,veterinary_care,real_estate_agency,hotel,lodging,bed_and_breakfast,hardware_store,liquor_store,pet_store,book_store,florist,department_store,fast_food_restaurant,sandwich_shop,coffee_shop,pizza_restaurant,barber_shop,auto_parts_store,furniture_store,wholesaler" \
+  --min-radius 500  \
+  --max-tiles 200 \
+  --sweep \
+  --dry-run
 
 # Just one (or a few) known place IDs — skips search entirely
 quickbeam data places-fetch --details-only "ChIJ...,ChIJ..."
@@ -151,10 +162,39 @@ deeper.
    block).
 
 ```bash
-# Sweep a 10km area to completion — auto-zooms only where the data is dense
+# Sweep a 10km area to completion — auto-zooms only where the data is dense (eagle river, WI)
 quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
-  --types "bar,restaurant,night_club" --sweep \
-  --min-radius 500 --max-tiles 200 --anchor "Shotski"
+  --types "bar,restaurant,night_club" \
+  --sweep \
+  --min-radius 500 \
+  --max-tiles 200 \
+  --anchor "Shotskis" \
+  --dry-run
+```
+
+quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "store,restaurant,bar,cafe,bakery,grocery_store,supermarket,convenience_store,clothing_store,electronics_store,home_goods_store,shopping_mall,pharmacy,drugstore,bank,atm,gas_station,car_repair,hair_care,beauty_salon,spa,laundry,post_office,library,community_center,fitness_center,gym,medical_clinic,dentist,doctor,veterinary_care,real_estate_agency,hotel,lodging,bed_and_breakfast,hardware_store,liquor_store,pet_store,book_store,florist,department_store,fast_food_restaurant,sandwich_shop,coffee_shop,pizza_restaurant,barber_shop,auto_parts_store,furniture_store,wholesaler" \
+  --sweep \
+  --min-radius 500 \
+  --max-tiles 200 \
+  --anchor "Shotskis" \
+  --dry-run
+
+##### Place Types
+
+The "Every Day Life & Commerce" Net
+```
+"store,restaurant,bar,cafe,bakery,grocery_store,supermarket,convenience_store,clothing_store,electronics_store,home_goods_store,shopping_mall,pharmacy,drugstore,bank,atm,gas_station,car_repair,hair_care,beauty_salon,spa,laundry,post_office,library,community_center,fitness_center,gym,medical_clinic,dentist,doctor,veterinary_care,real_estate_agency,hotel,lodging,bed_and_breakfast,hardware_store,liquor_store,pet_store,book_store,florist,department_store,fast_food_restaurant,sandwich_shop,coffee_shop,pizza_restaurant,barber_shop,auto_parts_store,furniture_store,wholesaler"
+```
+
+The "Leisure, Nightlife & Tourism" Net
+```
+"restaurant,bar,night_club,pub,bar_and_grill,beer_garden,cocktail_bar,loung_bar,sports_bar,irish_pub,wine_bar,brewery,brewpub,distillery,cafe,coffee_shop,bistro,diner,fast_food_restaurant,ice_cream_shop,bakery,event_venue,live_music_venue,performing_arts_theater,movie_theater,comedy_club,bowling_alley,casino,amusement_center,tourist_attraction,museum,art_gallery,historical_place,cultural_center,park,city_park,plaza,garden,botanical_garden,winery,vineyard,resort_hotel,hotel,motel,aquarium,zoo,stadium,arena,sports_club,banquet_hall"
+```
+
+The "Transit & Infrastructure" Net
+```
+"transit_station,transit_stop,bus_station,bus_stop,train_station,subway_station,light_rail_station,airport,international_airport,ferry_terminal,ferry_service,taxi_stand,taxi_service,parking,parking_garage,parking_lot,rest_stop,truck_stop,gas_station,electric_vehicle_charging_station,ebike_charging_station,car_rental,bridge,toll_station,transportation_service"
 ```
 
 Each tile prints its radius, centre, hit count, and whether it subdivided, so you
@@ -240,8 +280,12 @@ quickbeam data schemagen \
 #    the bundle), which yields a bundle schema id 0x...
 
 # 3) build embeddings, projecting one document per Business
-quickbeam build --bundle fangorn.places.localcore.v1=0x<bundleId> \
+quickbeam build --bundle fangorn.places.localcore.v1=0xa516d0aded656ec1d1e2b3c4b8186140f8ca0dc2e781fd408fa709daf07118de \
   --root-profile business
+
+quickbeam build --bundle fangorn.places.localcore.v1=0xa516d0aded656ec1d1e2b3c4b8186140f8ca0dc2e781fd408fa709daf07118de \
+    --root-profile business --root-profile review --root-profile localevent \
+    --reset
 
 # 4) bake the immutable, pullable demo shard
 quickbeam cdn bake ...
@@ -251,6 +295,22 @@ The **`business` root profile** (in `embeddings.py`'s `ROOT_PROFILES`) walks eac
 `Business` out to depth 2 and folds in its reviews, categories, locality,
 reviewers, and nearby businesses — exactly the projection the per-bar demo shard
 needs. You can override or extend it via `--profiles-file`.
+
+quickstart for bars
+
+``` sh
+# 1) regenerate volumes (new hours-free `text` blurb)
+quickbeam data placespg --output-dir ./stage_volumes
+# 2) schemagen (schema field names unchanged, but re-run for a clean bundle)
+quickbeam data schemagen --input-dir ./stage_volumes \
+  --prefix fangorn.places --bundle-name localcore --version v1
+# 3) republish the bundle  → new 0x<bundleId>
+# 4) re-embed with the review profile
+quickbeam build --bundle fangorn.places.localcore.v1=0x<bundleId> \
+  --root-profile business --root-profile review --root-profile localevent --reset
+# 5) re-bake the bars shard
+quickbeam cdn bake --collection fangorn --domain bars --cdn-dir ./cdn
+```
 
 ---
 

@@ -150,13 +150,17 @@ def shape_business(place_id: str, payload: dict, is_anchor: bool) -> dict:
     rating, n = payload.get("rating"), payload.get("userRatingCount")
     _, locality_title, _ = _locality(payload)
 
+    # The embedded blurb leads with the high-value descriptive signal (name, type,
+    # locality, editorial, amenities). Hours are deliberately excluded: a full
+    # weekly schedule string carries no semantic-search value and only crowds out
+    # the descriptive/review content within the embedding's token budget. Hours
+    # remain available as a structured field below (display + the open-now filter).
     text = (f"{name} — {primary or 'local business'}"
             + (f" in {locality_title}" if locality_title else "")
             + (f". {editorial.rstrip('.')}" if editorial else "")
             + (f". Rated {rating}/5 from {n:,} reviews" if rating and n else "")
             + (f". Price {price}" if price else "")
-            + (f". {', '.join(amenities)}" if amenities else "")
-            + (f". Hours: {_hours(payload)}" if _hours(payload) else ""))
+            + (f". {', '.join(amenities)}" if amenities else ""))
 
     return _clean({
         "schemaVersion": SCHEMA_VERSION, "entityType": "Business",
