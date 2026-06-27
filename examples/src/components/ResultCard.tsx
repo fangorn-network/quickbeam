@@ -41,7 +41,7 @@ function cardBadges(entity: EntitySummary): { key: string; label: string; tone: 
   return out;
 }
 
-// A faint Northwoods-map contour wash — the signature texture for every photo slot.
+// A faint topographic contour wash — the signature texture for every photo slot.
 function Contour() {
   return (
     <svg className={styles.contour} viewBox="0 0 200 120" preserveAspectRatio="xMidYMid slice" aria-hidden="true">

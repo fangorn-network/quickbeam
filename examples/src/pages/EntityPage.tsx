@@ -155,7 +155,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
   if (isEvent) {
     stats.push(
       <span key="when" className={isCancelled || isPast ? styles.closed : styles.open}>
-        {isCancelled ? 'Cancelled' : isPast ? 'Past event' : 'Upcoming'}
+        {isCancelled ? COPY.event.cancelled : isPast ? COPY.event.past : COPY.event.upcoming}
       </span>,
     );
     if (dateLabel) stats.push(<span key="d" className={styles.stat}>{dateLabel}</span>);
@@ -320,7 +320,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
           <div className={styles.contact}>
             {ticketUrl && (
               <a href={ticketUrl} target="_blank" rel="noreferrer" className={styles.contactLink}>
-                Tickets ↗
+                {COPY.event.tickets}
               </a>
             )}
             {isEvent && organizerName && (
@@ -328,14 +328,14 @@ export default function EntityPage({ pointId, onVisit }: Props) {
                 type="button"
                 className={styles.contactLink}
                 onClick={() => onSoftLink(organizerName, 'organizer')}
-                title={`Find more from ${organizerName}`}
+                title={COPY.event.findMore(organizerName)}
               >
-                Hosted by {organizerName}
+                {COPY.event.hostedBy(organizerName)}
               </button>
             )}
             {website && (
               <a href={website} target="_blank" rel="noreferrer" className={styles.contactLink}>
-                Website ↗
+                {COPY.event.website}
               </a>
             )}
             {phone && (
@@ -345,7 +345,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
             )}
             {maps && (
               <a href={maps} target="_blank" rel="noreferrer" className={styles.contactLink}>
-                Map ↗
+                {COPY.event.map}
               </a>
             )}
             {coordinates && (
@@ -353,9 +353,9 @@ export default function EntityPage({ pointId, onVisit }: Props) {
                 type="button"
                 className={styles.contactLink}
                 onClick={openNearby}
-                title={`Find places near ${coordinates}`}
+                title={COPY.event.findNear(coordinates)}
               >
-                ◎ Nearby ({coordinates})
+                {COPY.event.nearby(coordinates)}
               </button>
             )}
           </div>
@@ -484,7 +484,7 @@ function EventsSection({
       )}
       {past.length > 0 && (
         <>
-          <div className={styles.eventGroupLabel}>Past</div>
+          <div className={styles.eventGroupLabel}>{COPY.event.pastGroup}</div>
           <div className={styles.eventList}>
             {past.slice(0, PAST_CAP).map((e) => (
               <EventRow key={e.pointId} e={e} onOpen={onOpen} />

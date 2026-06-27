@@ -8,7 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "stage:cdn": "node scripts/stage-cdn.mjs",
-    "build:static": "npm run stage:cdn -- --domain bars && npm run build"
+    "build:static": "npm run stage:cdn -- --domain places && npm run build"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

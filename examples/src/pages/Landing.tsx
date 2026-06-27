@@ -31,9 +31,9 @@ export default function Landing({ counts, onVisit }: Props) {
       {/* Branded community hero */}
       <section className={styles.hero}>
         <div className={styles.eyebrow}>
-          <span className={styles.eyebrowMark}>◇</span> SOND3R · {communityFull}
+          <span className={styles.eyebrowMark}>◇</span> {COPY.landing.eyebrow} · {communityFull}
         </div>
-        <h1 className={styles.title}>Discover {COMMUNITY.name}</h1>
+        <h1 className={styles.title}>{COPY.landing.discover(COMMUNITY.name)}</h1>
         <p className={styles.tagline}>{COMMUNITY.tagline}</p>
 
         <div className={styles.searchArea}>
@@ -88,13 +88,13 @@ export default function Landing({ counts, onVisit }: Props) {
       {/* Roadmap teaser — the "claim your business" vision. */}
       <div className={styles.claim}>
         <span className={styles.claimDot} aria-hidden="true">◇</span>
-        Run a bar or host events in {COMMUNITY.name}?{' '}
+        {COPY.landing.claimPrompt(COMMUNITY.name)}{' '}
         <br></br>
         <br></br>
-        <strong>Claiming your profile &amp; self-serve events are coming soon.</strong>
+        <strong>{COPY.landing.claimSoon}</strong>
         <br></br>
         <br></br>
-        <strong>Get in touch at <a href='mailto:fangorn@fangorn.network'>fangorn@fangorn.network</a></strong>
+        <strong>{COPY.landing.contact} <a href='mailto:fangorn@fangorn.network'>fangorn@fangorn.network</a></strong>
       </div>
     </div>
   );

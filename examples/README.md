@@ -86,6 +86,8 @@ npm run build
 npm run preview  
 # build a static build 
 npm run build:statc
+
+npx wrangler login
 # deploy the static build (dist) to cloudflare
 npx wrangler pages deploy dist --branch main
 ```

@@ -77,12 +77,12 @@
     "hideConnections": ["businesses", "localities", "reviewers", "events"],
     "types": {
       "Business": {
-        "icon": "\ud83c\udf7a",
+        "icon": "\ud83c\udfea",
         "accent": "#d98a2b",
-        "letter": "B",
-        "singular": "Bar",
-        "plural": "Bars",
-        "definition": "A physical local business \u2014 a bar, pub, or tavern \u2014 with hours, contact info, ratings, and reviews sourced from Google Places."
+        "letter": "P",
+        "singular": "Place",
+        "plural": "Places",
+        "definition": "A physical local business \u2014 a shop, restaurant, bar, service, or venue \u2014 with hours, contact info, ratings, and reviews sourced from Google Places."
       },
       "Event": {
         "icon": "\ud83c\udfab",

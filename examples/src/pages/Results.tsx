@@ -3,10 +3,9 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import ResultCard from '../components/ResultCard';
 import SkeletonBlock from '../components/SkeletonBlock';
 import Icon from '../components/Icon';
-import type { IconName } from '../components/Icon';
 import type { EntitySummary, EntityType, PageRef } from '../lib/types';
 import { useDomain } from '../lib/domainContext';
-import { COPY } from '../lib/copy';
+import { COPY, VIBES } from '../lib/i18n';
 import { scroll, search, searchNear, toSummary, QdrantError } from '../lib/qdrant';
 import type { StructuredFilters } from '../lib/qdrant';
 import { IS_MOCK } from '../lib/config';
@@ -33,19 +32,9 @@ async function loadFacets(): Promise<Facets> {
   return { hasRating, hasEvents };
 }
 
-// Curated "vibe" pills. Each folds a short phrase into the semantic query, so a
-// tap means "more like this feeling" rather than a rigid checkbox filter. The set
-// is grounded in Northwoods life — supper clubs and Friday fish fry, not generic.
-const VIBES: { key: string; label: string; q: string; icon: IconName }[] = [
-  { key: 'lakeside', label: 'Lakeside views', q: 'lakeside waterfront view on the water', icon: 'compass' },
-  { key: 'patio', label: 'Cozy patios', q: 'cozy outdoor patio fire pit', icon: 'leaf' },
-  { key: 'music', label: 'Live music', q: 'live music band', icon: 'music' },
-  { key: 'local', label: 'Local favorites', q: 'beloved local favorite hidden gem', icon: 'star' },
-  { key: 'craft', label: 'Craft beer', q: 'craft beer taproom brewery', icon: 'glass' },
-  { key: 'fishfry', label: 'Friday fish fry', q: 'friday fish fry', icon: 'fish' },
-  { key: 'supper', label: 'Supper club', q: 'classic northwoods supper club', icon: 'sparkle' },
-  { key: 'latenight', label: 'Late night', q: 'open late night last call', icon: 'moon' },
-];
+// Curated "vibe" pills come from the active locale profile (lib/i18n): each folds a
+// short phrase into the semantic query, so a tap means "more like this feeling"
+// rather than a rigid filter, and the set stays culturally grounded per community.
 
 // Order event summaries: upcoming first (soonest), then past (most recent first).
 function sortEventSummaries(items: EntitySummary[]): EntitySummary[] {
@@ -205,14 +194,14 @@ export default function Results({ onVisit, browseType }: Props) {
   }
 
   const headline = near
-    ? 'Closest to you'
+    ? COPY.results.headlineNear
     : effectiveQuery
       ? q
-        ? `Matches for “${q}”`
-        : 'Matching your vibe'
+        ? COPY.results.headlineQuery(q)
+        : COPY.results.headlineVibe
       : activeType
         ? domain.pluralOf(activeType)
-        : `Around ${COMMUNITY.name}`;
+        : COPY.results.headlineAround(COMMUNITY.name);
 
   const showEvents = facets?.hasEvents ?? true;
 
@@ -236,7 +225,7 @@ export default function Results({ onVisit, browseType }: Props) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={COPY.search.placeholder}
-            aria-label="Search by vibe"
+            aria-label={COPY.search.ariaByVibe}
             autoComplete="off"
             spellCheck={false}
           />
@@ -246,10 +235,10 @@ export default function Results({ onVisit, browseType }: Props) {
             </button>
           )}
           <button type="submit" className={styles.searchGo}>
-            Search
+            {COPY.search.submit}
           </button>
         </form>
-        <div className={styles.segment} role="tablist" aria-label="Filter by type">
+        <div className={styles.segment} role="tablist" aria-label={COPY.filter.label}>
           <button
             type="button"
             role="tab"
@@ -257,7 +246,7 @@ export default function Results({ onVisit, browseType }: Props) {
             className={`${styles.seg} ${!activeType ? styles.segActive : ''}`}
             onClick={() => switchType('')}
           >
-            Everything
+            {COPY.results.everything}
           </button>
           {domain.entityTypes.map((t) => (
             <button
@@ -280,9 +269,9 @@ export default function Results({ onVisit, browseType }: Props) {
           <section className={`${styles.tile} ${styles.vibeTile}`}>
             <header className={styles.tileHead}>
               <Icon name="sparkle" size={15} />
-              <h2 className={styles.tileTitle}>Vibe finder</h2>
+              <h2 className={styles.tileTitle}>{COPY.results.vibeFinderTitle}</h2>
             </header>
-            <p className={styles.tileHint}>Tap a feeling to steer the search.</p>
+            <p className={styles.tileHint}>{COPY.results.vibeFinderHint}</p>
             <div className={styles.vibeGrid}>
               {VIBES.map((v) => (
                 <button
@@ -303,7 +292,7 @@ export default function Results({ onVisit, browseType }: Props) {
             <section className={`${styles.tile} ${styles.whatsOnTile}`}>
               <header className={styles.tileHead}>
                 <Icon name="calendar" size={15} />
-                <h2 className={styles.tileTitle}>What's on</h2>
+                <h2 className={styles.tileTitle}>{COPY.results.whatsOnTitle}</h2>
               </header>
               <div className={styles.whatsOn}>
                 <button
@@ -311,7 +300,7 @@ export default function Results({ onVisit, browseType }: Props) {
                   className={`${styles.timeBtn} ${dateWindow === 'today' ? styles.timeOn : ''}`}
                   onClick={() => setDateWindow((c) => (c === 'today' ? '' : 'today'))}
                 >
-                  <span>Tonight's picks</span>
+                  <span>{COPY.results.quickTonight}</span>
                   <Icon name="moon" size={15} />
                 </button>
                 <button
@@ -319,7 +308,7 @@ export default function Results({ onVisit, browseType }: Props) {
                   className={`${styles.timeBtn} ${dateWindow === 'weekend' ? styles.timeOn : ''}`}
                   onClick={() => setDateWindow((c) => (c === 'weekend' ? '' : 'weekend'))}
                 >
-                  <span>This weekend</span>
+                  <span>{COPY.results.quickWeekend}</span>
                   <Icon name="sparkle" size={15} />
                 </button>
                 <button
@@ -330,14 +319,14 @@ export default function Results({ onVisit, browseType }: Props) {
                     switchType('Event' as EntityType);
                   }}
                 >
-                  <span>Featured events</span>
+                  <span>{COPY.results.quickEvents}</span>
                   <Icon name="arrow" size={15} />
                 </button>
               </div>
             </section>
           )}
 
-          <section className={`${styles.tile} ${styles.mapTile}`} aria-label="Map preview">
+          <section className={`${styles.tile} ${styles.mapTile}`} aria-label={COPY.results.mapPreviewAria}>
             <svg className={styles.mapContour} viewBox="0 0 200 200" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
               {[20, 44, 70, 98, 128].map((r, i) => (
                 <circle key={i} cx="118" cy="86" r={r} fill="none" stroke="currentColor" strokeWidth="1.4" opacity={0.5 - i * 0.06} />
@@ -347,14 +336,14 @@ export default function Results({ onVisit, browseType }: Props) {
               <Icon name="pin" size={22} />
             </div>
             <div className={styles.mapText}>
-              <strong>Explore the map</strong>
-              <span>Pins for every bar &amp; event — coming soon.</span>
+              <strong>{COPY.results.mapTeaserTitle}</strong>
+              <span>{COPY.results.mapTeaserSub}</span>
             </div>
           </section>
 
           {hasFilters && (
             <button type="button" className={styles.clearAll} onClick={clearAll}>
-              Reset filters
+              {COPY.results.resetFilters}
             </button>
           )}
         </aside>
@@ -364,8 +353,7 @@ export default function Results({ onVisit, browseType }: Props) {
             <h1 className={styles.headline}>{headline}</h1>
             {!loading && !error && (
               <span className={styles.count}>
-                {items.length}
-                {offset ? '+' : ''} {items.length === 1 ? 'spot' : 'spots'}
+                {COPY.results.countSpots(items.length, !!offset)}
               </span>
             )}
           </div>
@@ -384,7 +372,7 @@ export default function Results({ onVisit, browseType }: Props) {
             </div>
           ) : items.length === 0 ? (
             <div className={styles.message}>
-              {effectiveQuery ? COPY.states.noResults(q || 'that vibe') : 'Nothing here yet — try a different vibe.'}
+              {effectiveQuery ? COPY.states.noResults(q || COPY.results.fallbackQuery) : COPY.results.emptyVibe}
             </div>
           ) : (
             <>
@@ -402,7 +390,7 @@ export default function Results({ onVisit, browseType }: Props) {
               </div>
               {offset != null && (
                 <button type="button" className={styles.more} onClick={() => load(false)} disabled={loadingMore}>
-                  {loadingMore ? 'Loading…' : 'Show more spots'}
+                  {loadingMore ? COPY.states.loadingEntity : COPY.results.showMore}
                 </button>
               )}
             </>

@@ -14,7 +14,7 @@
 // res.json() — which ignores Content-Type — so extensionless files are fine.
 //
 // Usage:
-//   node scripts/stage-cdn.mjs [--src ../cdn] [--dest public/cdn] [--domain bars ...]
+//   node scripts/stage-cdn.mjs [--src ../cdn] [--dest public/cdn] [--domain places ...]
 // With no --domain, every domain present on disk is staged. --domain limits the
 // deploy (and rewrites the catalog to just those) so a single-domain site like
 // places.sond3r.com doesn't ship unrelated corpora.
