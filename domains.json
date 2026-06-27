@@ -21,8 +21,8 @@
       "filter": { "entityType": ["Place", "Event"] },
       "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v4.json"
     },
-    "bars": {
-      "description": "Bars & events in Eagle River, WI — Google Places + Eventbrite/Tribe",
+    "places": {
+      "description": "Local places & events — a searchable directory from Google Places + Eventbrite/Tribe",
       "filter": { "entityType": ["Business", "Event"] },
       "bundle_schema": "stage_volumes/schemas/fangorn.places.localcore.v1.json",
       "role_map": {
@@ -39,7 +39,7 @@
       },
       "presentation": {
         "types": {
-          "Business": { "icon": "🍺", "accent": "#d98a2b", "singular": "Bar", "plural": "Bars" },
+          "Business": { "icon": "🏪", "accent": "#d98a2b", "singular": "Place", "plural": "Places" },
           "Event": { "icon": "🎫", "accent": "#c2562b", "singular": "Event", "plural": "Events" },
           "Organizer": { "icon": "📣", "accent": "#2f7d57", "singular": "Organizer", "plural": "Organizers" }
         },

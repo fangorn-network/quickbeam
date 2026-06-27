@@ -1,0 +1,217 @@
+{
+  "name": "places",
+  "description": "Local places & events \u2014 a searchable directory from Google Places + Eventbrite/Tribe",
+  "count": 775,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {
+    "entityType": [
+      "Business",
+      "Event"
+    ]
+  },
+  "created_at": 1782533569,
+  "role_map": {
+    "identity": "placeId",
+    "title": "title",
+    "subtitle": "primaryType",
+    "temporal": null,
+    "spatial": "locality",
+    "media": "googleMapsUri",
+    "tags": [
+      "categories"
+    ],
+    "measures": [
+      "rating",
+      "userRatingCount"
+    ],
+    "relations": [],
+    "text": [
+      "text",
+      "editorialSummary"
+    ],
+    "labels": {
+      "title": "Title",
+      "subtitle": "User Rating Count",
+      "temporal": "End Date",
+      "spatial": "Coordinate",
+      "media": "Source",
+      "tags": "Reviews, Reviewers, Categories, Businesses, Events, Localities",
+      "measures": "Rating",
+      "text": "Hours, Image Url, Summary, Text"
+    },
+    "fields": [
+      "address",
+      "amenities",
+      "businessStatus",
+      "businesses",
+      "categories",
+      "coordinates",
+      "dateLabel",
+      "editorialSummary",
+      "endDate",
+      "entityType",
+      "eventId",
+      "events",
+      "googleMapsUri",
+      "hostBusinessId",
+      "hostBusinessName",
+      "hours",
+      "imageUrl",
+      "isPast",
+      "localities",
+      "locality",
+      "phone",
+      "placeId",
+      "priceLevel",
+      "primaryType",
+      "rating",
+      "reviewers",
+      "reviews",
+      "schemaVersion",
+      "shortAddress",
+      "source",
+      "startDate",
+      "startISO",
+      "startTime",
+      "summary",
+      "text",
+      "ticketUrl",
+      "timezone",
+      "title",
+      "userRatingCount",
+      "venueName",
+      "website"
+    ]
+  },
+  "entity_types": [
+    {
+      "type": "Business",
+      "count": 400
+    },
+    {
+      "type": "Event",
+      "count": 375
+    }
+  ],
+  "shards": [
+    {
+      "file": "shard-0000-857a67f38454.ndjson.gz",
+      "count": 775,
+      "bytes": 4390627,
+      "sha256": "857a67f384542a366a18da2334892bde6bba8a18572a733600bff827be5a8c0b"
+    }
+  ],
+  "bundle": {
+    "nodes": {
+      "Business": "fangorn.places.business.v1",
+      "Category": "fangorn.places.category.v1",
+      "Locality": "fangorn.places.locality.v1",
+      "Reviewer": "fangorn.places.reviewer.v1",
+      "Review": "fangorn.places.review.v1",
+      "Event_Categories": "fangorn.places.event_categories.v1",
+      "Event": "fangorn.places.event.v1",
+      "Organizer": "fangorn.places.organizer.v1"
+    },
+    "edges": [
+      {
+        "rel": "near",
+        "from": "Business",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Business",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "hasReview",
+        "from": "Business",
+        "to": "Review",
+        "min": 0
+      },
+      {
+        "rel": "byAuthor",
+        "from": "Review",
+        "to": "Reviewer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Business",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hostedBy",
+        "from": "Event",
+        "to": "Organizer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Event",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hostedAt",
+        "from": "Event",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "hostsEvent",
+        "from": "Business",
+        "to": "Event",
+        "min": 0
+      }
+    ]
+  },
+  "presentation": {
+    "types": {
+      "Business": {
+        "icon": "\ud83c\udfea",
+        "accent": "#d98a2b",
+        "singular": "Place",
+        "plural": "Places"
+      },
+      "Event": {
+        "icon": "\ud83c\udfab",
+        "accent": "#c2562b",
+        "singular": "Event",
+        "plural": "Events"
+      },
+      "Organizer": {
+        "icon": "\ud83d\udce3",
+        "accent": "#2f7d57",
+        "singular": "Organizer",
+        "plural": "Organizers"
+      }
+    },
+    "fieldLabels": {
+      "editorialSummary": "Summary",
+      "userRatingCount": "Reviews",
+      "priceLevel": "Price",
+      "primaryType": "Type",
+      "dateLabel": "When",
+      "venueName": "Venue",
+      "priceMin": "From",
+      "ticketUrl": "Tickets",
+      "organizerName": "Hosted by"
+    },
+    "hideConnections": [
+      "businesses",
+      "localities",
+      "reviewers",
+      "events"
+    ],
+    "externalUrl": {
+      "Business": "{googleMapsUri}",
+      "Event": "{ticketUrl}"
+    }
+  }
+}

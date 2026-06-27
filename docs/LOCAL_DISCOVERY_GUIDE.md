@@ -347,7 +347,7 @@ Then embed + bake. Two paths:
 ```bash
 quickbeam build --bundle fangorn.places.localcore.v1=0x<bundleId> \
   --root-profile business --root-profile review --root-profile localevent --reset
-quickbeam cdn bake --collection fangorn --domain bars --cdn-dir ./cdn
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
 ```
 
 The root profiles (in `embeddings.py`'s `ROOT_PROFILES`):
@@ -367,13 +367,13 @@ uses, so vectors are comparable to build-time and to in-browser query vectors:
 ```bash
 quickbeam data prebake --input-dir ./stage_volumes --volume 2 \
   --types Event,Organizer --collection fangorn --link-events
-quickbeam cdn bake --collection fangorn --domain bars --cdn-dir ./cdn
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
 ```
 
 `--link-events` folds each bar's hosted-event titles into its payload
 (payload-only — existing bar vectors untouched).
 
-### Quickstart — rebuild the bars shard end to end
+### Quickstart — rebuild the places shard end to end
 
 ```bash
 quickbeam data placespg --output-dir ./stage_volumes
@@ -383,7 +383,7 @@ quickbeam data schemagen --input-dir ./stage_volumes --volume 0 \
 # republish the bundle → new 0x<bundleId>
 quickbeam build --bundle fangorn.places.localcore.v1=0x<bundleId> \
   --root-profile business --root-profile review --root-profile localevent --reset
-quickbeam cdn bake --collection fangorn --domain bars --cdn-dir ./cdn
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
 ```
 
 ---
@@ -391,16 +391,54 @@ quickbeam cdn bake --collection fangorn --domain bars --cdn-dir ./cdn
 ## Stage D — the demo
 
 `domains.json` (and the qdrant-mode overlay `examples/public/domain.json`) put
-`Event` in the bars domain filter and add presentation for `Event`/`Organizer`.
+`Event` in the places domain filter and add presentation for `Event`/`Organizer`.
 The examples app renders an event-flavored entity page (Upcoming/Past badge, date,
 venue with a `◎ Nearby` coordinate-proximity link, price, a **Tickets ↗** link,
 and the organizer); a bar lists its events under Connections (via the folded
 `events` field); and the results rail gains an **"Upcoming events only"** toggle
-that drops past events while leaving bars unaffected.
+that drops past events while leaving places unaffected.
 
 ```bash
 cd examples && npm run build      # tsc + vite
 ```
+
+### Configure language + locality (per-community deploy)
+
+One examples build serves **one community in one language**. The data is
+locality-agnostic (any Places/Events sweep works), but the UI chrome — hero copy,
+search placeholder, the culturally-grounded "vibe" quick-searches, event labels —
+comes from a **locale profile**, so a German locality doesn't render Northwoods
+English. Profiles live in `examples/src/lib/i18n/`; each bundles `lang` (BCP-47) +
+`community` (name/region/tagline) + `strings` (the full typed copy contract) +
+`vibes`. Two ship today:
+
+| `VITE_LOCALE` | Language · community | Vibes are grounded in |
+|---------------|----------------------|-----------------------|
+| `en-eagle-river` (default) | English · Eagle River, WI | supper clubs, Friday fish fry, lakeside |
+| `de-hofheim` | Deutsch · Hofheim am Taunus, HE | Apfelwein/Äppler, Biergarten, Weinstube |
+
+```bash
+# Build the German deployment (sets <html lang>, title, all copy + vibes)
+cd examples && VITE_LOCALE=de-hofheim npm run build
+```
+
+`VITE_LOCALE` also reads from `examples/.env.production`. For a quick locality
+tweak **without** authoring a whole profile, override individual community fields:
+`VITE_COMMUNITY_NAME`, `VITE_COMMUNITY_REGION`, `VITE_COMMUNITY_REGION_ABBR`,
+`VITE_COMMUNITY_SLUG`, `VITE_COMMUNITY_TAGLINE`, `VITE_COMMUNITY_BLURB` (these layer
+on top of the selected profile).
+
+**Add a new community/language:** drop a `LocaleProfile` file in
+`src/lib/i18n/` (copy `de-hofheim.ts` as a template — TypeScript's `Strings`
+interface forces you to translate every key) and register it in
+`src/lib/i18n/index.ts`. The `vibes` array is where the cultural grounding lives:
+phrase the quick-searches the way locals actually search (regional drinks, venue
+types, local rituals), since each `q` is folded into the semantic query.
+
+> Locality vs. language are independent. The Hofheim Places data sits in Hessen
+> (HE) while the earlier Eventbrite `--bbox` sweep pulled Stuttgart (BW) events —
+> if you deploy one community, scrape both Places and Events for the *same* region
+> (re-run the event `--bbox` around your locality) so the merged shard is coherent.
 
 ### Verify
 
@@ -409,7 +447,7 @@ cd examples && npm run build      # tsc + vite
 grep -c '"rel": "hostedAt"' stage_volumes/volume_2_edges.json     # > 0
 # events are searchable: "live music this summer" → LOLA Live, Marina Bar, …
 # review text surfaces its business: "tacos" / "runny cheese sauce" → the bar
-# upcoming filter keeps bars, drops past events (Qdrant must_not on fields.isPast)
+# upcoming filter keeps places, drops past events (Qdrant must_not on fields.isPast)
 ```
 
 Re-running any stage is idempotent (upsert by id / `event_key`), and only Stage A
