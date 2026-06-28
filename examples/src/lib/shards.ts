@@ -5,6 +5,7 @@
 // builds embeddings. Same surface as qdrant.ts / mock.ts — swap the impl, keep the
 // signatures.
 import type { QdrantPoint, EntityFields } from './types';
+import type { AtlasRaw } from './atlasTypes';
 import type { CollectionInfo, Filter, ScrollResult, StructuredFilters } from './qdrant';
 import { QdrantError, sortEvents } from './qdrant';
 import { embedQuery } from './embed';
@@ -16,6 +17,9 @@ import { CDN_URL, CDN_DOMAIN } from './config';
 interface ShardPoint extends QdrantPoint {
   vector: number[];
   norm: number;
+  // Optional pre-baked 2-D projection (`quickbeam cdn bake` with UMAP). When
+  // absent the Atlas projects client-side from `vector`.
+  proj?: [number, number];
 }
 
 interface Loaded {
@@ -39,10 +43,17 @@ function toPoint(row: Record<string, unknown>): ShardPoint | null {
   const id = String(row.track_id ?? '');
   let norm = 0;
   for (const x of embedding) norm += x * x;
+  // `proj` is the baked 2-D UMAP coordinate, if the snapshot carries one.
+  const rawProj = row.proj as unknown;
+  const proj =
+    Array.isArray(rawProj) && rawProj.length === 2 && rawProj.every((n) => typeof n === 'number')
+      ? ([rawProj[0], rawProj[1]] as [number, number])
+      : undefined;
   return {
     id,
     vector: embedding,
     norm: Math.sqrt(norm) || 1,
+    proj,
     payload: {
       id,
       entityType: (fields.entityType as string) ?? 'Unknown',
@@ -363,6 +374,24 @@ export async function shardEventsForHost(placeId: string, limit = 100): Promise<
       && (p.payload?.fields as Record<string, unknown> | undefined)?.hostBusinessId === placeId)
     .map(strip);
   return sortEvents(out).slice(0, limit);
+}
+
+// Atlas: expose every loaded point's identity + document vector (+ baked proj).
+export async function shardAtlasRaw(): Promise<AtlasRaw[]> {
+  const { points } = await loaded();
+  return points.map((p) => ({
+    id: String(p.id),
+    type: p.payload?.entityType ?? 'Unknown',
+    title: String((p.payload?.fields?.title as string | undefined) ?? p.id),
+    vector: p.vector,
+    proj: p.proj,
+    fields: (p.payload?.fields ?? {}) as Record<string, unknown>,
+  }));
+}
+
+// Atlas: embed a typed query into the served vector space (real query model).
+export async function shardAtlasEmbed(q: string): Promise<number[]> {
+  return embedQuery(q);
 }
 
 // The Business behind a placeId — to link an Event back to its venue.

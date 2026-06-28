@@ -12,6 +12,7 @@ interface Props {
   onToggleTheme: () => void;
   onMenu?: () => void;
   onHome?: () => void;
+  onAtlas?: () => void;
   tripCount?: number;
   onTrip?: () => void;
 }
@@ -24,6 +25,7 @@ export default function TopBar({
   onToggleTheme,
   onMenu,
   onHome,
+  onAtlas,
   tripCount = 0,
   onTrip,
 }: Props) {
@@ -79,6 +81,15 @@ export default function TopBar({
         {connectionError && (
           <StatusBadge variant="error" label={COPY.states.connectionError} />
         )}
+        <button
+          type="button"
+          className={styles.trip}
+          onClick={onAtlas}
+          aria-label="Atlas"
+          title="Atlas — the semantic map"
+        >
+          ✦ Atlas
+        </button>
         <button
           type="button"
           className={styles.trip}

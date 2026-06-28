@@ -30,6 +30,9 @@
         "hours": {
           "@type": "string"
         },
+        "isAnchor": {
+          "@type": "boolean"
+        },
         "locality": {
           "@type": "string"
         },
@@ -66,6 +69,12 @@
         "website": {
           "@type": "string"
         }
+      },
+      "identity": {
+        "aliases": {
+          "gplace": "placeId"
+        },
+        "@id": "placeId"
       }
     },
     {
@@ -173,11 +182,132 @@
         "title": {
           "@type": "string"
         }
+      },
+      "identity": {
+        "aliases": {
+          "gplace": "businessId"
+        },
+        "@id": "businessId"
+      }
+    },
+    {
+      "name": "fangorn.places.event.v1",
+      "definition": {
+        "address": {
+          "@type": "string"
+        },
+        "categories": {
+          "@type": "string"
+        },
+        "coordinates": {
+          "@type": "string"
+        },
+        "dateLabel": {
+          "@type": "string"
+        },
+        "endDate": {
+          "@type": "string"
+        },
+        "entityType": {
+          "@type": "string"
+        },
+        "eventId": {
+          "@type": "string"
+        },
+        "hostBusinessId": {
+          "@type": "string"
+        },
+        "hostBusinessName": {
+          "@type": "string"
+        },
+        "imageUrl": {
+          "@type": "string"
+        },
+        "isFree": {
+          "@type": "boolean"
+        },
+        "isPast": {
+          "@type": "boolean"
+        },
+        "locality": {
+          "@type": "string"
+        },
+        "organizerName": {
+          "@type": "string"
+        },
+        "priceLevel": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "source": {
+          "@type": "string"
+        },
+        "startDate": {
+          "@type": "string"
+        },
+        "startISO": {
+          "@type": "string"
+        },
+        "startTime": {
+          "@type": "string"
+        },
+        "summary": {
+          "@type": "string"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "ticketUrl": {
+          "@type": "string"
+        },
+        "timezone": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        },
+        "venueName": {
+          "@type": "string"
+        }
+      },
+      "identity": {
+        "aliases": {
+          "gplace": "hostBusinessId"
+        },
+        "@id": "hostBusinessId"
+      }
+    },
+    {
+      "name": "fangorn.places.organizer.v1",
+      "definition": {
+        "entityType": {
+          "@type": "string"
+        },
+        "organizerId": {
+          "@type": "string"
+        },
+        "schemaVersion": {
+          "@type": "number"
+        },
+        "source": {
+          "@type": "string"
+        },
+        "text": {
+          "@type": "string"
+        },
+        "title": {
+          "@type": "string"
+        },
+        "website": {
+          "@type": "string"
+        }
       }
     }
   ],
   "bundle": {
-    "name": "fangorn.places.localcore.v1",
+    "name": "fangorn.places.eagleriver.wi.localcore.v1",
     "kind": "bundle",
     "bundle": {
       "nodes": {
@@ -185,13 +315,39 @@
         "Category": "fangorn.places.category.v1",
         "Locality": "fangorn.places.locality.v1",
         "Reviewer": "fangorn.places.reviewer.v1",
-        "Review": "fangorn.places.review.v1"
+        "Review": "fangorn.places.review.v1",
+        "Event": "fangorn.places.event.v1",
+        "Organizer": "fangorn.places.organizer.v1"
       },
       "edges": [
+        {
+          "rel": "near",
+          "from": "Business",
+          "to": "Business",
+          "min": 0
+        },
         {
           "rel": "inCategory",
           "from": "Business",
           "to": "Category",
+          "min": 0
+        },
+        {
+          "rel": "inCategory",
+          "from": "Event",
+          "to": "Category",
+          "min": 0
+        },
+        {
+          "rel": "hostedBy",
+          "from": "Event",
+          "to": "Organizer",
+          "min": 0
+        },
+        {
+          "rel": "locatedIn",
+          "from": "Event",
+          "to": "Locality",
           "min": 0
         },
         {
@@ -207,15 +363,21 @@
           "min": 0
         },
         {
-          "rel": "near",
+          "rel": "locatedIn",
           "from": "Business",
+          "to": "Locality",
+          "min": 0
+        },
+        {
+          "rel": "hostedAt",
+          "from": "Event",
           "to": "Business",
           "min": 0
         },
         {
-          "rel": "locatedIn",
+          "rel": "hostsEvent",
           "from": "Business",
-          "to": "Locality",
+          "to": "Event",
           "min": 0
         }
       ]

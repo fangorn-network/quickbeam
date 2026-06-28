@@ -1,39 +1,40 @@
 {
-  "generated_at": 1782533569,
+  "generated_at": 1782586052,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
   "collection": "fangorn",
   "domains": [
     {
       "name": "music",
       "description": "MusicBrainz creative core \u2014 recordings & artists",
-      "count": 3000,
+      "count": 0,
       "dim": 256,
-      "bytes": 7690738,
-      "shard_count": 1,
-      "entity_types": [
-        "Recording"
-      ],
+      "bytes": 0,
+      "shard_count": 0,
+      "entity_types": [],
       "manifest": "music/manifest.json"
     },
     {
       "name": "venues",
       "description": "Places & events",
-      "count": 10000,
+      "count": 622,
       "dim": 256,
-      "bytes": 26315665,
-      "shard_count": 2,
+      "bytes": 1628620,
+      "shard_count": 1,
+      "entity_types": [
+        "Event"
+      ],
       "manifest": "venues/manifest.json"
     },
     {
       "name": "places",
       "description": "Local places & events \u2014 a searchable directory from Google Places + Eventbrite/Tribe",
-      "count": 775,
+      "count": 1025,
       "dim": 256,
-      "bytes": 4390627,
+      "bytes": 4328043,
       "shard_count": 1,
       "entity_types": [
-        "Business",
-        "Event"
+        "Event",
+        "Business"
       ],
       "manifest": "places/manifest.json"
     }

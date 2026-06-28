@@ -22,6 +22,12 @@
     "eventId": {
       "@type": "string"
     },
+    "hostBusinessId": {
+      "@type": "string"
+    },
+    "hostBusinessName": {
+      "@type": "string"
+    },
     "imageUrl": {
       "@type": "string"
     },
@@ -39,12 +45,6 @@
     },
     "priceLevel": {
       "@type": "string"
-    },
-    "priceMax": {
-      "@type": "number"
-    },
-    "priceMin": {
-      "@type": "number"
     },
     "schemaVersion": {
       "@type": "number"
@@ -79,5 +79,11 @@
     "venueName": {
       "@type": "string"
     }
+  },
+  "identity": {
+    "aliases": {
+      "gplace": "hostBusinessId"
+    },
+    "@id": "hostBusinessId"
   }
 }

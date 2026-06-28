@@ -1,20 +1,26 @@
 """
-osmPipeline.py — OpenStreetMap changeset ingest for Fangorn.
+osm.py — OpenStreetMap *places* ingest for Fangorn.
 
 Proves the thesis that adding a new domain is a *schema change, not an
-architecture change*: this mirrors mbPipeline.py but emits records under an
-`osm_changeset` schema instead of music. The ingest server + app then infer the
-semantic roles automatically (title←comment, subtitle←user_id, tags←tags,
-spatial←bbox, temporal←created_at, measures←num_changes — no media → no player).
+architecture change*: this mirrors the music pipelines but emits records under
+an `osm_place` schema. The ingest server + app then infer the semantic roles
+automatically (title←name, subtitle←category, tags←tags, spatial←lat/lon — no
+media → no player).
 
-Output: ./stage_volumes/osm_changesets.json — a JSON array of
-{"name": <changeset_id>, "fields": {...}} records, the same shape the SDK
-ingest path consumes (see mbPipeline core/taxonomy files).
+Two structural ideas:
+  1. Place selection is separated from OSM fetching. You pick a *named* place
+     ("Eagle River, Wisconsin", "Vilas County, Wisconsin") and the script
+     discovers its bounding box via Nominatim — no hardcoded bbox.
+  2. We query Overpass for actual entities (restaurants, bars, parks,
+     campgrounds, trails, boat launches…) rather than changesets, which is what
+     a local-discovery app actually wants.
 
-No third-party deps — stdlib only (urllib + xml.etree). Run:
-    python osmPipeline.py
-Then register the schema + publish via the Fangorn SDK and point the server at it:
-    python server.py --schema osm_changeset=0x<id> --reset
+Output: ./stage_volumes/osm_places.json — a JSON array of
+{"name": <place name>, "fields": {...}} records, the same shape the SDK ingest
+path consumes.
+
+No third-party deps — stdlib only (urllib + json). Run:
+    python osm.py
 """
 
 import os
@@ -22,126 +28,151 @@ import json
 import time
 import urllib.request
 import urllib.parse
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
 
 # ===========================================================================
-# CONFIG
+# CONFIG — pick a *named* place; the bbox is discovered automatically.
 # ===========================================================================
-# DFW metro bounding box: (min_lon, min_lat, max_lon, max_lat)
-BBOX               = (-97.5, 32.5, -96.5, 33.2)
-TARGET_COUNT       = 2000
-DAYS_BACK          = 30
-OUTPUT_DIR         = "./stage_volumes"
-OUTPUT_PATH        = os.path.join(OUTPUT_DIR, "osm_changesets.json")
-OSM_API            = "https://api.openstreetmap.org/api/0.6/changesets"
-USER_AGENT         = "Fangorn-OSM-Pipeline/1.0 (https://fangorn.network)"
-REQUEST_PAUSE_SEC  = 1.0   # be polite to the public API
+CONFIG = {
+    "place":        "Eagle River, Wisconsin",
+    "output_dir":   "./stage_volumes",
+}
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Categories to pull. Each entry is an Overpass (key, value) filter; value=None
+# means "any value for this key" (e.g. all tourism=* / leisure=* entities).
+CATEGORIES = [
+    ("amenity", "restaurant"),
+    ("amenity", "bar"),
+    ("amenity", "pub"),
+    ("amenity", "cafe"),
+    ("tourism", None),
+    ("leisure", None),
+]
+
+USER_AGENT        = "Fangorn-OSM-Pipeline/1.0 (https://fangorn.network)"
+NOMINATIM         = "https://nominatim.openstreetmap.org/search"
+OVERPASS          = "https://overpass-api.de/api/interpreter"
+REQUEST_PAUSE_SEC = 1.0   # be polite to the public APIs
 
 
 # ===========================================================================
-# FETCH — walk backwards one day at a time; each query returns up to 100
-# changesets for that day within the bounding box.
+# PLACE SELECTION — geocode a named place to a bounding box via Nominatim.
 # ===========================================================================
-def _fetch_day(day_start: datetime, day_end: datetime) -> list[dict]:
-    bbox = ",".join(str(x) for x in BBOX)
-    params = {
-        "bbox": bbox,
-        "time": f"{day_start.strftime('%Y-%m-%dT%H:%M:%SZ')},{day_end.strftime('%Y-%m-%dT%H:%M:%SZ')}",
-    }
-    url = f"{OSM_API}?{urllib.parse.urlencode(params)}"
+def lookup_bbox(place: str) -> tuple[float, float, float, float]:
+    """Return (west, south, east, north) for a named place."""
+    params = {"q": place, "format": "jsonv2", "limit": 1}
+    url = f"{NOMINATIM}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            xml_bytes = resp.read()
-    except Exception as e:
-        print(f"   ⚠️  fetch failed for {day_start.date()}: {e}")
-        return []
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        data = json.loads(resp.read())
 
-    root = ET.fromstring(xml_bytes)
-    out: list[dict] = []
-    for cs in root.findall("changeset"):
-        out.append(_parse_changeset(cs))
-    return out
+    if not data:
+        raise ValueError(f"Place not found: {place}")
+
+    # Nominatim boundingbox is [south, north, west, east] (strings).
+    south, north, west, east = (float(x) for x in data[0]["boundingbox"])
+    return (west, south, east, north)
 
 
-def _parse_changeset(cs: ET.Element) -> dict:
-    a = cs.attrib
-    # Changeset tags: free-form k/v. The comment is the human description; the
-    # rest (hashtags, source, etc.) become the activity tags.
-    comment = ""
-    tags: list[str] = []
-    for tag in cs.findall("tag"):
-        k, v = tag.get("k", ""), tag.get("v", "")
-        if not v:
-            continue
-        if k == "comment":
-            comment = v
-        elif k == "hashtags":
-            tags.extend(h.strip().lstrip("#") for h in v.replace(",", ";").split(";") if h.strip())
-        elif k in ("source", "imagery_used"):
-            tags.extend(s.strip() for s in v.split(";") if s.strip())
+# ===========================================================================
+# OSM FETCHING — query Overpass for entities inside the bbox.
+# ===========================================================================
+def _build_query(bbox: tuple[float, float, float, float]) -> str:
+    west, south, east, north = bbox
+    # Overpass bbox order is (south, west, north, east).
+    area = f"{south},{west},{north},{east}"
+    clauses = []
+    for key, value in CATEGORIES:
+        sel = f'["{key}"]' if value is None else f'["{key}"="{value}"]'
+        # node + way so we catch both point POIs and building footprints.
+        clauses.append(f"  node{sel}({area});")
+        clauses.append(f"  way{sel}({area});")
+    body = "\n".join(clauses)
+    return f"[out:json][timeout:60];\n(\n{body}\n);\nout center tags;"
 
-    def fnum(key):
-        try:
-            return float(a[key])
-        except (KeyError, ValueError, TypeError):
-            return None
 
-    bbox = {
-        "min_lon": fnum("min_lon"), "min_lat": fnum("min_lat"),
-        "max_lon": fnum("max_lon"), "max_lat": fnum("max_lat"),
-    }
-    changeset_id = a.get("id", "")
+def _category_of(tags: dict) -> str:
+    for key, value in CATEGORIES:
+        if key in tags:
+            return tags[key] if value is None else value
+    return "place"
+
+
+def _parse_element(el: dict) -> dict | None:
+    tags = el.get("tags", {})
+    name = tags.get("name")
+    if not name:
+        return None  # unnamed POIs aren't useful for discovery
+
+    # node → lat/lon directly; way → Overpass "out center" gives a center point.
+    if el.get("type") == "node":
+        lat, lon = el.get("lat"), el.get("lon")
+    else:
+        center = el.get("center", {})
+        lat, lon = center.get("lat"), center.get("lon")
+    if lat is None or lon is None:
+        return None
+
+    # Surface a compact, human-meaningful tag set for semantic search.
+    tag_values = []
+    for k in ("amenity", "tourism", "leisure", "cuisine", "shop", "sport"):
+        v = tags.get(k)
+        if v:
+            tag_values.extend(p.strip() for p in v.replace(",", ";").split(";") if p.strip())
+
     return {
-        "name": changeset_id,
+        "name": name,
         "fields": {
-            "changeset_id": changeset_id,
-            "user_id":      a.get("user") or a.get("uid") or "anonymous",
-            "created_at":   a.get("created_at", ""),
-            "bbox":         bbox,
-            "tags":         tags,
-            "comment":      comment,
-            "num_changes":  int(a.get("changes_count", a.get("num_changes", 0)) or 0),
+            "osm_id":   f"{el.get('type')}/{el.get('id')}",
+            "category": _category_of(tags),
+            "lat":      lat,
+            "lon":      lon,
+            "tags":     sorted(set(tag_values)),
         },
     }
 
 
-def main():
+def collect_places(bbox: tuple[float, float, float, float]) -> list[dict]:
+    query = _build_query(bbox)
+    data = urllib.parse.urlencode({"data": query}).encode()
+    req = urllib.request.Request(OVERPASS, data=data, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        payload = json.loads(resp.read())
+
     records: list[dict] = []
     seen: set[str] = set()
-    now = datetime.now(timezone.utc)
+    for el in payload.get("elements", []):
+        rec = _parse_element(el)
+        if rec is None:
+            continue
+        oid = rec["fields"]["osm_id"]
+        if oid in seen:
+            continue
+        seen.add(oid)
+        records.append(rec)
+    return records
 
-    print(f"🌍 Pulling OSM changesets for bbox {BBOX} — target {TARGET_COUNT:,}")
-    for d in range(DAYS_BACK):
-        day_end = now - timedelta(days=d)
-        day_start = day_end - timedelta(days=1)
-        batch = _fetch_day(day_start, day_end)
-        added = 0
-        for rec in batch:
-            cid = rec["name"]
-            if not cid or cid in seen:
-                continue
-            # require a usable spatial anchor so the map renders
-            if rec["fields"]["bbox"]["min_lon"] is None:
-                continue
-            seen.add(cid)
-            records.append(rec)
-            added += 1
-        print(f"   📅 {day_start.date()} → {added} new ({len(records):,} total)")
-        if len(records) >= TARGET_COUNT:
-            break
-        time.sleep(REQUEST_PAUSE_SEC)
 
-    with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+def main():
+    place = CONFIG["place"]
+    out_dir = CONFIG["output_dir"]
+    os.makedirs(out_dir, exist_ok=True)
+    out_path = os.path.join(out_dir, "osm_places.json")
+
+    print(f"🌍 Geocoding {place!r} via Nominatim…")
+    bbox = lookup_bbox(place)
+    print(f"   bbox (W,S,E,N) = {bbox}")
+    time.sleep(REQUEST_PAUSE_SEC)
+
+    print(f"🔎 Querying Overpass for {len(CATEGORIES)} category filters…")
+    records = collect_places(bbox)
+
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ Wrote {len(records):,} changesets → {OUTPUT_PATH}")
+    print(f"\n✅ Wrote {len(records):,} places → {out_path}")
     if records:
-        print("   sample fields:", list(records[0]["fields"].keys()))
+        print("   sample:", records[0]["name"], records[0]["fields"]["category"])
 
 
 if __name__ == "__main__":
-    run()
+    main()

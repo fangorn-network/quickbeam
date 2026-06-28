@@ -34,5 +34,11 @@
     "title": {
       "@type": "string"
     }
+  },
+  "identity": {
+    "aliases": {
+      "gplace": "businessId"
+    },
+    "@id": "businessId"
   }
 }

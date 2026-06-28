@@ -11,6 +11,7 @@
 // embedding). This is the same seam the future ShardDataSource (real CDN vectors +
 // in-browser cosine) plugs into: swap the impl, keep the signatures.
 import type { QdrantPoint } from './types';
+import type { AtlasRaw } from './atlasTypes';
 import type { CollectionInfo, Filter, ScrollResult } from './qdrant';
 import { QdrantError } from './qdrant';
 import { MOCK_DIM, embedTokens, cosine } from './mockSpace';
@@ -153,6 +154,25 @@ function generate(): MockPoint[] {
 let _data: MockPoint[] | null = null;
 const data = (): MockPoint[] => (_data ??= generate());
 const stripVector = (p: MockPoint): QdrantPoint => ({ id: p.id, payload: p.payload });
+
+// Atlas: expose the toy document vectors + identity. The mock has no baked
+// projection, so the Atlas computes one (PCA) over these synthetic vectors.
+export function mockAtlasRaw(): AtlasRaw[] {
+  return data().map((p) => ({
+    id: String(p.id),
+    type: (p.payload?.entityType as string) ?? 'Unknown',
+    title: String((p.payload?.fields?.title as string | undefined) ?? p.id),
+    vector: p.vector,
+    fields: (p.payload?.fields ?? {}) as Record<string, unknown>,
+  }));
+}
+
+// Atlas: turn a typed free-text query into a vector in the toy space. There is no
+// real query model in mock mode, so we tokenize the query and reuse the same
+// bag-of-tokens embedding the documents use — token overlap → nearby placement.
+export function mockAtlasEmbed(q: string): number[] {
+  return embedTokens(q.split(/[^a-z0-9]+/i).filter(Boolean));
+}
 
 // Pull the set of entityType values a filter constrains to (the only filter the
 // browse path builds). Empty → no type constraint.

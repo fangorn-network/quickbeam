@@ -1,0 +1,77 @@
+{
+  "name": "fangorn.places.eagleriver.wi.localcore.v1",
+  "kind": "bundle",
+  "bundle": {
+    "nodes": {
+      "Business": "fangorn.places.business.v1",
+      "Category": "fangorn.places.category.v1",
+      "Locality": "fangorn.places.locality.v1",
+      "Reviewer": "fangorn.places.reviewer.v1",
+      "Review": "fangorn.places.review.v1",
+      "Event": "fangorn.places.event.v1",
+      "Organizer": "fangorn.places.organizer.v1"
+    },
+    "edges": [
+      {
+        "rel": "near",
+        "from": "Business",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Business",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Event",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "hostedBy",
+        "from": "Event",
+        "to": "Organizer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Event",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hasReview",
+        "from": "Business",
+        "to": "Review",
+        "min": 0
+      },
+      {
+        "rel": "byAuthor",
+        "from": "Review",
+        "to": "Reviewer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Business",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hostedAt",
+        "from": "Event",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "hostsEvent",
+        "from": "Business",
+        "to": "Event",
+        "min": 0
+      }
+    ]
+  }
+}

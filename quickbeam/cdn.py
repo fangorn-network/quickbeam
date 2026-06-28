@@ -103,6 +103,10 @@ def _bake_args():
                    help="Qdrant scroll page size.")
     p.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5",
                    help="Recorded in the manifest (Qdrant doesn't store the model name).")
+    p.add_argument("--project", choices=["none", "umap"], default="none",
+                   help="Bake a 2-D projection into each row for the Atlas view. "
+                        "'umap' fits UMAP over all embeddings (needs umap-learn); "
+                        "'none' lets the client project (PCA) at load time.")
     _add_qdrant_args(p)
     return p.parse_args()
 
@@ -147,8 +151,27 @@ def _shard_row(point) -> dict:
     }
 
 
+def _project_umap(embeddings, *, n_neighbors=15, min_dist=0.1, seed=42):
+    """Fit a 2-D UMAP over the document embeddings. Returns an (N, 2) list of
+    [x, y] floats. Imported lazily so the dependency is only needed when a bake
+    actually requests `--project umap`."""
+    import numpy as np
+    try:
+        import umap  # umap-learn
+    except ImportError as e:  # pragma: no cover - environment-dependent
+        raise SystemExit(
+            "[bake] --project umap needs `umap-learn` (pip install umap-learn).") from e
+    X = np.asarray(embeddings, dtype="float32")
+    # n_neighbors must be < n_samples; clamp for tiny snapshots.
+    nn = max(2, min(n_neighbors, len(X) - 1))
+    reducer = umap.UMAP(n_components=2, n_neighbors=nn, min_dist=min_dist,
+                        metric="cosine", random_state=seed)
+    coords = reducer.fit_transform(X)
+    return [[round(float(x), 5), round(float(y), 5)] for x, y in coords]
+
+
 def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_batch,
-                 model, dim, distance, limit=0):
+                 model, dim, distance, limit=0, project="none"):
     """Scroll the filtered collection into rolling gzipped NDJSON shards under a
     temp dir, then atomically swap it into place. Returns the catalog entry."""
     q_filter = _build_filter(spec.get("filter"))
@@ -201,6 +224,24 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         fh = gzip.GzipFile(os.path.join(tmp_dir, f"shard-{shard_idx:04d}.ndjson.gz"),
                            mode="wb", mtime=0)
 
+    # Write one row into the rolling shards (rotating files at shard_size).
+    def _emit(row):
+        nonlocal fh, count_in_shard, total
+        if fh is None or count_in_shard >= shard_size:
+            _close_shard()
+            _open_shard()
+        line = (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
+        fh.write(line)
+        count_in_shard += 1
+        total += 1
+
+    # When projecting, buffer the rows so a 2-D UMAP can be fit over *all* the
+    # embeddings before they are written (UMAP is a global operation). Otherwise
+    # stream straight to disk as before (no buffering, low memory).
+    projecting = project == "umap"
+    buffered: list[dict] = []
+    scrolled = 0
+
     offset = None
     print(f"[bake] domain {name!r}: scrolling {collection} ...")
     while True:
@@ -213,25 +254,31 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
             row = _shard_row(pt)
             if row["embedding"] is None:
                 continue
-            if fh is None or count_in_shard >= shard_size:
-                _close_shard()
-                _open_shard()
-            line = (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
-            fh.write(line)
-            count_in_shard += 1
-            total += 1
             # Accumulate self-description from the baked points only.
             et = (pt.payload or {}).get("entityType")
             if et:
                 type_counts[et] = type_counts.get(et, 0) + 1
             if len(role_sample) < ROLE_SAMPLE_SIZE:
                 role_sample.append(row["fields"])
-            if limit and total >= limit:
+            if projecting:
+                buffered.append(row)
+            else:
+                _emit(row)
+            scrolled += 1
+            if limit and scrolled >= limit:
                 break
-        if total and (total % 100000 < scroll_batch):
-            print(f"[bake]   {name}: {total} points...", flush=True)
-        if offset is None or (limit and total >= limit):
+        if scrolled and (scrolled % 100000 < scroll_batch):
+            print(f"[bake]   {name}: {scrolled} points...", flush=True)
+        if offset is None or (limit and scrolled >= limit):
             break
+
+    if projecting:
+        print(f"[bake]   {name}: fitting UMAP over {len(buffered)} embeddings...", flush=True)
+        coords = _project_umap([r["embedding"] for r in buffered])
+        for row, xy in zip(buffered, coords):
+            row["proj"] = xy
+        for row in buffered:
+            _emit(row)
     _close_shard()
 
     # Self-description so a pulled domain is renderable offline with no live
@@ -261,6 +308,10 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         "entity_types": entity_types,
         "shards": shards,
     }
+    # Record whether a 2-D projection was baked into the rows (the Atlas view reads
+    # row.proj when present; otherwise it projects client-side).
+    if project and project != "none":
+        manifest["projection"] = project
     # Optional: relationship/type vocabulary from a bundle schema JSON.
     bundle = _load_bundle_schema(spec.get("bundle_schema"))
     if bundle is not None:
@@ -335,6 +386,7 @@ def bake_main():
             os.path.join(args.cdn_dir, name),
             args.shard_size, args.scroll_batch,
             args.embedding_model, dim, distance, limit=args.limit,
+            project=args.project,
         )
         catalog[name] = entry
 

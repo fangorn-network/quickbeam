@@ -204,6 +204,12 @@ business* (dedup by `place_id`). `--max-tiles` caps total Search calls and
 
 #### Place-type nets
 
+quickbeam data places-fetch --location 45.917,-89.244 --radius 10000 \
+  --types "campground,marina,park,tourist_attraction,resort_hotel,lodging,bed_and_breakfast,sporting_goods_store,amusement_center,museum,gift_shop,hardware_store,bar,restaurant,american_restaurant,pub,bar_and_grill,brewery,pizza_restaurant,cafe,coffee_shop,bakery,ice_cream_shop,fast_food_restaurant,sandwich_shop,grocery_store,supermarket,convenience_store,liquor_store,clothing_store,home_goods_store,gas_station,pharmacy,store,auto_parts_store,car_repair,bank,atm,hair_care,beauty_salon,fitness_center,medical_clinic,dentist,doctor,veterinary_care,real_estate_agency,laundry" \
+  --sweep --min-radius 500 --max-tiles 200 \
+  --anchor "Shotskis" --dry-run
+
+
 Ready-made `--types` lists for common sweeps:
 
 *Every Day Life & Commerce*
@@ -213,7 +219,7 @@ store,restaurant,bar,cafe,bakery,grocery_store,supermarket,convenience_store,clo
 
 *Leisure, Nightlife & Tourism*
 ```
-restaurant,bar,night_club,pub,bar_and_grill,beer_garden,cocktail_bar,loung_bar,sports_bar,irish_pub,wine_bar,brewery,brewpub,distillery,cafe,coffee_shop,bistro,diner,fast_food_restaurant,ice_cream_shop,bakery,event_venue,live_music_venue,performing_arts_theater,movie_theater,comedy_club,bowling_alley,casino,amusement_center,tourist_attraction,museum,art_gallery,historical_place,cultural_center,park,city_park,plaza,garden,botanical_garden,winery,vineyard,resort_hotel,hotel,motel,aquarium,zoo,stadium,arena,sports_club,banquet_hall
+restaurant,bar,night_club,pub,bar_and_grill,beer_garden,cocktail_bar,sports_bar,irish_pub,wine_bar,brewery,brewpub,cafe,coffee_shop,bistro,diner,fast_food_restaurant,ice_cream_shop,bakery,event_venue,live_music_venue,performing_arts_theater,movie_theater,comedy_club,bowling_alley,casino,amusement_center,tourist_attraction,museum,art_gallery,historical_place,cultural_center,park,city_park,plaza,garden,botanical_garden,winery,vineyard,resort_hotel,hotel,motel,aquarium,zoo,stadium,arena,sports_club,banquet_hall
 ```
 
 *Transit & Infrastructure*
@@ -237,7 +243,8 @@ quickbeam data events-fetch --source eventbrite \
 # so the downstream coordinate match attaches it to whichever bar it happens at.
 quickbeam data events-fetch --source eventbrite-location \
   --place wi--eagle-river
-#   add --expand-past to also pull each discovered organizer's past events.
+
+# add --expand-past to also pull each discovered organizer's past events.
 
 # The Events Calendar (Tribe) site — the public WP REST API, paginated.
 quickbeam data events-fetch --source tribe \

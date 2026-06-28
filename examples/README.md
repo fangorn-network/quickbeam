@@ -1,5 +1,17 @@
 # Schema Browser
 
+Eagle River
+├── businesses
+├── bars
+├── events
+├── trails
+├── lakes
+├── fishing
+├── snowmobiling
+├── ATV routes
+├── festivals
+└── lodging
+
 A wiki-style, **schema-agnostic** browser for any Fangorn Qdrant collection. Dark,
 information-dense, keyboard-first. React + Vite + TypeScript + plain CSS Modules. No
 UI framework.

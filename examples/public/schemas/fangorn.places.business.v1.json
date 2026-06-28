@@ -28,6 +28,9 @@
     "hours": {
       "@type": "string"
     },
+    "isAnchor": {
+      "@type": "boolean"
+    },
     "locality": {
       "@type": "string"
     },
@@ -64,5 +67,11 @@
     "website": {
       "@type": "string"
     }
+  },
+  "identity": {
+    "aliases": {
+      "gplace": "placeId"
+    },
+    "@id": "placeId"
   }
 }

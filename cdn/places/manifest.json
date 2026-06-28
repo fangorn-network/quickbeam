@@ -1,7 +1,7 @@
 {
   "name": "places",
   "description": "Local places & events \u2014 a searchable directory from Google Places + Eventbrite/Tribe",
-  "count": 775,
+  "count": 1025,
   "dim": 256,
   "model": "nomic-ai/nomic-embed-text-v1.5",
   "distance": "Cosine",
@@ -11,7 +11,7 @@
       "Event"
     ]
   },
-  "created_at": 1782533569,
+  "created_at": 1782586052,
   "role_map": {
     "identity": "placeId",
     "title": "title",
@@ -37,15 +37,14 @@
       "temporal": "End Date",
       "spatial": "Coordinate",
       "media": "Source",
-      "tags": "Reviews, Reviewers, Categories, Businesses, Events, Localities",
+      "tags": "Reviews, Reviewers, Categories, Events, Localities",
       "measures": "Rating",
-      "text": "Hours, Image Url, Summary, Text"
+      "text": "Summary, Text"
     },
     "fields": [
       "address",
       "amenities",
       "businessStatus",
-      "businesses",
       "categories",
       "coordinates",
       "dateLabel",
@@ -59,9 +58,11 @@
       "hostBusinessName",
       "hours",
       "imageUrl",
+      "isFree",
       "isPast",
       "localities",
       "locality",
+      "organizerName",
       "phone",
       "placeId",
       "priceLevel",
@@ -87,90 +88,23 @@
   },
   "entity_types": [
     {
-      "type": "Business",
-      "count": 400
+      "type": "Event",
+      "count": 622
     },
     {
-      "type": "Event",
-      "count": 375
+      "type": "Business",
+      "count": 403
     }
   ],
   "shards": [
     {
-      "file": "shard-0000-857a67f38454.ndjson.gz",
-      "count": 775,
-      "bytes": 4390627,
-      "sha256": "857a67f384542a366a18da2334892bde6bba8a18572a733600bff827be5a8c0b"
+      "file": "shard-0000-a46abadd0c34.ndjson.gz",
+      "count": 1025,
+      "bytes": 4328043,
+      "sha256": "a46abadd0c3447c6bdfe92bf16ffefc19ff204009f89ec0becb1b786e60154de"
     }
   ],
-  "bundle": {
-    "nodes": {
-      "Business": "fangorn.places.business.v1",
-      "Category": "fangorn.places.category.v1",
-      "Locality": "fangorn.places.locality.v1",
-      "Reviewer": "fangorn.places.reviewer.v1",
-      "Review": "fangorn.places.review.v1",
-      "Event_Categories": "fangorn.places.event_categories.v1",
-      "Event": "fangorn.places.event.v1",
-      "Organizer": "fangorn.places.organizer.v1"
-    },
-    "edges": [
-      {
-        "rel": "near",
-        "from": "Business",
-        "to": "Business",
-        "min": 0
-      },
-      {
-        "rel": "inCategory",
-        "from": "Business",
-        "to": "Category",
-        "min": 0
-      },
-      {
-        "rel": "hasReview",
-        "from": "Business",
-        "to": "Review",
-        "min": 0
-      },
-      {
-        "rel": "byAuthor",
-        "from": "Review",
-        "to": "Reviewer",
-        "min": 0
-      },
-      {
-        "rel": "locatedIn",
-        "from": "Business",
-        "to": "Locality",
-        "min": 0
-      },
-      {
-        "rel": "hostedBy",
-        "from": "Event",
-        "to": "Organizer",
-        "min": 0
-      },
-      {
-        "rel": "locatedIn",
-        "from": "Event",
-        "to": "Locality",
-        "min": 0
-      },
-      {
-        "rel": "hostedAt",
-        "from": "Event",
-        "to": "Business",
-        "min": 0
-      },
-      {
-        "rel": "hostsEvent",
-        "from": "Business",
-        "to": "Event",
-        "min": 0
-      }
-    ]
-  },
+  "projection": "umap",
   "presentation": {
     "types": {
       "Business": {

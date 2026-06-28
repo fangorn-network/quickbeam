@@ -1,13 +1,7 @@
 {
   "name": "fangorn.places.organizer.v1",
   "definition": {
-    "bio": {
-      "@type": "string"
-    },
     "entityType": {
-      "@type": "string"
-    },
-    "facebook": {
       "@type": "string"
     },
     "organizerId": {
