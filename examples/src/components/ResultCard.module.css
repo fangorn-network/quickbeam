@@ -143,6 +143,45 @@
   color: var(--text-muted);
 }
 
+/* ---- Concierge insight (the LLM's grounded "why it fits") ---- */
+.insight {
+  display: flex;
+  gap: 7px;
+  padding: var(--space-3);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--brand-teal) 9%, var(--bg-base));
+  border: 1px solid color-mix(in srgb, var(--brand-teal) 22%, transparent);
+}
+
+.insightIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--brand-teal);
+}
+
+.insightText {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.insightCaret {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--brand-teal);
+  animation: insight-blink 1s steps(2, start) infinite;
+}
+
+@keyframes insight-blink {
+  to {
+    opacity: 0;
+  }
+}
+
 /* ---- Vibe match meter (the signature read) ---- */
 .match {
   margin-top: auto;

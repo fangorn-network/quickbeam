@@ -11,6 +11,10 @@ interface Props {
   onClick: () => void;
   highlighted?: boolean;
   featured?: boolean;
+  // The concierge's grounded "why it fits" line (from lib/llm). `explaining`
+  // shows a typing caret while it streams in.
+  explanation?: string;
+  explaining?: boolean;
 }
 
 // Quick at-a-glance pills derived from the entity's own fields: open-now & rating
@@ -60,7 +64,7 @@ function Contour() {
   );
 }
 
-export default function ResultCard({ entity, score, onClick, highlighted, featured }: Props) {
+export default function ResultCard({ entity, score, onClick, highlighted, featured, explanation, explaining }: Props) {
   const domain = useDomain();
   const secondary = domain.secondaryLine(entity);
   const isEvent = entity.entityType === 'Event';
@@ -104,6 +108,16 @@ export default function ResultCard({ entity, score, onClick, highlighted, featur
             {tags.map((t) => (
               <span key={t} className={`${styles.pill} ${styles.tag}`}>{t}</span>
             ))}
+          </div>
+        )}
+
+        {(explanation || explaining) && (
+          <div className={styles.insight}>
+            <Icon name="sparkle" size={13} className={styles.insightIcon} />
+            <p className={styles.insightText}>
+              {explanation}
+              {explaining && <span className={styles.insightCaret} aria-hidden="true" />}
+            </p>
           </div>
         )}
 

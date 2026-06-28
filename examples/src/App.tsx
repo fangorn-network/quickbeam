@@ -16,6 +16,7 @@ import EntityPage from './pages/EntityPage';
 import Results from './pages/Results';
 import Trip from './pages/Trip';
 import Atlas from './pages/Atlas';
+import Ask from './pages/Ask';
 import styles from './App.module.css';
 
 // The raw type token from the path/query, if any (validated against the domain below).
@@ -94,6 +95,7 @@ export default function App() {
         onMenu={() => setRailOpen((o) => !o)}
         onHome={() => navigate('/')}
         onAtlas={() => navigate('/atlas')}
+        onAsk={() => navigate('/ask')}
         tripCount={tripItems.length}
         onTrip={() => navigate('/trip')}
       />
@@ -112,6 +114,7 @@ export default function App() {
             <Route path="/browse/:entityType" element={<BrowseRoute onVisit={onVisit} />} />
             <Route path="/search" element={<Results onVisit={onVisit} />} />
             <Route path="/atlas" element={<Atlas />} />
+            <Route path="/ask" element={<Ask onVisit={onVisit} />} />
             <Route path="/trip" element={<Trip />} />
             <Route path="/entity/:pointId" element={<EntityRoute onVisit={onVisit} />} />
           </Routes>

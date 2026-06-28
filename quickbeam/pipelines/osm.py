@@ -1,19 +1,14 @@
 """
 osm.py — OpenStreetMap *places* ingest for Fangorn.
 
-Proves the thesis that adding a new domain is a *schema change, not an
-architecture change*: this mirrors the music pipelines but emits records under
-an `osm_place` schema. The ingest server + app then infer the semantic roles
-automatically (title←name, subtitle←category, tags←tags, spatial←lat/lon — no
-media → no player).
-
-Two structural ideas:
   1. Place selection is separated from OSM fetching. You pick a *named* place
      ("Eagle River, Wisconsin", "Vilas County, Wisconsin") and the script
      discovers its bounding box via Nominatim — no hardcoded bbox.
   2. We query Overpass for actual entities (restaurants, bars, parks,
      campgrounds, trails, boat launches…) rather than changesets, which is what
      a local-discovery app actually wants.
+
+example: quickbeam data osm 
 
 Output: ./stage_volumes/osm_places.json — a JSON array of
 {"name": <place name>, "fields": {...}} records, the same shape the SDK ingest
@@ -32,6 +27,7 @@ import urllib.parse
 # ===========================================================================
 # CONFIG — pick a *named* place; the bbox is discovered automatically.
 # ===========================================================================
+# place should be input param
 CONFIG = {
     "place":        "Eagle River, Wisconsin",
     "output_dir":   "./stage_volumes",

@@ -13,6 +13,7 @@ interface Props {
   onMenu?: () => void;
   onHome?: () => void;
   onAtlas?: () => void;
+  onAsk?: () => void;
   tripCount?: number;
   onTrip?: () => void;
 }
@@ -26,6 +27,7 @@ export default function TopBar({
   onMenu,
   onHome,
   onAtlas,
+  onAsk,
   tripCount = 0,
   onTrip,
 }: Props) {
@@ -81,6 +83,15 @@ export default function TopBar({
         {connectionError && (
           <StatusBadge variant="error" label={COPY.states.connectionError} />
         )}
+        <button
+          type="button"
+          className={styles.trip}
+          onClick={onAsk}
+          aria-label="Ask the concierge"
+          title="Ask the concierge"
+        >
+          ✦ Ask
+        </button>
         <button
           type="button"
           className={styles.trip}
