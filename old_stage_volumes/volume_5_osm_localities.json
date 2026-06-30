@@ -1,8 +1,0 @@
-[
-  {"name": "dallas-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "dallas-tx", "title": "Dallas, TX", "region": "TX", "text": "Dallas, TX — locality"}},
-  {"name": "oak-cliff-dallas", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "oak-cliff-dallas", "title": "Oak Cliff, Dallas", "region": "Dallas", "text": "Oak Cliff, Dallas — locality"}},
-  {"name": "dallas-dallas", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "dallas-dallas", "title": "Dallas, Dallas", "region": "Dallas", "text": "Dallas, Dallas — locality"}},
-  {"name": "pinnacle-park-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "pinnacle-park-tx", "title": "Pinnacle Park, TX", "region": "TX", "text": "Pinnacle Park, TX — locality"}},
-  {"name": "duncanville-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "duncanville-tx", "title": "Duncanville, TX", "region": "TX", "text": "Duncanville, TX — locality"}},
-  {"name": "oak-cliff-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "oak-cliff-tx", "title": "Oak Cliff, TX", "region": "TX", "text": "Oak Cliff, TX — locality"}}
-]

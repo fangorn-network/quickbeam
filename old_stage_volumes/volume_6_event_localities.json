@@ -1,6 +1,0 @@
-[
-  {"name": "dallas-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "dallas-tx", "title": "Dallas, TX", "region": "TX", "text": "Dallas, TX — locality"}},
-  {"name": "dallas-tx-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "dallas-tx-tx", "title": "Dallas, TX, TX", "region": "TX", "text": "Dallas, TX, TX — locality"}},
-  {"name": "bishop-arts-district-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "bishop-arts-district-tx", "title": "Bishop arts district, TX", "region": "TX", "text": "Bishop arts district, TX — locality"}},
-  {"name": "dfw-tx", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "dfw-tx", "title": "DFW, TX", "region": "TX", "text": "DFW, TX — locality"}}
-]

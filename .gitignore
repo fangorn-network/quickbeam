@@ -9,5 +9,6 @@ node_modules/
 .claude
 **/__pycache__
 .pytest_cache   
-**/stage_volumes/
+**/**stage_volumes/
 **/personal_notes/
+/cdn**
