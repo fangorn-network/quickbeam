@@ -1,0 +1,9 @@
+[
+  {"name": "summer", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "summer", "title": "Summer", "text": "Summer — event category"}},
+  {"name": "fall", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "fall", "title": "Fall", "text": "Fall — event category"}},
+  {"name": "spring", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "spring", "title": "Spring", "text": "Spring — event category"}},
+  {"name": "winter", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "winter", "title": "Winter", "text": "Winter — event category"}},
+  {"name": "downtown", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "downtown", "title": "Downtown", "text": "Downtown — event category"}},
+  {"name": "featured", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "featured", "title": "Featured", "text": "Featured — event category"}},
+  {"name": "craft-shows", "fields": {"schemaVersion": 1, "entityType": "Category", "categoryId": "craft-shows", "title": "Craft Shows", "text": "Craft Shows — event category"}}
+]

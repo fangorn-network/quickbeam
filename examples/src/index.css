@@ -164,65 +164,88 @@
 }
 
 /* ==========================================================================
-   Dark Theme
-   Northwoods supper club after sunset
+   Dark Theme — graphite + rose
+   Simple: neutral graphite surfaces and text, with ONE accent — a warm
+   cranberry-rose — carrying all the colour (links, primary actions, category
+   dots, tile borders, logo mark). No green, no rainbow; just graphite warmed
+   by a single rose. Muted red stays reserved for error signalling.
    ========================================================================== */
 
 [data-theme='dark'] {
-  --bg-base: #191714;
-  --bg-surface: #24201c;
-  --bg-elevated: #302a24;
+  --bg-base: #131314;
+  --bg-surface: #1c1c1d;
+  --bg-elevated: #252527;
 
-  --bg-hover: #3a332b;
-  --bg-active: #443b31;
+  --bg-hover: #2d2d2f;
+  --bg-active: #38383a;
 
-  --border-subtle: #453b31;
-  --border-strong: #675746;
+  --border-subtle: #2c2c2e;
+  --border-strong: #46464a;
 
-  --text-primary: #f3ede2;
-  --text-secondary: #c4b7a3;
-  --text-muted: #91816b;
+  --text-primary: #f2f2f3;
+  --text-secondary: #b0b0b4;
+  --text-muted: #7c7c81;
 
-  --text-link: #d17a8c;
-  --text-link-hover: #e79cab;
+  /* Links / primary accent: cranberry-rose. */
+  --text-link: #db8090;
+  --text-link-hover: #ec9faf;
 
-  --brand-forest: #78b19a;
-  --brand-forest-deep: #94c6b1;
+  /* The single accent hue runs through every brand token so primary buttons,
+     the logo mark and the vibe meter all share it. */
+  --brand-forest: #db8090;
+  --brand-forest-deep: #ec9faf;
 
-  --brand-teal: #7eaec2;
-  --brand-teal-deep: #9bc0d1;
+  --brand-teal: #db8090;
+  --brand-teal-deep: #ec9faf;
 
-  --brand-amber: #d17a8c;
-  --brand-amber-deep: #e79cab;
+  --brand-amber: #db8090;
+  --brand-amber-deep: #ec9faf;
 
-  --brand-honey: #d6b36b;
-  --brand-terracotta: #d17a8c;
+  --brand-honey: #db8090;
+  --brand-terracotta: #db8090;
 
-  --brand-ink: #f3ede2;
-  --brand-paper: #24201c;
+  --brand-ink: #f2f2f3;
+  --brand-paper: #1c1c1d;
 
-  --accent-artist: #d17a8c;
-  --accent-recording: #78b19a;
-  --accent-release: #7eaec2;
-  --accent-releasegroup: #e79cab;
-  --accent-work: #d6b36b;
-  --accent-place: #e2c27e;
-  --accent-event: #d17a8c;
-  --accent-area: #7eaec2;
-  --accent-instrument: #8db06d;
+  /* Category accents — the same rose. Type colour-coding is dropped in favour of
+     one cohesive accent, but a softer rose keeps dots/borders from shouting. */
+  --accent-restaurant: #c97e8c;
+  --accent-bar: #c97e8c;
+  --accent-cafe: #c97e8c;
+  --accent-brewery: #c97e8c;
+  --accent-breakfast: #c97e8c;
+  --accent-dessert: #c97e8c;
+  --accent-market: #c97e8c;
+  --accent-outdoors: #c97e8c;
 
-  --color-success: #78b987;
-  --color-warning: #d6b36b;
-  --color-error: #d97878;
-  --color-info: #7eaec2;
+  --accent-artist: #c97e8c;
+  --accent-recording: #c97e8c;
+  --accent-release: #c97e8c;
+  --accent-releasegroup: #c97e8c;
+  --accent-work: #c97e8c;
+  --accent-place: #c97e8c;
+  --accent-event: #c97e8c;
+  --accent-area: #c97e8c;
+  --accent-instrument: #c97e8c;
+
+  --color-success: #9a9a9f;
+  --color-warning: #c9a766;
+  --color-error: #cf8178; /* error signalling */
+  --color-info: #db8090;
 
   --shadow-tile:
-    0 1px 2px rgba(0, 0, 0, 0.42),
-    0 8px 22px rgba(0, 0, 0, 0.48);
+    0 1px 2px rgba(0, 0, 0, 0.5),
+    0 8px 22px rgba(0, 0, 0, 0.55);
 
   --shadow-tile-hover:
-    0 2px 8px rgba(0, 0, 0, 0.52),
-    0 18px 40px rgba(0, 0, 0, 0.58);
+    0 2px 8px rgba(0, 0, 0, 0.6),
+    0 18px 40px rgba(0, 0, 0, 0.65);
+}
+
+/* Flat, untinted background in dark mode — the colour wash (pine + lake) is a
+   light-theme nicety; here it just muddied the neutral graphite. */
+[data-theme='dark'] body {
+  background: var(--bg-base);
 }
 
 * {

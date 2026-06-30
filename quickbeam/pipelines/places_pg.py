@@ -34,6 +34,8 @@ import argparse
 import hashlib
 import re
 
+from .gem import rating_signal
+
 try:
     import psycopg
 except ImportError:  # pragma: no cover
@@ -173,6 +175,9 @@ def shape_business(place_id: str, payload: dict, is_anchor: bool) -> dict:
         "website": payload.get("websiteUri"),
         "googleMapsUri": payload.get("googleMapsUri"),
         "rating": rating, "userRatingCount": n, "priceLevel": price,
+        # Derived "hidden-gem / crowd-favorite" signal from rating + review count —
+        # the local-secret surface a general LLM can't reproduce (see gem.py).
+        **rating_signal(rating, n),
         "businessStatus": payload.get("businessStatus"),
         "hours": _hours(payload),
         "editorialSummary": editorial,

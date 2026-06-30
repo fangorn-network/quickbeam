@@ -7,6 +7,7 @@
 import type { Community, LocaleProfile, Strings, Vibe } from './types';
 import { enEagleRiver } from './en-eagle-river';
 import { deHofheim } from './de-hofheim';
+import { enOakCliff } from './en-oak-cliff';
 
 export type { Community, LocaleProfile, Strings, Vibe } from './types';
 
@@ -15,6 +16,7 @@ const env = ((import.meta as { env?: Record<string, string | undefined> }).env) 
 export const LOCALES: Record<string, LocaleProfile> = {
   [enEagleRiver.id]: enEagleRiver,
   [deHofheim.id]: deHofheim,
+  [enOakCliff.id]: enOakCliff,
 };
 
 const DEFAULT_LOCALE = enEagleRiver.id;

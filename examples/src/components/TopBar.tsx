@@ -12,8 +12,8 @@ interface Props {
   onToggleTheme: () => void;
   onMenu?: () => void;
   onHome?: () => void;
-  onAtlas?: () => void;
-  onAsk?: () => void;
+  onDiscover?: () => void;
+  onExplore?: () => void;
   tripCount?: number;
   onTrip?: () => void;
 }
@@ -26,8 +26,8 @@ export default function TopBar({
   onToggleTheme,
   onMenu,
   onHome,
-  onAtlas,
-  onAsk,
+  onDiscover,
+  onExplore,
   tripCount = 0,
   onTrip,
 }: Props) {
@@ -83,43 +83,46 @@ export default function TopBar({
         {connectionError && (
           <StatusBadge variant="error" label={COPY.states.connectionError} />
         )}
-        <button
-          type="button"
-          className={styles.trip}
-          onClick={onAsk}
-          aria-label="Ask the concierge"
-          title="Ask the concierge"
-        >
-          ✦ Ask
-        </button>
-        <button
-          type="button"
-          className={styles.trip}
-          onClick={onAtlas}
-          aria-label="Atlas"
-          title="Atlas — the semantic map"
-        >
-          ✦ Atlas
-        </button>
-        <button
-          type="button"
-          className={styles.trip}
-          onClick={onTrip}
-          aria-label="My trip"
-          title="My trip"
-        >
-          🧭 Trip
-          {tripCount > 0 && <span className={styles.tripCount}>{tripCount}</span>}
-        </button>
-        <button
-          type="button"
-          className={styles.gear}
-          onClick={onToggleTheme}
-          aria-label="Toggle theme"
-          title="Toggle light / dark"
-        >
-          ◐
-        </button>
+        {/* These actions move to the mobile BottomBar on phones (see App). */}
+        <div className={styles.navActions}>
+          <button
+            type="button"
+            className={styles.trip}
+            onClick={onDiscover}
+            aria-label="Discover"
+            title="Discover — search places, trails, lakes & landmarks (list, map, or concierge)"
+          >
+            ⌖ Discover
+          </button>
+          <button
+            type="button"
+            className={styles.trip}
+            onClick={onExplore}
+            aria-label="Explore"
+            title="Explore — wander the semantic map"
+          >
+            ✦ Explore
+          </button>
+          <button
+            type="button"
+            className={styles.trip}
+            onClick={onTrip}
+            aria-label="My trip"
+            title="My trip"
+          >
+            🧭 Trip
+            {tripCount > 0 && <span className={styles.tripCount}>{tripCount}</span>}
+          </button>
+          <button
+            type="button"
+            className={styles.gear}
+            onClick={onToggleTheme}
+            aria-label="Toggle theme"
+            title="Toggle light / dark"
+          >
+            ◐
+          </button>
+        </div>
         <AuthButton />
       </div>
     </header>

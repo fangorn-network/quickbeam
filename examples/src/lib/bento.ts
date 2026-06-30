@@ -31,6 +31,9 @@ export interface Shelf {
   label: string;
   sublabel?: string;
   tiles: Tile[];
+  // Present when the tiles are packed into a geographic mini-map (north→south,
+  // west→east): the column count the caller sizes the CSS grid to.
+  geo?: { cols: number };
 }
 
 const NO_LOCATION = '__nowhere__';
@@ -81,6 +84,56 @@ function buildTiles(points: AtlasPoint[], scores?: Map<string, number>): Tile[] 
   return [...points]
     .sort((a, b) => a.x - b.x)
     .map((p) => ({ point: p, size: size.get(p.id) ?? 'md', score: scores?.get(p.id) }));
+}
+
+// Geographic bento — lay a place-shelf's tiles out as a mini-map: north reads at
+// the top, west on the left, so three lakes strung N→S stack as three cards. The
+// key ergonomic rule: geographic *distance must never become empty space*. We
+// don't bin tiles into absolute lat/lng cells (a remote lake would leave a gutter
+// of blank cells beside it); instead we PACK them — rank into latitude bands, sort
+// each band west→east, and fill every cell in order. Distance becomes position,
+// never a gap. Tiles are uniform (varied spans + gap-filling would scramble the
+// order), so the grid simply auto-flows the packed sequence.
+const GEO_COLS_MAX = 4;
+
+function buildGeoTiles(points: AtlasPoint[]): { tiles: Tile[]; geo?: { cols: number } } {
+  const located: { p: AtlasPoint; lat: number; lng: number }[] = [];
+  const rest: AtlasPoint[] = [];
+  for (const p of points) {
+    const c = parseCoords(p.fields.coordinates);
+    if (c) located.push({ p, lat: c[0], lng: c[1] });
+    else rest.push(p);
+  }
+  // Too few mapped points to read as a map — fall back to the semantic bento.
+  if (located.length < 3) return { tiles: buildTiles(points) };
+
+  let minLat = Infinity, maxLat = -Infinity, minLng = Infinity, maxLng = -Infinity;
+  for (const l of located) {
+    if (l.lat < minLat) minLat = l.lat;
+    if (l.lat > maxLat) maxLat = l.lat;
+    if (l.lng < minLng) minLng = l.lng;
+    if (l.lng > maxLng) maxLng = l.lng;
+  }
+  const latSpan = maxLat - minLat || 1e-9;
+  const lngSpan = (maxLng - minLng || 1e-9) * Math.cos(((minLat + maxLat) / 2) * (Math.PI / 180));
+
+  // Column count from the area's true aspect ratio (a degree of longitude is
+  // shorter than one of latitude away from the equator). A wide sprawl gets more
+  // columns; a north–south string collapses toward a single column (stacked cards).
+  const aspect = lngSpan / latSpan; // width / height
+  const cols = Math.max(1, Math.min(GEO_COLS_MAX, Math.round(Math.sqrt(located.length * aspect))));
+
+  // North→south bands of `cols`, each ordered west→east. Row-major packing — the
+  // grid's auto-flow lays this out directly, no explicit cell placement needed.
+  const byLatDesc = [...located].sort((a, b) => b.lat - a.lat);
+  const ordered: AtlasPoint[] = [];
+  for (let i = 0; i < byLatDesc.length; i += cols) {
+    const band = byLatDesc.slice(i, i + cols).sort((a, b) => a.lng - b.lng);
+    for (const b of band) ordered.push(b.p);
+  }
+  ordered.push(...rest); // coord-less points trail at the bottom (no position)
+
+  return { tiles: ordered.map((p) => ({ point: p, size: 'md' as TileSize })), geo: { cols } };
 }
 
 // ---- place grouping ----
@@ -136,10 +189,14 @@ function groupByPlace(points: AtlasPoint[]): Shelf[] {
     }
   }
 
-  return finishShelves(groups, {
-    [OTHER_AREA]: 'Other areas',
-    [NO_LOCATION]: 'No fixed location',
-  });
+  return finishShelves(
+    groups,
+    {
+      [OTHER_AREA]: 'Other areas',
+      [NO_LOCATION]: 'No fixed location',
+    },
+    true,
+  );
 }
 
 // ---- vibe grouping (semantic, location-free) ----
@@ -172,7 +229,11 @@ function labelFor(key: string, overrides: Record<string, string>): string {
 
 const MIN_SHELF = 3; // shelves smaller than this fold into a catch-all
 
-function finishShelves(groups: Map<string, AtlasPoint[]>, overrides: Record<string, string>): Shelf[] {
+function finishShelves(
+  groups: Map<string, AtlasPoint[]>,
+  overrides: Record<string, string>,
+  geo = false,
+): Shelf[] {
   // Fold tiny shelves into "Other areas" so the page isn't a long tail of
   // single-tile sections. (The no-location shelf is never folded.)
   const overflow: AtlasPoint[] = [...(groups.get(OTHER_AREA) ?? [])];
@@ -185,12 +246,17 @@ function finishShelves(groups: Map<string, AtlasPoint[]>, overrides: Record<stri
   }
   if (overflow.length) groups.set(OTHER_AREA, overflow);
 
-  const shelves: Shelf[] = [...groups.entries()].map(([key, pts]) => ({
-    key,
-    label: labelFor(key, overrides),
-    sublabel: `${pts.length} ${pts.length === 1 ? 'place' : 'places'}`,
-    tiles: buildTiles(pts),
-  }));
+  const shelves: Shelf[] = [...groups.entries()].map(([key, pts]) => {
+    // The no-location shelf has no coordinates to map — keep it semantic.
+    const built = geo && key !== NO_LOCATION ? buildGeoTiles(pts) : { tiles: buildTiles(pts) };
+    return {
+      key,
+      label: labelFor(key, overrides),
+      sublabel: `${pts.length} ${pts.length === 1 ? 'place' : 'places'}`,
+      tiles: built.tiles,
+      geo: built.geo,
+    };
+  });
   // Biggest shelves first, but always sink the catch-all/no-location shelves.
   const sink = new Set([OTHER_AREA, NO_LOCATION]);
   shelves.sort((a, b) => {

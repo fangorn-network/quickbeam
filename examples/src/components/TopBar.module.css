@@ -25,6 +25,12 @@
   margin-left: auto;
 }
 
+/* The nav buttons participate directly in the .right flex row on desktop. On
+   phones they're hidden here and surface in the BottomBar instead. */
+.navActions {
+  display: contents;
+}
+
 .logo {
   display: inline-flex;
   align-items: center;
@@ -143,6 +149,10 @@
     display: inline-flex;
   }
   .logoText {
+    display: none;
+  }
+  /* Primary nav lives in the BottomBar on phones. */
+  .navActions {
     display: none;
   }
 }

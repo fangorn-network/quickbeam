@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { useDomain } from '../lib/domainContext';
 import type { EntitySummary } from '../lib/types';
 import { parseHours, isOpenNow } from '../lib/labels';
+import { ratingSignalOf, TIER_LABEL } from '../lib/gem';
 import Icon from './Icon';
 import type { IconName } from './Icon';
 import styles from './ResultCard.module.css';
@@ -70,9 +72,17 @@ export default function ResultCard({ entity, score, onClick, highlighted, featur
   const isEvent = entity.entityType === 'Event';
   const tags = domain.primaryTags(entity.fields as Record<string, unknown>).slice(0, featured ? 4 : 3);
   const badges = cardBadges(entity);
+  // The derived "hidden gem / local favorite" signal — the local-secret read a
+  // general search can't give, computed from the place's own rating + review count.
+  const tier = isEvent ? null : ratingSignalOf(entity.fields as Record<string, unknown>)?.tier ?? null;
   const slotIcon: IconName = isEvent ? 'music' : 'glass';
   // Score is a cosine similarity; surface it as a friendly "vibe match" reading.
   const pct = score != null ? Math.max(0, Math.min(100, Math.round(score * 100))) : null;
+  // A real photo (from the OSM→Wikimedia pipeline) when we have one; otherwise the
+  // signature contour wash. `imgFailed` falls back gracefully if a Commons URL 404s.
+  const rawImg = (entity.fields as Record<string, unknown>).imageUrl;
+  const [imgFailed, setImgFailed] = useState(false);
+  const img = typeof rawImg === 'string' && rawImg && !imgFailed ? rawImg : null;
 
   return (
     <button
@@ -86,8 +96,20 @@ export default function ResultCard({ entity, score, onClick, highlighted, featur
       onClick={onClick}
     >
       <div className={styles.slot}>
-        <Contour />
-        <Icon name={slotIcon} size={featured ? 40 : 30} className={styles.slotIcon} />
+        {img ? (
+          <img
+            className={styles.photo}
+            src={img}
+            alt=""
+            loading="lazy"
+            onError={() => setImgFailed(true)}
+          />
+        ) : (
+          <>
+            <Contour />
+            <Icon name={slotIcon} size={featured ? 40 : 30} className={styles.slotIcon} />
+          </>
+        )}
         <span className={styles.kind}>
           <Icon name={isEvent ? 'calendar' : 'pin'} size={12} />
           {domain.typeMeta(entity.entityType).singular}
@@ -98,8 +120,14 @@ export default function ResultCard({ entity, score, onClick, highlighted, featur
         <h3 className={styles.title}>{entity.title}</h3>
         {secondary && <div className={styles.secondary}>{secondary}</div>}
 
-        {(tags.length > 0 || badges.length > 0) && (
+        {(tags.length > 0 || badges.length > 0 || tier) && (
           <div className={styles.pills}>
+            {tier && (
+              <span className={`${styles.pill} ${tier === 'hidden-gem' ? styles.gem : styles.crowd}`}>
+                <Icon name={tier === 'hidden-gem' ? 'sparkle' : 'star'} size={11} />
+                {TIER_LABEL[tier]}
+              </span>
+            )}
             {badges.map((b) => (
               <span key={b.key} className={`${styles.pill} ${b.tone !== 'neutral' ? styles[b.tone] : ''}`}>
                 {b.label}

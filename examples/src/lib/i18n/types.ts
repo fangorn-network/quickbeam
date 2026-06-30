@@ -18,6 +18,7 @@ export interface Community {
   regionAbbr: string; // HE
   tagline: string; // hero sub-headline (localized)
   blurb: string; // one supporting line (localized)
+  center?: [number, number]; // [lng, lat] map fallback before pins load / geolocate
 }
 
 // The complete UI copy contract. Every locale MUST provide every key — TypeScript

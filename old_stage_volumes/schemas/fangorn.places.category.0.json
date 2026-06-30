@@ -1,0 +1,23 @@
+{
+  "name": "fangorn.places.category.0",
+  "definition": {
+    "categoryId": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "rawType": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

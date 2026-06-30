@@ -46,10 +46,10 @@ export const enEagleRiver: LocaleProfile = {
       scoreTooltip: 'Similarity score (higher = closer match)',
     },
     connections: {
-      heading: 'Connections',
-      loading: 'Loading connections…',
-      empty: 'No connections recorded.',
-      emptyForEntry: 'No connections recorded for this entry.',
+      heading: 'Related',
+      loading: 'Loading…',
+      empty: 'Nothing related yet.',
+      emptyForEntry: 'Nothing related yet.',
     },
     link: {
       softTooltip: (v: string) => `Search for "${v}"`,
@@ -87,7 +87,7 @@ export const enEagleRiver: LocaleProfile = {
       quickWeekend: 'This weekend',
       quickEvents: 'Featured events',
       mapTeaserTitle: 'Explore the map',
-      mapTeaserSub: 'Pins for every place & event — coming soon.',
+      mapTeaserSub: 'Pins for every place, trail, lake & landmark — open the map.',
       emptyVibe: 'Nothing here yet — try a different vibe.',
       showMore: 'Show more places',
       fallbackQuery: 'that vibe',

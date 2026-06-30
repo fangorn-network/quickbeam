@@ -414,3 +414,29 @@
     grid-row: span 1;
   }
 }
+
+/* "Understood" chips — what query-understanding lifted out of the typed query
+   into structured filters (open now / under $$ / kid-friendly / top-rated). */
+.understood {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 0.9rem;
+}
+.understoodLead {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+}
+.understoodChip {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  color: var(--brand-forest);
+  background: color-mix(in srgb, var(--brand-forest) 12%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--brand-forest) 35%, transparent);
+}

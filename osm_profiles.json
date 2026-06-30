@@ -1,0 +1,5 @@
+{
+  "lake":     { "root_type": "Lake",     "max_depth": 1, "include": ["Locality"] },
+  "trail":    { "root_type": "Trail",    "max_depth": 1, "include": ["Locality"] },
+  "landmark": { "root_type": "Landmark", "max_depth": 1, "include": ["Locality"] }
+}

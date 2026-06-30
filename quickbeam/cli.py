@@ -215,5 +215,13 @@ def osm(ctx: typer.Context):
     main()
 
 
+@data_app.command(**_PASSTHROUGH)
+def linkgen(ctx: typer.Context):
+    """Generate a sameAs linkset that fuses two datasources by coordinate + name match."""
+    _fwd("quickbeam data linkgen", ctx.args)
+    from quickbeam.pipelines.linkgen import run
+    run()
+
+
 if __name__ == "__main__":
     app()

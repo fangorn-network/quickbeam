@@ -1,13 +1,17 @@
 // Geographic helpers for coordinate-proximity ("find nearby") search.
 
-// Parse a "lat,lng" string into a coordinate pair, or null.
+// Parse a "lat,lng" string into a coordinate pair, or null. Rejects out-of-range
+// values: a stray "200,300" is finite but bogus, and feeding it to the map throws
+// ("Invalid LngLat") or corrupts the camera, so it must never reach a feature.
 export function parseCoords(v: unknown): [number, number] | null {
   if (typeof v !== 'string') return null;
   const parts = v.split(',');
   if (parts.length !== 2) return null;
   const lat = Number(parts[0]);
   const lng = Number(parts[1]);
-  return Number.isFinite(lat) && Number.isFinite(lng) ? [lat, lng] : null;
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return [lat, lng];
 }
 
 // Great-circle distance (km) between two coordinate pairs.

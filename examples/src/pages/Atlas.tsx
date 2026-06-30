@@ -2,7 +2,7 @@
 // coordinate, labeled with the cleaned city) or semantically (by vibe); within a
 // shelf, tiles are ordered by meaning (UMAP adjacency) and sized by prominence.
 // Type a query and a "Top matches" shelf flies to the top, semantically ranked.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDomain } from '../lib/domainContext';
 import { loadAtlasModel, type AtlasModel } from '../lib/atlas';
@@ -74,7 +74,9 @@ export default function Atlas() {
                   {model.points.length.toLocaleString()} places ·{' '}
                   {mode === 'place' ? 'grouped by area' : 'grouped by vibe'} ·{' '}
                   <span className={styles.dim}>
-                    ordered by meaning ({model.projection === 'umap' ? 'UMAP' : 'PCA'})
+                    {mode === 'place'
+                      ? 'laid out by geography'
+                      : `ordered by meaning (${model.projection === 'umap' ? 'UMAP' : 'PCA'})`}
                   </span>
                 </>
               ) : (
@@ -145,13 +147,18 @@ function ShelfBlock({
   accent?: boolean;
   onOpen: (id: string) => void;
 }) {
+  const geo = shelf.geo;
   return (
     <section className={styles.shelf}>
       <div className={styles.shelfHead}>
         <h2 className={`${styles.shelfTitle} ${accent ? styles.shelfTitleAccent : ''}`}>{shelf.label}</h2>
         {shelf.sublabel && <span className={styles.shelfSub}>{shelf.sublabel}</span>}
+        {geo && <span className={styles.shelfSub}>· laid out by geography</span>}
       </div>
-      <div className={styles.grid}>
+      <div
+        className={`${styles.grid} ${geo ? styles.geoGrid : ''}`}
+        style={geo ? ({ ['--geo-cols' as string]: geo.cols } as CSSProperties) : undefined}
+      >
         {shelf.tiles.map((t) => (
           <TileCard
             key={t.point.id}

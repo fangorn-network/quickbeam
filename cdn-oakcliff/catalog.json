@@ -1,0 +1,23 @@
+{
+  "generated_at": 1782795034,
+  "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
+  "collection": "fangorn_oakcliff",
+  "domains": [
+    {
+      "name": "places",
+      "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
+      "count": 1157,
+      "dim": 256,
+      "bytes": 2989135,
+      "shard_count": 1,
+      "entity_types": [
+        "Business",
+        "Event",
+        "Landmark",
+        "Trail",
+        "Lake"
+      ],
+      "manifest": "places/manifest.json"
+    }
+  ]
+}

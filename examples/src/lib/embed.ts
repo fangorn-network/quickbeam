@@ -61,6 +61,9 @@ export async function embedQuery(text: string): Promise<number[]> {
 }
 
 // Lets the UI warm the model up (and show a spinner) before the first query.
+// Swallow load failures here (low-memory phones, blocked CDN): the model stays
+// uninitialized, embedQuery rejects on demand, and search() falls back to lexical —
+// a warm-up must never surface as an unhandled rejection.
 export function warmEmbedder(): void {
-  void extractor();
+  extractor().catch(() => {/* will retry / fall back on first real query */});
 }

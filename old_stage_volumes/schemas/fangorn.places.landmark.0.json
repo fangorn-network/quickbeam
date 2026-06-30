@@ -1,0 +1,47 @@
+{
+  "name": "fangorn.places.landmark.0",
+  "definition": {
+    "coordinates": {
+      "@type": "string"
+    },
+    "entityType": {
+      "@type": "string"
+    },
+    "landmarkType": {
+      "@type": "string"
+    },
+    "locality": {
+      "@type": "string"
+    },
+    "osmId": {
+      "@type": "string"
+    },
+    "phone": {
+      "@type": "string"
+    },
+    "primaryType": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "source": {
+      "@type": "string"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    },
+    "website": {
+      "@type": "string"
+    }
+  },
+  "identity": {
+    "aliases": {
+      "osm": "osmId"
+    },
+    "@id": "osmId"
+  }
+}

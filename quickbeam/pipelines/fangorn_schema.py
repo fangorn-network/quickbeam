@@ -49,24 +49,23 @@ STEM_TYPE = {
 # Streaming reader for our JSON-array files (one record per line).
 # ===========================================================================
 def _iter_array(path: str, limit: int = 0):
-    """Yield objects from a `[ {..},\\n {..} ]` file without loading it whole."""
-    n = 0
     with open(path, encoding="utf-8") as f:
-        for line in f:
-            s = line.strip()
-            if not s or s in ("[", "]"):
-                continue
-            if s.endswith(","):
-                s = s[:-1]
-            if not s:
-                continue
-            try:
-                yield json.loads(s)
-            except json.JSONDecodeError:
-                continue
-            n += 1
-            if limit and n >= limit:
-                return
+        data = json.load(f)
+
+    if not isinstance(data, list):
+        return
+
+    n = 0
+
+    for obj in data:
+        if not isinstance(obj, dict):
+            continue
+
+        yield obj
+
+        n += 1
+        if limit and n >= limit:
+            break
 
 
 # ===========================================================================
@@ -83,16 +82,27 @@ def _iter_array(path: str, limit: int = 0):
 # ===========================================================================
 ALIAS_PATTERNS = {
     "gplace": re.compile(r"^ChIJ[0-9A-Za-z_\-]{10,}$"),   # Google Place ID
+    "osm":    re.compile(r"^(node|way|relation)/[0-9]+$"),  # OpenStreetMap element id
     "isrc":   re.compile(r"^[A-Za-z]{2}[A-Za-z0-9]{3}[0-9]{7}$"),  # ISRC
 }
-# Namespaces whose key is canonical enough to also become the node's @id.
-PROMOTE_ID = ("gplace",)
+# An alias is a FUSION JOIN KEY: a View's union-find merges any two nodes that share
+# one. So a field may become an alias ONLY when it is the node's *own* id column (its
+# value equals the record's local id) — the "is that place" case. A foreign-key field
+# (a Review's `businessId`, an Event's `hostBusinessId`) "points at that place"; it is
+# NOT identity and must never become an alias, or every child would collapse onto its
+# parent in a View. (The child→parent relationship is carried by an EDGE, not identity.)
+# A multi-source type (Business from Google *and* OSM) can still carry both own-id
+# aliases — `gplace:placeId` + `osm:osmId` — and gplace wins @id.
+PROMOTE_ID = ("gplace", "osm")
 
 
-def _infer_identity(field_values: dict, threshold: float = 0.8) -> dict | None:
+def _infer_identity(field_values: dict, id_fields: frozenset = frozenset(),
+                    threshold: float = 0.8) -> dict | None:
     """Claim a field for an alias namespace when a strong majority of its sampled
-    non-null string values match that namespace's shape. Returns a NodeIdentity
-    dict, or None when nothing is recognized."""
+    non-null string values match that namespace's shape, BUT keep only aliases on the
+    node's own id column (`id_fields`) — a foreign key that merely references another
+    entity must not become a join key. Returns a NodeIdentity dict, or None when the
+    node has no own-id alias. The (single) remaining namespace is promoted to `@id`."""
     aliases: dict[str, str] = {}
     for field, vals in field_values.items():
         non_null = [v for v in vals if isinstance(v, str) and v.strip()]
@@ -104,11 +114,14 @@ def _infer_identity(field_values: dict, threshold: float = 0.8) -> dict | None:
             hits = sum(1 for v in non_null if pat.match(v))
             if hits / len(non_null) >= threshold:
                 aliases[ns] = field
+    # Drop any alias that isn't the node's own id — a foreign-key alias would make a
+    # View's union-find merge every child onto its parent (the over-merge bug).
+    aliases = {ns: f for ns, f in aliases.items() if f in id_fields}
     if not aliases:
         return None
     identity: dict = {"aliases": aliases}
     for ns in PROMOTE_ID:
-        if ns in aliases:
+        if ns in aliases:  # all remaining aliases are own-id → any may be @id
             identity["@id"] = aliases[ns]
             break
     return identity
@@ -146,22 +159,34 @@ def _infer_type(values, all_strings: bool) -> str:
 def infer_schema(path: str, sample: int, all_strings: bool):
     """Return (type_name, SchemaDefinition, identity|None, count) from a node file."""
     field_values = defaultdict(list)
+    # Per-field tally of "this field's value equals the record's own local id" —
+    # the signal that a field IS the node's identity (vs. a foreign key). Used to
+    # gate @id promotion (see _infer_identity / option (a)).
+    id_match: dict[str, int] = defaultdict(int)
+    id_total: dict[str, int] = defaultdict(int)
     type_name = None
     count = 0
     for node in _iter_array(path, limit=sample):
         fields = node.get("fields") or {}
+        node_id = node.get("name")
         if type_name is None:
             type_name = fields.get("entityType")
         for k, v in fields.items():
             if len(field_values[k]) < sample:
                 field_values[k].append(v)
+            if isinstance(v, str) and v.strip():
+                id_total[k] += 1
+                if node_id is not None and v == node_id:
+                    id_match[k] += 1
         count += 1
     if type_name is None:
         stem = os.path.basename(path).split("_", 2)[-1].rsplit(".", 1)[0]
         type_name = STEM_TYPE.get(stem, stem.title())
     definition = {k: {"@type": _infer_type(vs, all_strings)}
                   for k, vs in sorted(field_values.items())}
-    identity = _infer_identity(field_values)
+    id_fields = frozenset(k for k, tot in id_total.items()
+                          if tot and id_match[k] / tot >= 0.8)
+    identity = _infer_identity(field_values, id_fields)
     return type_name, definition, identity, count
 
 

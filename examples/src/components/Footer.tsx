@@ -1,8 +1,16 @@
+import { Link } from 'react-router-dom';
 import { COMMUNITY, communityFull } from '../lib/community';
 import styles from './Footer.module.css';
 
 const FANGORN_URL = 'https://fangorn.network';
 const FANGORN_EMAIL = 'fangorn@fangorn.network';
+
+const EXPLORE: { to: string; label: string }[] = [
+  { to: '/discover', label: 'Discover' },
+  { to: '/discover?lens=map', label: 'Map' },
+  { to: '/atlas', label: 'Atlas' },
+  { to: '/trip', label: 'Liked places' },
+];
 
 export default function Footer() {
   const year = new Date().getFullYear();
@@ -17,6 +25,15 @@ export default function Footer() {
             </div>
             <div className={styles.community}>{communityFull}</div>
             <p className={styles.blurb}>{COMMUNITY.blurb}</p>
+          </div>
+
+          <div className={styles.linkCol}>
+            <div className={styles.colTitle}>Explore</div>
+            {EXPLORE.map((l) => (
+              <Link key={l.to} className={styles.link} to={l.to}>
+                {l.label}
+              </Link>
+            ))}
           </div>
 
           <div className={styles.linkCol}>

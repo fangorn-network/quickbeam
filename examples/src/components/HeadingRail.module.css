@@ -1,0 +1,61 @@
+/* Ambient "where you're heading" rail — a horizontal strip above the results. */
+.rail {
+  margin: 0.5rem 0 1.25rem;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 650;
+  font-size: 0.95rem;
+  color: var(--text, inherit);
+}
+
+.sub {
+  font-size: 0.8rem;
+  color: var(--text-dim, #8a8f98);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.tag {
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent, #4a7) 16%, transparent);
+  color: var(--accent, #4a7);
+  font-weight: 600;
+}
+
+/* Horizontal scroller. Each cell is a fixed-width slot so cards keep a consistent
+   shape and the rail reads as a single sweep rather than a wrapping grid. */
+.track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(230px, 1fr);
+  gap: 0.85rem;
+  overflow-x: auto;
+  scroll-snap-type: x proximity;
+  padding-bottom: 0.5rem;
+  scrollbar-width: thin;
+}
+
+.cell {
+  scroll-snap-align: start;
+  min-width: 0;
+}
+
+/* Tighten the card so several read at a glance in the rail. */
+.cell > :global(button) {
+  height: 100%;
+}

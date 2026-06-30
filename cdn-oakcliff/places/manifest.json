@@ -1,0 +1,290 @@
+{
+  "name": "places",
+  "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
+  "count": 1157,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {
+    "entityType": [
+      "Business",
+      "Event",
+      "Trail",
+      "Lake",
+      "Landmark"
+    ]
+  },
+  "created_at": 1782795034,
+  "role_map": {
+    "identity": "placeId",
+    "title": "title",
+    "subtitle": "primaryType",
+    "temporal": null,
+    "spatial": "locality",
+    "media": "googleMapsUri",
+    "tags": [
+      "categories"
+    ],
+    "measures": [
+      "rating",
+      "userRatingCount"
+    ],
+    "relations": [],
+    "text": [
+      "text",
+      "editorialSummary"
+    ],
+    "labels": {
+      "title": "Title",
+      "temporal": "End Date",
+      "spatial": "Coordinate",
+      "media": "Source",
+      "tags": "Events",
+      "text": "Image Url, Summary"
+    },
+    "fields": [
+      "address",
+      "coordinates",
+      "cuisine",
+      "dateLabel",
+      "endDate",
+      "entityType",
+      "eventId",
+      "events",
+      "hostBusinessId",
+      "hostBusinessName",
+      "imageUrl",
+      "isPast",
+      "landmarkType",
+      "locality",
+      "network",
+      "openingHours",
+      "osmId",
+      "phone",
+      "primaryType",
+      "routeType",
+      "schemaVersion",
+      "source",
+      "startDate",
+      "startISO",
+      "startTime",
+      "summary",
+      "text",
+      "ticketUrl",
+      "timezone",
+      "title",
+      "venueName",
+      "waterType",
+      "website"
+    ]
+  },
+  "entity_types": [
+    {
+      "type": "Business",
+      "count": 670
+    },
+    {
+      "type": "Event",
+      "count": 283
+    },
+    {
+      "type": "Landmark",
+      "count": 184
+    },
+    {
+      "type": "Trail",
+      "count": 16
+    },
+    {
+      "type": "Lake",
+      "count": 4
+    }
+  ],
+  "shards": [
+    {
+      "file": "shard-0000-64638c07a394.ndjson.gz",
+      "count": 1157,
+      "bytes": 2989135,
+      "sha256": "64638c07a3941fc6978c3c80578b0b3339dfb30a34ebe56969d4e4636183fd02"
+    }
+  ],
+  "bundle": {
+    "nodes": {
+      "Business": "fangorn.places.business.0",
+      "Category": "fangorn.places.category.0",
+      "Locality": "fangorn.places.locality.0",
+      "Reviewer": "fangorn.places.reviewer.0",
+      "Review": "fangorn.places.review.0",
+      "Event": "fangorn.places.event.0",
+      "Organizer": "fangorn.places.organizer.0",
+      "Lake": "fangorn.places.lake.0",
+      "Landmark": "fangorn.places.landmark.0",
+      "Trail": "fangorn.places.trail.0"
+    },
+    "edges": [
+      {
+        "rel": "near",
+        "from": "Business",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Business",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Event",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Lake",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Lake",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Business",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hostedBy",
+        "from": "Event",
+        "to": "Organizer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Event",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "hasReview",
+        "from": "Business",
+        "to": "Review",
+        "min": 0
+      },
+      {
+        "rel": "byAuthor",
+        "from": "Review",
+        "to": "Reviewer",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Landmark",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Landmark",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "locatedIn",
+        "from": "Trail",
+        "to": "Locality",
+        "min": 0
+      },
+      {
+        "rel": "inCategory",
+        "from": "Trail",
+        "to": "Category",
+        "min": 0
+      },
+      {
+        "rel": "hostedAt",
+        "from": "Event",
+        "to": "Business",
+        "min": 0
+      },
+      {
+        "rel": "hostsEvent",
+        "from": "Business",
+        "to": "Event",
+        "min": 0
+      }
+    ]
+  },
+  "presentation": {
+    "types": {
+      "Business": {
+        "icon": "\ud83c\udfea",
+        "accent": "#d98a2b",
+        "singular": "Place",
+        "plural": "Places"
+      },
+      "Event": {
+        "icon": "\ud83c\udfab",
+        "accent": "#c2562b",
+        "singular": "Event",
+        "plural": "Events"
+      },
+      "Organizer": {
+        "icon": "\ud83d\udce3",
+        "accent": "#2f7d57",
+        "singular": "Organizer",
+        "plural": "Organizers"
+      },
+      "Trail": {
+        "icon": "\ud83e\udd7e",
+        "accent": "#6f9e44",
+        "singular": "Trail",
+        "plural": "Trails"
+      },
+      "Lake": {
+        "icon": "\ud83d\udca7",
+        "accent": "#2b8ca6",
+        "singular": "Lake",
+        "plural": "Lakes"
+      },
+      "Landmark": {
+        "icon": "\ud83c\udfde\ufe0f",
+        "accent": "#9b6bc0",
+        "singular": "Landmark",
+        "plural": "Landmarks"
+      }
+    },
+    "fieldLabels": {
+      "editorialSummary": "Summary",
+      "userRatingCount": "Reviews",
+      "priceLevel": "Price",
+      "primaryType": "Type",
+      "dateLabel": "When",
+      "venueName": "Venue",
+      "priceMin": "From",
+      "ticketUrl": "Tickets",
+      "organizerName": "Hosted by",
+      "routeType": "Route",
+      "waterType": "Water",
+      "landmarkType": "Type",
+      "network": "Network",
+      "surface": "Surface",
+      "distance": "Distance"
+    },
+    "hideConnections": [
+      "businesses",
+      "localities",
+      "reviewers",
+      "events"
+    ],
+    "externalUrl": {
+      "Business": "{googleMapsUri}",
+      "Event": "{ticketUrl}"
+    }
+  }
+}

@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Routes, Route, useNavigate, useParams, useLocation } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, useParams, useLocation } from 'react-router-dom';
 import TopBar from './components/TopBar';
+import BottomBar from './components/BottomBar';
 import LeftRail from './components/LeftRail';
 import CommandPalette from './components/CommandPalette';
+import ErrorBoundary from './components/ErrorBoundary';
+import Footer from './components/Footer';
 import { useBackStack, pushPage } from './hooks/useBackStack';
 import { useTypeCounts } from './hooks/useTypeCounts';
 import { useDomain } from './lib/domainContext';
@@ -13,10 +16,9 @@ import { IS_MOCK } from './lib/config';
 import { useTrip } from './lib/trip';
 import Landing from './pages/Landing';
 import EntityPage from './pages/EntityPage';
-import Results from './pages/Results';
+import Discover from './pages/Discover';
 import Trip from './pages/Trip';
 import Atlas from './pages/Atlas';
-import Ask from './pages/Ask';
 import styles from './App.module.css';
 
 // The raw type token from the path/query, if any (validated against the domain below).
@@ -40,6 +42,13 @@ export default function App() {
   useEffect(() => {
     setRailOpen(false);
   }, [location.pathname, location.search]);
+
+  // Always land at the top of a new page. `.main` is the scroll container, so a
+  // route change otherwise inherits wherever the previous page was scrolled
+  // (e.g. opening a profile from far down a list, or arriving at the map).
+  useEffect(() => {
+    document.querySelector('main')?.scrollTo({ top: 0 });
+  }, [location.pathname]);
 
   const rawType = rawTypeFromPath(location.pathname, location.search);
   const activeType: EntityType | null = rawType && domain.hasType(rawType) ? rawType : null;
@@ -94,8 +103,8 @@ export default function App() {
         onToggleTheme={toggleTheme}
         onMenu={() => setRailOpen((o) => !o)}
         onHome={() => navigate('/')}
-        onAtlas={() => navigate('/atlas')}
-        onAsk={() => navigate('/ask')}
+        onDiscover={() => navigate('/discover')}
+        onExplore={() => navigate('/atlas')}
         tripCount={tripItems.length}
         onTrip={() => navigate('/trip')}
       />
@@ -109,20 +118,34 @@ export default function App() {
           onClose={() => setRailOpen(false)}
         />
         <main className={styles.main}>
-          <Routes>
-            <Route path="/" element={<Landing counts={counts} onVisit={onVisit} />} />
-            <Route path="/browse/:entityType" element={<BrowseRoute onVisit={onVisit} />} />
-            <Route path="/search" element={<Results onVisit={onVisit} />} />
-            <Route path="/atlas" element={<Atlas />} />
-            <Route path="/ask" element={<Ask onVisit={onVisit} />} />
-            <Route path="/trip" element={<Trip />} />
-            <Route path="/entity/:pointId" element={<EntityRoute onVisit={onVisit} />} />
-          </Routes>
+          {/* Keyed on the route so a crashed page clears itself once you navigate. */}
+          <ErrorBoundary key={location.pathname}>
+            <div className={styles.routed}>
+              <Routes>
+                <Route path="/" element={<Landing counts={counts} onVisit={onVisit} />} />
+                <Route path="/browse/:entityType" element={<BrowseRoute onVisit={onVisit} />} />
+                <Route path="/discover" element={<Discover onVisit={onVisit} />} />
+                <Route path="/atlas" element={<Atlas />} />
+                <Route path="/trip" element={<Trip />} />
+                <Route path="/entity/:pointId" element={<EntityRoute onVisit={onVisit} />} />
+                {/* Back-compat: the old separate surfaces are now lenses on /discover. */}
+                <Route path="/search" element={<RedirectToDiscover />} />
+                <Route path="/map" element={<RedirectToDiscover lens="map" />} />
+                {/* /ask is retired — its old bookmarks land on the default (List) lens. */}
+                <Route path="/ask" element={<RedirectToDiscover />} />
+              </Routes>
+            </div>
+          </ErrorBoundary>
+          <Footer />
         </main>
       </div>
-      {/* <div> */}
-        {/* <Footer /> */}
-      {/* </div> */}
+      <BottomBar
+        onDiscover={() => navigate('/discover')}
+        onExplore={() => navigate('/atlas')}
+        onTrip={() => navigate('/trip')}
+        onToggleTheme={toggleTheme}
+        tripCount={tripItems.length}
+      />
       <CommandPalette
         open={cmdkOpen}
         onClose={() => setCmdkOpen(false)}
@@ -133,10 +156,19 @@ export default function App() {
   );
 }
 
-// Browse-by-type reuses the Results page with a fixed type and no query.
+// Browse-by-type reuses Discover (List lens) with a fixed type and no query.
 function BrowseRoute({ onVisit }: { onVisit: (p: PageRef) => void }) {
   const { entityType } = useParams();
-  return <Results onVisit={onVisit} browseType={entityType} />;
+  return <Discover onVisit={onVisit} browseType={entityType} />;
+}
+
+// The old /search, /map, /ask URLs now redirect into the matching Discover lens,
+// preserving any query params (q, type, near, focus) the bookmark carried.
+function RedirectToDiscover({ lens }: { lens?: 'map' }) {
+  const location = useLocation();
+  const sp = new URLSearchParams(location.search);
+  if (lens) sp.set('lens', lens);
+  return <Navigate to={`/discover?${sp.toString()}`} replace />;
 }
 
 function EntityRoute({ onVisit }: { onVisit: (p: PageRef) => void }) {

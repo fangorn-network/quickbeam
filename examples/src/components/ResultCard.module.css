@@ -52,6 +52,14 @@
   height: 168px;
 }
 
+.photo {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 .contour {
   position: absolute;
   inset: 0;
@@ -141,6 +149,28 @@
 
 .pill.closed {
   color: var(--text-muted);
+}
+
+/* Derived rating-signal badges (lib/gem). The "hidden gem" pill is deliberately
+   the most eye-catching chip on the card — it's the unique, non-Gemini read. */
+.pill.gem,
+.pill.crowd {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+}
+
+.pill.gem {
+  background: color-mix(in srgb, var(--brand-terracotta) 16%, transparent);
+  color: var(--brand-terracotta);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-terracotta) 30%, transparent);
+}
+
+.pill.crowd {
+  background: color-mix(in srgb, var(--brand-teal) 13%, transparent);
+  color: var(--brand-teal);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-teal) 26%, transparent);
 }
 
 /* ---- Concierge insight (the LLM's grounded "why it fits") ---- */

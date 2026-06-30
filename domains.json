@@ -22,9 +22,9 @@
       "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v4.json"
     },
     "places": {
-      "description": "Local places & events — a searchable directory from Google Places + Eventbrite/Tribe",
-      "filter": { "entityType": ["Business", "Event"] },
-      "bundle_schema": "stage_volumes/schemas/fangorn.places.localcore.v1.json",
+      "description": "Local places, events & the outdoors — Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
+      "filter": { "entityType": ["Business", "Event", "Trail", "Lake", "Landmark"] },
+      "bundle_schema": "stage_volumes/schemas/fangorn.places.eagleriver-localcore.0.json",
       "role_map": {
         "identity": "placeId",
         "title": "title",
@@ -41,7 +41,10 @@
         "types": {
           "Business": { "icon": "🏪", "accent": "#d98a2b", "singular": "Place", "plural": "Places" },
           "Event": { "icon": "🎫", "accent": "#c2562b", "singular": "Event", "plural": "Events" },
-          "Organizer": { "icon": "📣", "accent": "#2f7d57", "singular": "Organizer", "plural": "Organizers" }
+          "Organizer": { "icon": "📣", "accent": "#2f7d57", "singular": "Organizer", "plural": "Organizers" },
+          "Trail": { "icon": "🥾", "accent": "#6f9e44", "singular": "Trail", "plural": "Trails" },
+          "Lake": { "icon": "💧", "accent": "#2b8ca6", "singular": "Lake", "plural": "Lakes" },
+          "Landmark": { "icon": "🏞️", "accent": "#9b6bc0", "singular": "Landmark", "plural": "Landmarks" }
         },
         "fieldLabels": {
           "editorialSummary": "Summary",
@@ -52,7 +55,13 @@
           "venueName": "Venue",
           "priceMin": "From",
           "ticketUrl": "Tickets",
-          "organizerName": "Hosted by"
+          "organizerName": "Hosted by",
+          "routeType": "Route",
+          "waterType": "Water",
+          "landmarkType": "Type",
+          "network": "Network",
+          "surface": "Surface",
+          "distance": "Distance"
         },
         "hideConnections": ["businesses", "localities", "reviewers", "events"],
         "externalUrl": {

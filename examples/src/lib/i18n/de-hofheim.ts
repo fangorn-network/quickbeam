@@ -87,7 +87,7 @@ export const deHofheim: LocaleProfile = {
       quickWeekend: 'Dieses Wochenende',
       quickEvents: 'Ausgewählte Events',
       mapTeaserTitle: 'Karte erkunden',
-      mapTeaserSub: 'Markierungen für jeden Ort & jedes Event – bald verfügbar.',
+      mapTeaserSub: 'Markierungen für jeden Ort, Weg, See & jedes Wahrzeichen – zur Karte.',
       emptyVibe: 'Hier ist noch nichts – probier eine andere Stimmung.',
       showMore: 'Mehr Orte anzeigen',
       fallbackQuery: 'diese Stimmung',

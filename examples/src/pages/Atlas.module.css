@@ -133,6 +133,15 @@
   gap: var(--space-3);
 }
 
+/* Geographic shelves: tiles are packed row-major (no auto-flow densify) and the
+   column count comes from the area's aspect ratio. It's passed in as the
+   `--geo-cols` custom property (not a hard grid-template-columns) so the
+   responsive media queries below can still clamp the column count on phones. */
+.geoGrid {
+  grid-auto-flow: row;
+  grid-template-columns: repeat(var(--geo-cols, 4), 1fr);
+}
+
 /* ---- tiles ---- */
 .tile {
   position: relative;
@@ -246,9 +255,12 @@
 
 /* ---- responsive ---- */
 @media (max-width: 860px) {
-  .grid {
+  .grid,
+  .geoGrid {
+    /* Clamp the geo column count too — its inline --geo-cols can be up to 4,
+       which would otherwise stay 4-wide and crush the cards on a tablet. */
     grid-template-columns: repeat(2, 1fr);
-    grid-auto-rows: 124px;
+    grid-auto-rows: 150px;
   }
   .hero {
     grid-column: span 2;
@@ -259,16 +271,37 @@
     grid-row: span 1;
   }
 }
+
+/* Phones: two readable columns with taller cards. We keep two columns rather
+   than one so the bento still reads as a grid, but every tile is now wide enough
+   that titles and meta chips aren't truncated. */
 @media (max-width: 480px) {
   .page {
     padding: var(--space-3);
   }
-  .lg,
+  .grid,
+  .geoGrid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-auto-rows: 160px;
+    gap: var(--space-2);
+  }
+  /* Big tiles span the full two-column width instead of cramming a tall card
+     into one narrow column. */
+  .hero {
+    grid-column: span 2;
+    grid-row: span 1;
+  }
+  .lg {
+    grid-column: span 2;
+    grid-row: span 1;
+  }
   .md,
   .sm {
     grid-column: span 1;
   }
-  .hero {
-    grid-column: span 2;
+  /* On a wide tile the title has room for the larger, less-clamped treatment. */
+  .hero .tileTitle {
+    font-size: var(--text-md);
+    -webkit-line-clamp: 2;
   }
 }

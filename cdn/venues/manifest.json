@@ -11,7 +11,7 @@
       "Event"
     ]
   },
-  "created_at": 1782585960,
+  "created_at": 1782768418,
   "role_map": {
     "identity": null,
     "title": "title",
@@ -20,7 +20,9 @@
     "spatial": "coordinates",
     "media": "source",
     "tags": [
-      "categories"
+      "businesses",
+      "organizers",
+      "localities"
     ],
     "measures": [],
     "relations": [],
@@ -33,11 +35,12 @@
       "temporal": "End Date",
       "spatial": "Coordinate",
       "media": "Source",
-      "tags": "Categories",
+      "tags": "Businesses, Organizers, Localities",
       "text": "Summary, Text"
     },
     "fields": [
       "address",
+      "businesses",
       "categories",
       "coordinates",
       "dateLabel",
@@ -49,8 +52,10 @@
       "imageUrl",
       "isFree",
       "isPast",
+      "localities",
       "locality",
       "organizerName",
+      "organizers",
       "priceLevel",
       "schemaVersion",
       "source",
@@ -73,10 +78,10 @@
   ],
   "shards": [
     {
-      "file": "shard-0000-f8f926d90fde.ndjson.gz",
+      "file": "shard-0000-fa881dbc158b.ndjson.gz",
       "count": 622,
-      "bytes": 1628620,
-      "sha256": "f8f926d90fdedcfdd58eb0cf77d354cf8310c07a06148bdd3ca0d50a62b9f332"
+      "bytes": 1697317,
+      "sha256": "fa881dbc158b442f6d953bba7694ff0b02613dd15e0087454e442c16ab0c5522"
     }
   ]
 }

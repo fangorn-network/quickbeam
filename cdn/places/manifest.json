@@ -1,17 +1,20 @@
 {
   "name": "places",
-  "description": "Local places & events \u2014 a searchable directory from Google Places + Eventbrite/Tribe",
-  "count": 1025,
+  "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
+  "count": 836,
   "dim": 256,
   "model": "nomic-ai/nomic-embed-text-v1.5",
   "distance": "Cosine",
   "filter": {
     "entityType": [
       "Business",
-      "Event"
+      "Event",
+      "Trail",
+      "Lake",
+      "Landmark"
     ]
   },
-  "created_at": 1782586052,
+  "created_at": 1782859149,
   "role_map": {
     "identity": "placeId",
     "title": "title",
@@ -37,9 +40,9 @@
       "temporal": "End Date",
       "spatial": "Coordinate",
       "media": "Source",
-      "tags": "Reviews, Reviewers, Categories, Events, Localities",
-      "measures": "Rating",
-      "text": "Summary, Text"
+      "tags": "Reviews, Reviewers, Categories, Organizers, Localities",
+      "measures": "Gem Score, Rating",
+      "text": "Hours, Summary, Text"
     },
     "fields": [
       "address",
@@ -47,29 +50,39 @@
       "businessStatus",
       "categories",
       "coordinates",
+      "cuisine",
       "dateLabel",
+      "distance",
       "editorialSummary",
       "endDate",
       "entityType",
       "eventId",
-      "events",
+      "gemScore",
       "googleMapsUri",
       "hostBusinessId",
       "hostBusinessName",
       "hours",
       "imageUrl",
+      "isAnchor",
       "isFree",
       "isPast",
+      "landmarkType",
       "localities",
       "locality",
+      "network",
+      "openingHours",
       "organizerName",
+      "organizers",
+      "osmId",
       "phone",
       "placeId",
       "priceLevel",
       "primaryType",
       "rating",
+      "ratingTier",
       "reviewers",
       "reviews",
+      "routeType",
       "schemaVersion",
       "shortAddress",
       "source",
@@ -83,28 +96,40 @@
       "title",
       "userRatingCount",
       "venueName",
+      "waterType",
       "website"
     ]
   },
   "entity_types": [
     {
       "type": "Event",
-      "count": 622
+      "count": 500
     },
     {
       "type": "Business",
-      "count": 403
+      "count": 314
+    },
+    {
+      "type": "Landmark",
+      "count": 10
+    },
+    {
+      "type": "Lake",
+      "count": 9
+    },
+    {
+      "type": "Trail",
+      "count": 3
     }
   ],
   "shards": [
     {
-      "file": "shard-0000-a46abadd0c34.ndjson.gz",
-      "count": 1025,
-      "bytes": 4328043,
-      "sha256": "a46abadd0c3447c6bdfe92bf16ffefc19ff204009f89ec0becb1b786e60154de"
+      "file": "shard-0000-8bed85d1b53c.ndjson.gz",
+      "count": 836,
+      "bytes": 3819435,
+      "sha256": "8bed85d1b53cb49188f6186c0773e1c74a1a0b8c48e4752f0ce36dbff9a10667"
     }
   ],
-  "projection": "umap",
   "presentation": {
     "types": {
       "Business": {
@@ -124,6 +149,24 @@
         "accent": "#2f7d57",
         "singular": "Organizer",
         "plural": "Organizers"
+      },
+      "Trail": {
+        "icon": "\ud83e\udd7e",
+        "accent": "#6f9e44",
+        "singular": "Trail",
+        "plural": "Trails"
+      },
+      "Lake": {
+        "icon": "\ud83d\udca7",
+        "accent": "#2b8ca6",
+        "singular": "Lake",
+        "plural": "Lakes"
+      },
+      "Landmark": {
+        "icon": "\ud83c\udfde\ufe0f",
+        "accent": "#9b6bc0",
+        "singular": "Landmark",
+        "plural": "Landmarks"
       }
     },
     "fieldLabels": {
@@ -135,7 +178,13 @@
       "venueName": "Venue",
       "priceMin": "From",
       "ticketUrl": "Tickets",
-      "organizerName": "Hosted by"
+      "organizerName": "Hosted by",
+      "routeType": "Route",
+      "waterType": "Water",
+      "landmarkType": "Type",
+      "network": "Network",
+      "surface": "Surface",
+      "distance": "Distance"
     },
     "hideConnections": [
       "businesses",

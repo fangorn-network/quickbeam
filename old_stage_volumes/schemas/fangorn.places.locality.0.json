@@ -1,0 +1,23 @@
+{
+  "name": "fangorn.places.locality.0",
+  "definition": {
+    "entityType": {
+      "@type": "string"
+    },
+    "localityId": {
+      "@type": "string"
+    },
+    "region": {
+      "@type": "string"
+    },
+    "schemaVersion": {
+      "@type": "number"
+    },
+    "text": {
+      "@type": "string"
+    },
+    "title": {
+      "@type": "string"
+    }
+  }
+}

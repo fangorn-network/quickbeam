@@ -1,0 +1,6 @@
+[
+  {"name": "wi", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "wi", "title": "WI", "region": "WI", "text": "WI — locality"}},
+  {"name": "eagle-river-wi", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "eagle-river-wi", "title": "Eagle River, WI", "region": "WI", "text": "Eagle River, WI — locality"}},
+  {"name": "saint-germain-wi", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "saint-germain-wi", "title": "Saint Germain, WI", "region": "WI", "text": "Saint Germain, WI — locality"}},
+  {"name": "conover-wi", "fields": {"schemaVersion": 1, "entityType": "Locality", "localityId": "conover-wi", "title": "Conover, WI", "region": "WI", "text": "Conover, WI — locality"}}
+]

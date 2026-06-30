@@ -341,11 +341,25 @@ the *business*, not a bare review.
 #    Category) and combines every edges file, so the bundle gains the Event /
 #    Organizer schemas and the hostedBy / hostedAt / hostsEvent edge shapes.
 quickbeam data schemagen --input-dir ./stage_volumes --volume 0 \
-  --prefix fangorn.places --bundle-name localcore --version v1
+  --prefix fangorn.places --bundle-name eagleriver-localcore --version v2
 
-# 2) register + publish the bundle via the Fangorn SDK (node schemas first, then
-#    the bundle) → yields a bundle schema id 0x...
+# 2) register + publish to Fangorn with the SDK's publish script (in the fangorn
+#    repo, NOT quickbeam). It reads <input-dir>/schemas/fangorn_schemas.json,
+#    registers every node schema (carrying its `identity`) + the bundle, then
+#    commits the whole graph as ONE tx and prints the bundle id 0x… + the exact
+#    `quickbeam build` line to run next.
+cd ~/fangorn/fangorn
+pnpm dotenvx run -f .env -- tsx src/test/publish_bundle.ts \
+  --input-dir ~/fangorn/embeddings/stage_volumes --volume 0
+# → "registered bundle …localcore.v1 → 0x<bundleId>"  (use this id below)
 ```
+
+> **publish_bundle.ts env.** The script needs a funded key + a Pinata pin/gateway,
+> from either `~/.fangorn/config.json` or env: `DELEGATOR_ETH_PRIVATE_KEY`,
+> `PINATA_JWT`, `PINATA_GATEWAY`, `CHAIN_NAME` (optional `RPC_URL`). Registration is
+> idempotent — re-running skips already-registered schemas and re-publishes the
+> data. A big graph? `--shard-roots <n>` switches to laptop-RAM-bounded sharded
+> publishing (one tx per shard, resumable via a ledger).
 
 Then embed + bake. Two paths:
 
@@ -366,6 +380,31 @@ The root profiles (in `embeddings.py`'s `ROOT_PROFILES`):
   organizer, category, locality.
 
 Override or extend via `--profiles-file`.
+
+> **One bundle vs. a Composed View.** This guide fuses places + events into **one
+> bundle** (`schemagen --volume 0`), joined by the coordinate match `eventspg`
+> bakes in — a single publisher, a single datasource. That is the right tool when
+> you own both domains. When the domains are published as **separate datasources**
+> (especially by *different* publishers), join them with a Phase-1 **Composed
+> View** instead: it fuses on global identity rather than co-location. `schemagen`
+> already emits each node type's `identity` (the `@id` + namespaced aliases like
+> `gplace:` for a Place ID, `isrc:` for a recording) into `fangorn_schemas.json`,
+> and `publish_bundle.ts` registers it — so every published node carries an Entity
+> URI + aliases. Register a `view` over the source datasources, then build it with:
+>
+> ```bash
+> quickbeam build --view fangorn.places.creativeview.v1=0x<viewId> \
+>   --root-profile business --root-profile localevent --reset
+> ```
+>
+> The view resolves its sources, fetches all of them into one graph, and
+> **union-find merges nodes that share an alias** (e.g. a Business and an Event
+> venue with the same `gplace:` Place ID) before projecting — deterministic, no
+> linkset, no ML. See `docs/CROSS_PUBLISHER_LINKING_PLAN.md` (fangorn) §4.
+>
+> Publishing each domain as its own datasource this way is also what lets you
+> refresh *only* events later, or let a claimed business own and update its own
+> profile record — covered in **Stage E**.
 
 **Local demo (no chain) — `prebake`:** embed local volume node files straight into
 Qdrant with the exact same `nomic-embed-text-v1.5` + matryoshka-256 recipe `build`
@@ -459,6 +498,225 @@ grep -c '"rel": "hostedAt"' stage_volumes/volume_2_edges.json     # > 0
 
 Re-running any stage is idempotent (upsert by id / `event_key`), and only Stage A
 touches the network — every downstream stage reprocesses the cache for free.
+
+---
+
+## Stage E — Incremental updates & claimed business profiles
+
+Stages A–D describe the **bulk publish**: one big sweep of OSM places + Eventbrite
+events, baked into one shard. The interesting life of a locality, though, is what
+happens *after*: a new month of events appears, and the bars themselves want to
+correct their own hours and blurb. Both are **incremental, single-source
+republishes** — and both rely on the **Composed View**, not the single merged
+bundle, because a View fuses *independent datasources* and always resolves each one
+to its **latest** commit.
+
+> **Why the View, not the merged bundle.** `schemagen --volume 0` welds places +
+> events into **one** datasource (one `resourceId`). To re-publish *only* events you
+> would have to re-publish that whole combined datasource. Publish each domain as
+> its **own** datasource instead — `schemagen --volume 3` (OSM places) and
+> `--volume 2` (events) yield two bundles, two `resourceId`s — and join them with a
+> `view`. On chain, `publish(manifestCid, root, schemaId, name)` writes a new
+> manifest **version at a stable `resourceId`** (`keccak(owner, schemaId, name)`);
+> the View resolver picks the highest-block manifest per source, so a fresh commit
+> to one source is picked up on the next `build --view` while every other source
+> stays pinned to its existing version.
+
+### E0. Publish places and events as separate datasources
+
+Do this once so the incremental updates have somewhere to land. (If you already published
+a `--volume 0` merged bundle for the Stage A–D demo, this is the parallel "View"
+layout — keep the merged bundle for the single-owner demo, or migrate to these two.)
+
+> **Give each layout its own schema namespace.** A node schema name is
+> `<prefix>.<type>.<version>` and is **immutable once registered**. The merged demo
+> (Stage C) registers `fangorn.places.business.v1` from the *Google* Place shape;
+> the OSM bundle below is a *different* `business` shape. Publishing both under the
+> same `--prefix` collides — `publish_bundle.ts` fails fast with a shape-drift error.
+> So the OSM places live under `fangorn.places.osm` and events under
+> `fangorn.places.evt`. (Run only this layout? A single prefix is fine.)
+
+```bash
+# OSM places → its own bundle under the `…osm` namespace. schemagen (quickbeam) then publish (fangorn repo).
+quickbeam data schemagen --input-dir ./stage_volumes --volume 3 \
+  --prefix fangorn.places.osm --bundle-name placecore --version v1
+cd ~/fangorn/fangorn && pnpm dotenvx run -f .env -- tsx src/test/publish_bundle.ts \
+  --input-dir ~/fangorn/embeddings/stage_volumes --volume 3
+# → bundle id 0x<placesBundle>; its datasource has a stable resourceId R_places
+
+# Eventbrite events → its own bundle under the `…evt` namespace.
+quickbeam data schemagen --input-dir ./stage_volumes --volume 2 \
+  --prefix fangorn.places.evt --bundle-name eventcore --version v1
+cd ~/fangorn/fangorn && pnpm dotenvx run -f .env -- tsx src/test/publish_bundle.ts \
+  --input-dir ~/fangorn/embeddings/stage_volumes --volume 2
+# → bundle id 0x<eventsBundle>; stable resourceId R_events
+```
+
+`publish_bundle.ts` publishes one bundle per `--volume`, so each domain is its own
+datasource with its own `resourceId`. Register + publish the view that fuses them
+with the companion script, **`publish_view.ts`** — it resolves each same-owner
+`--source-bundle` name to its `resourceId` (using the same default datasetName
+`publish_bundle.ts` commits under), registers the `view`, publishes its manifest,
+and prints the view id + the `quickbeam build --view` line:
+
+```bash
+cd ~/fangorn/fangorn
+pnpm dotenvx run -f .env -- tsx src/test/publish_view.ts \
+  --name fangorn.places.localview.v1 \
+  --source-bundle fangorn.places.osm.placecore.v1 \
+  --source-bundle fangorn.places.evt.eventcore.v1
+# → "registered view …localview.v1 → 0x<viewId>"  then  "✅ View published."
+```
+
+For a source published by **another** wallet, pass its `resourceId` directly with
+`--source-resource 0x<rid>` (and `--linkset-name` / `--linkset-resource` to attach
+asserted-edge linksets). Re-registration is idempotent by name — to *change* a
+view's sources, bump the view name/version.
+
+```bash
+# build the fused shard from the view
+quickbeam build --view fangorn.places.localview.v1=0x<viewId> \
+  --root-profile business --root-profile localevent --reset
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+```
+
+Both bundles still carry `identity` from `schemagen`, so an `Event` whose
+`hostBusinessId` is a Google Place ID (`gplace:` alias) fuses onto the matching OSM
+`Business` *across the datasource boundary* — the same join the merged bundle got
+from coordinate match, now from global identity.
+
+### E1. Publish ONLY more eventbrite data later
+
+A month passes; new events are live. Refresh **just the events source** — OSM places
+are untouched, un-rescraped, and stay at their existing version:
+
+```bash
+# 1) scrape only the new events into the raw cache (idempotent upsert by event_key)
+quickbeam data events-fetch --source eventbrite-location --place wi--eagle-river
+
+# 2) re-shape ONLY events → stage_volumes/volume_2_* (places volume_3_* untouched)
+quickbeam data eventspg --output-dir ./stage_volumes
+
+# 3) re-run schemagen with the SAME `…evt` prefix — fangorn_schemas.json is
+#    overwritten each run, so this restores the events schema the publish reads.
+quickbeam data schemagen --input-dir ./stage_volumes --volume 2 \
+  --prefix fangorn.places.evt --bundle-name eventcore --version v1
+
+# 4) re-publish ONLY the events datasource — re-run publish_bundle.ts for --volume 2.
+#    Same bundle name + same default datasetName ⇒ a NEW VERSION at the SAME
+#    resourceId R_events. Schema registration no-ops; only data is re-published.
+#    Do NOT touch --volume 3 (places stay at their existing version).
+cd ~/fangorn/fangorn && pnpm dotenvx run -f .env -- tsx src/test/publish_bundle.ts \
+  --input-dir ~/fangorn/embeddings/stage_volumes --volume 2
+
+# 5) rebuild the view shard — the resolver auto-selects the newest events manifest;
+#    places resolve to their unchanged version. No view re-registration needed.
+quickbeam build --view fangorn.places.localview.v1=0x<viewId> \
+  --root-profile business --root-profile localevent --reset
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+```
+
+The `resourceId` is content-independent (`keccak(owner, schemaId, datasetName)`), so
+re-running the **same** `--volume` (same bundle name, same default datasetName) is
+what makes it a new *commit* rather than a new *source*. Keep that pair stable and
+the View follows the chain forward on its own.
+
+> A bundle re-publish replaces the **whole** manifest for that source (it is not a
+> delta append). Because `events_raw` accumulates, step 2 re-shapes the *full*
+> current event set — past + new — so the new manifest is complete. The win is
+> **scope**, not diffing: you pay to publish one small domain, not the entire shard.
+
+### E2. A claimed-business profile schema (self-sovereign, owner-updated)
+
+So far every node is *scraped* — its authority is OSM/Google, and the publisher is
+you. A **claimed business** wants to own its record: correct the hours, write the
+real blurb, list today's specials — and have *that* outrank the scraped fields. The
+clean way to model this is a **separate `BusinessProfile` datasource owned by the
+business's own wallet**, fused onto the scraped `Business` by the shared Google
+Place ID.
+
+Register the profile schema with an `identity` that **shares the `gplace:`
+namespace** — that namespace is the join contract, so the View's union-find collapses
+the profile onto the same entity as the scraped `Business` (which already carries
+`gplace:placeId`):
+
+```ts
+// the CLAIMED BUSINESS runs this from THEIR wallet (a distinct owner ⇒ distinct
+// resourceId). The schema can be registered once and reused by every business.
+await fangorn.schema.register({
+  name: "fangorn.places.businessProfile.v1",
+  definition: {
+    placeId:      { "@type": "string" },   // the Google Place ID they are claiming
+    officialName: { "@type": "string" },
+    hours:        { "@type": "string" },
+    description:  { "@type": "string" },
+    menuUrl:      { "@type": "string" },
+    updatedAt:    { "@type": "string" },
+  },
+  // promote the OWN id to @id; expose the SAME gplace namespace the scraped
+  // Business uses, so identity fusion merges the two nodes.
+  identity: { "@id": "placeId", aliases: { gplace: "placeId" } },
+});
+
+// publish ONE profile node — the business owns this datasource and re-publishes it
+// whenever they edit (an E1-style single-source incremental update).
+await fangorn.publisher.publishBundle({
+  bundleName: "fangorn.places.businessProfile.v1",
+  datasetName: "shotskis",                       // stable ⇒ edits are new versions
+  nodes: [{
+    id: "ChIJ....shotskis",                       // == placeId; becomes their Entity URI
+    type: "BusinessProfile",
+    fields: {
+      placeId:      "ChIJ....shotskis",
+      officialName: "Shotskis Bar & Grill",
+      hours:        "Mon–Sun 11:00–02:00",
+      description:  "Lakeside supper club & bar — live music Fridays.",
+      menuUrl:      "https://shotskis.example/menu",
+      updatedAt:    "2026-06-30",
+    },
+  }],
+});
+```
+
+Add the profile datasource to the View's `sources` and rebuild. Because the profile
+is published by the **business's** wallet, it is a foreign source to you — pass its
+`resourceId` to `publish_view.ts` with `--source-resource`. A view's source set is
+fixed at registration, so widening it means a **new view version** (`…localview.v2`):
+
+```bash
+cd ~/fangorn/fangorn
+pnpm dotenvx run -f .env -- tsx src/test/publish_view.ts \
+  --name fangorn.places.localview.v2 \
+  --source-bundle fangorn.places.osm.placecore.v1 \
+  --source-bundle fangorn.places.evt.eventcore.v1 \
+  --source-resource 0x<profileResourceId>          # the claimed business's datasource
+# → 0x<viewIdV2>
+```
+
+The View now fuses **three** members onto Shotskis' entity — the scraped OSM
+`Business`, its `Event`s, and the owner's `BusinessProfile` — and the projected node
+carries the union of their fields.
+
+```bash
+quickbeam build --view fangorn.places.localview.v2=0x<viewIdV2> \
+  --root-profile business --root-profile localevent --reset
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+```
+
+**No Google Place ID to anchor on?** If a business has no scraped counterpart to
+share a `gplace:` alias with (e.g. a brand-new venue OSM/Google hasn't indexed),
+assert the equivalence explicitly with a **`sameAs` linkset** instead — a signed
+`{ from: <profile Entity URI>, rel: "sameAs", to: <business Entity URI> }` edge feeds
+the *same* union-find. See `checkpoint_guide_1.md` §3 and
+`docs/CROSS_PUBLISHER_LINKING_PLAN.md` (fangorn) §5.
+
+> **Whose field wins?** Today the View takes the union of members' fields; when a
+> scraped field and a claimed field collide, prefer the claimed owner's value in your
+> root profile's verbalizer (it is a distinct `owner`, so it is trivially
+> identifiable). The principled version is the View's **`trust`** policy
+> (`view.trust`, e.g. weight a verified-owner datasource above scraped ones), which
+> the linking plan's trust phase formalizes — until then, owner-precedence in the
+> profile is the pragmatic answer.
 
 ---
 

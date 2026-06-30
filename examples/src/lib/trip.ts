@@ -24,6 +24,10 @@ export interface TripItem {
 }
 
 const STORAGE_KEY = 'sond3r.trip.v1';
+// Dislikes — the negative half of the like/dislike signal that drives the session
+// kernel (see sessionKernel.ts). Kept beside the trip ("liked") list but in its own
+// key, and never shared (a share link is the things you liked, not the ones you didn't).
+const DISLIKE_KEY = 'sond3r.dislikes.v1';
 export const SHARE_HASH_KEY = 'trip'; // location.hash → `#trip=<payload>`
 
 // ---- share encoding (base64url over a compact tuple form) ----
@@ -73,9 +77,9 @@ export function tripItemFromSummary(e: EntitySummary): TripItem {
 }
 
 // ---- storage ----
-function readStored(): TripItem[] {
+function readStored(key: string): TripItem[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     if (!raw) return [];
     const arr = JSON.parse(raw);
     return Array.isArray(arr) ? (arr as TripItem[]).filter((t) => t && typeof t.id === 'string') : [];
@@ -95,12 +99,17 @@ interface TripCtx {
   clear: () => void;
   /** Build an on-thesis share URL (payload in the unsent hash fragment). */
   shareUrl: () => string;
+  // ---- dislikes (the negative session signal) ----
+  dislikes: TripItem[];
+  isDisliked: (id: string) => boolean;
+  toggleDislike: (item: TripItem) => void;
 }
 
 const Ctx = createContext<TripCtx | null>(null);
 
 export function TripProvider({ children }: { children: ReactNode }) {
-  const [items, setItems] = useState<TripItem[]>(readStored);
+  const [items, setItems] = useState<TripItem[]>(() => readStored(STORAGE_KEY));
+  const [dislikes, setDislikes] = useState<TripItem[]>(() => readStored(DISLIKE_KEY));
 
   // Persist on every change.
   useEffect(() => {
@@ -110,10 +119,19 @@ export function TripProvider({ children }: { children: ReactNode }) {
       /* storage full / blocked — trip just won't persist this session */
     }
   }, [items]);
+  useEffect(() => {
+    try {
+      localStorage.setItem(DISLIKE_KEY, JSON.stringify(dislikes));
+    } catch {
+      /* storage full / blocked */
+    }
+  }, [dislikes]);
 
   const has = useCallback((id: string) => items.some((it) => it.id === id), [items]);
 
   const add = useCallback((item: TripItem) => {
+    // Liking clears any prior dislike — the two signals are mutually exclusive.
+    setDislikes((prev) => prev.filter((it) => it.id !== item.id));
     setItems((prev) => (prev.some((it) => it.id === item.id) ? prev : [...prev, item]));
   }, []);
 
@@ -122,11 +140,21 @@ export function TripProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const toggle = useCallback((item: TripItem) => {
-    setItems((prev) =>
-      prev.some((it) => it.id === item.id)
-        ? prev.filter((it) => it.id !== item.id)
-        : [...prev, item],
-    );
+    setItems((prev) => {
+      if (prev.some((it) => it.id === item.id)) return prev.filter((it) => it.id !== item.id);
+      setDislikes((dl) => dl.filter((it) => it.id !== item.id)); // liking clears a dislike
+      return [...prev, item];
+    });
+  }, []);
+
+  const isDisliked = useCallback((id: string) => dislikes.some((it) => it.id === id), [dislikes]);
+
+  const toggleDislike = useCallback((item: TripItem) => {
+    setDislikes((prev) => {
+      if (prev.some((it) => it.id === item.id)) return prev.filter((it) => it.id !== item.id);
+      setItems((it) => it.filter((x) => x.id !== item.id)); // disliking clears a like
+      return [...prev, item];
+    });
   }, []);
 
   const move = useCallback((id: string, dir: -1 | 1) => {
@@ -147,7 +175,10 @@ export function TripProvider({ children }: { children: ReactNode }) {
     return `${origin}/trip#${SHARE_HASH_KEY}=${encodeTrip(items)}`;
   }, [items]);
 
-  const value: TripCtx = { items, has, add, remove, toggle, move, clear, shareUrl };
+  const value: TripCtx = {
+    items, has, add, remove, toggle, move, clear, shareUrl,
+    dislikes, isDisliked, toggleDislike,
+  };
   return createElement(Ctx.Provider, { value }, children);
 }
 

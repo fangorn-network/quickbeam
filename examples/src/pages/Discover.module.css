@@ -1,0 +1,227 @@
+/* Discover — the unified discovery shell. Shared search + type + lens switch +
+   vibe filters live here; each lens renders its own body below. Visual language
+   matches Results/Map/Ask so the merge feels native, not bolted on. */
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.hero {
+  padding: var(--space-6) 0 var(--space-5);
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--brand-forest);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  margin-bottom: var(--space-4);
+}
+.searchForm {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2xl);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-6);
+  box-shadow: var(--shadow-tile);
+  transition: border-color var(--duration-std) var(--ease-out), box-shadow var(--duration-std) var(--ease-out);
+}
+.searchForm:focus-within {
+  border-color: var(--brand-forest);
+  box-shadow: var(--shadow-tile-hover);
+}
+.searchIcon {
+  flex: none;
+  color: var(--text-muted);
+}
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--text-lg);
+  padding: var(--space-2) 0;
+}
+.searchInput::placeholder {
+  color: var(--text-muted);
+}
+.clearInput {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+.searchGo {
+  flex: none;
+  border: none;
+  background: var(--brand-forest);
+  color: #fffdf8;
+  font-weight: 600;
+  font-size: var(--text-base);
+  padding: var(--space-3) var(--space-6);
+  border-radius: var(--radius-xl);
+  transition: background var(--duration-std) var(--ease-out);
+  cursor: pointer;
+}
+.searchGo:hover {
+  background: var(--brand-forest-deep);
+}
+.segment {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: var(--space-4);
+  padding: 4px;
+  background: var(--bg-base);
+  border-radius: 999px;
+}
+.seg {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 7px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.segActive {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-tile);
+}
+
+/* "Understood" chips — what query-understanding lifted into structured filters. */
+.understood {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0 var(--space-4);
+}
+.understoodLead {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.understoodChip {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  color: var(--brand-forest);
+  background: color-mix(in srgb, var(--brand-forest) 12%, var(--bg-surface));
+  border: 1px solid color-mix(in srgb, var(--brand-forest) 35%, transparent);
+}
+
+/* Lens switch + vibe filter row. */
+.controlBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-5);
+}
+.lensTabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-base);
+  border-radius: 999px;
+}
+.lensTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.lensTabActive {
+  background: var(--brand-forest);
+  color: #fffdf8;
+  box-shadow: var(--shadow-tile);
+}
+.vibeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.vibe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  padding: 6px 12px 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.vibeOn {
+  background: var(--brand-forest);
+  border-color: var(--brand-forest);
+  color: #fffdf8;
+}
+
+/* Lens body. Flex column so the Map lens's split can fill the available height. */
+.content {
+  display: flex;
+  flex-direction: column;
+  min-height: 60vh;
+}
+.resultsHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
+}
+.headline {
+  font-family: var(--font-display);
+  font-size: var(--text-2xl);
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  margin: 0;
+}
+.count {
+  flex: none;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 700px) {
+  .controlBar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

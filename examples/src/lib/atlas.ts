@@ -39,6 +39,15 @@ export interface AtlasQueryResult {
   marker: { x: number; y: number };
 }
 
+// A corpus point with its raw vector — the substrate the session kernel ranks over.
+export interface AtlasVectorPoint {
+  id: string;
+  type: string;
+  title: string;
+  vector: number[];
+  fields: Record<string, unknown>;
+}
+
 export interface AtlasModel {
   points: AtlasPoint[];
   projection: 'umap' | 'pca';
@@ -46,6 +55,12 @@ export interface AtlasModel {
   query(q: string, k?: number): Promise<AtlasQueryResult>;
   // Map a point id to its 2-D position (for highlighting / fly-to).
   position(id: string): { x: number; y: number } | undefined;
+  // Resolve a point's raw vector + fields (for the session kernel's like/dislike set).
+  vectorPoint(id: string): AtlasVectorPoint | undefined;
+  // Rank the whole corpus by cosine to an arbitrary vector (the session query). Returns
+  // the top `pool` as candidates (with their base cosine) the kernel reweights;
+  // `exclude` drops already-rated ids.
+  rankByVector(qv: number[], pool: number, exclude?: Set<string>): Array<AtlasVectorPoint & { baseScore: number }>;
 }
 
 // ---- raw access (per data source) ----
@@ -206,10 +221,36 @@ export async function loadAtlasModel(): Promise<AtlasModel> {
       return Math.sqrt(s) || 1;
     });
 
+    const idxById = new Map<string, number>();
+    raw.forEach((r, i) => idxById.set(r.id, i));
+    const toVectorPoint = (r: AtlasRaw): AtlasVectorPoint => ({
+      id: r.id,
+      type: r.type,
+      title: r.title,
+      vector: r.vector,
+      fields: r.fields,
+    });
+
     return {
       points,
       projection: mode,
       position: (id) => posById.get(id),
+      vectorPoint(id) {
+        const i = idxById.get(id);
+        return i === undefined ? undefined : toVectorPoint(raw[i]);
+      },
+      rankByVector(qv, pool, exclude) {
+        let qn = 0;
+        for (const v of qv) qn += v * v;
+        qn = Math.sqrt(qn) || 1;
+        const scored: Array<AtlasVectorPoint & { baseScore: number }> = [];
+        for (let i = 0; i < raw.length; i++) {
+          if (exclude?.has(raw[i].id)) continue;
+          scored.push({ ...toVectorPoint(raw[i]), baseScore: cosine(raw[i].vector, norms[i], qv, qn) });
+        }
+        scored.sort((a, b) => b.baseScore - a.baseScore);
+        return scored.slice(0, pool);
+      },
       async query(q, k = 12) {
         const qv = await embed(q);
         let qn = 0;

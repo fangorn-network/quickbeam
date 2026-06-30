@@ -55,7 +55,99 @@ def _load_role_map(path: str) -> dict:
     return DEFAULT_ROLE_MAP
 
 
-def _compose_text(fields: dict, role_map: dict) -> str:
+# ---------------------------------------------------------------------------
+# DOCUMENT ENRICHMENT
+#
+# Raw shaper text is too thin for good semantic ranking: a real lakeside
+# restaurant reads "Joe's — Restaurant in Vilas County" (no spatial or dining
+# words), while Airbnb-style *lodging* listings literally carry "Lakefront",
+# "Waterfront", "on Found Lake" in their titles. So "lakeside dining" embeds
+# closer to cabins than to restaurants. We fix this at the document side — far
+# more robust than a brittle query-side classifier — by appending:
+#   1. category synonyms that DISAMBIGUATE dining vs. lodging, and
+#   2. a "lakefront / near the lake" tag computed from each place's distance to
+#      the nearest Lake node, so actual waterfront restaurants can compete on the
+#      "lakeside" axis the lodging titles currently monopolize.
+# ---------------------------------------------------------------------------
+# Substrings tested against a Business's lowercased primaryType.
+_DINING_HINTS = ("restaurant", "bar", "pub", "cafe", "coffee", "fast food",
+                 "supper club", "grill", "barbecue", "bbq", "diner", "bistro",
+                 "brewery", "winery", "ice cream", "bakery", "food", "tavern",
+                 "steak", "pizza", "deli", "eatery")
+_LODGING_HINTS = ("lodging", "hotel", "motel", "resort", "inn", "camp", "cabin",
+                  "guest house", "hostel", "chalet", "apartment", "cottage",
+                  "vacation", "travel agency", "real estate")
+_DINING_SYN = ("Dining, restaurant, food, dinner, lunch, where to eat out, "
+               "grab a meal or drinks.")
+_LODGING_SYN = ("Lodging, a place to stay, vacation rental, cabin, overnight "
+                "accommodation.")
+# Distance bands (metres) from the nearest lake → spatial phrasing.
+_LAKE_ON_M = 200
+_LAKE_NEAR_M = 800
+
+
+def _parse_latlon(v) -> tuple[float, float] | None:
+    if not isinstance(v, str) or "," not in v:
+        return None
+    try:
+        a, b = v.split(",")
+        return float(a), float(b)
+    except ValueError:
+        return None
+
+
+def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    import math
+    r = 6_371_000
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dp, dl = math.radians(b[0] - a[0]), math.radians(b[1] - a[1])
+    h = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(h))
+
+
+def _load_lake_coords(input_dir: str) -> list[tuple[float, float]]:
+    """Every Lake node's coordinates across all volumes — the anchors for the
+    lakefront-proximity tag. Source-agnostic (scans by entityType, not filename)."""
+    coords: list[tuple[float, float]] = []
+    for path in sorted(glob.glob(os.path.join(input_dir, "volume_*_*.json"))):
+        if path.endswith("_edges.json"):
+            continue
+        try:
+            recs = json.load(open(path, encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        for rec in recs:
+            f = rec.get("fields", {}) or {}
+            if f.get("entityType") == "Lake":
+                c = _parse_latlon(f.get("coordinates"))
+                if c:
+                    coords.append(c)
+    return coords
+
+
+def _enrich_text(fields: dict, entity_type: str, lakes: list[tuple[float, float]]) -> str:
+    """Extra description folded into the embedding document (not shown to users)."""
+    extra: list[str] = []
+    # Category synonyms (Business only — keyed on its primaryType).
+    if entity_type == "Business":
+        pt = str(fields.get("primaryType") or "").lower()
+        if any(h in pt for h in _DINING_HINTS):
+            extra.append(_DINING_SYN)
+        elif any(h in pt for h in _LODGING_HINTS):
+            extra.append(_LODGING_SYN)
+    # Lakefront proximity (any located thing except a Lake itself).
+    if entity_type != "Lake" and lakes:
+        c = _parse_latlon(fields.get("coordinates"))
+        if c:
+            d = min(_haversine_m(c, L) for L in lakes)
+            if d <= _LAKE_ON_M:
+                extra.append("On the lakefront, right on the water, lakeside with lake views.")
+            elif d <= _LAKE_NEAR_M:
+                extra.append("Near the lake, close to the water.")
+    return " ".join(extra)
+
+
+def _compose_text(fields: dict, role_map: dict, extra: str = "") -> str:
     """Reproduce embeddings._embed_and_upload's document composition."""
     tags = " ".join(
         fields.get(t, "") if isinstance(fields.get(t), str) else
@@ -78,6 +170,8 @@ def _compose_text(fields: dict, role_map: dict) -> str:
         s += f". {text_terms}"
     if rels:
         s += f". {rels}"
+    if extra:
+        s += f". {extra}"
     return f"search_document: {s[:1000]}"
 
 
@@ -190,7 +284,15 @@ def run():
     ensure_indexes(qdrant, args.collection)
     engine = _init_embed_engine(args)
 
-    texts = [_compose_text(r["fields"], role_map) for r in records]
+    # Lake anchors for the lakefront-proximity tag (loaded once across volumes).
+    lakes = _load_lake_coords(args.input_dir)
+    if lakes:
+        print(f"🌊 lakefront tagging against {len(lakes):,} lake anchors")
+    texts = [
+        _compose_text(r["fields"], role_map,
+                      _enrich_text(r["fields"], r["entity_type"], lakes))
+        for r in records
+    ]
     print("🧮 Embedding...")
     vectors = [matryoshka(v, dim) for v in engine.embed(texts, batch_size=args.embed_batch)]
 

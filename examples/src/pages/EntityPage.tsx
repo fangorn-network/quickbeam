@@ -13,7 +13,7 @@ import { useDomain } from '../lib/domainContext';
 import type { EntitySummary, PageRef } from '../lib/types';
 import { humanise, parseJsonArray, parseHours, isOpenNow } from '../lib/labels';
 import { COPY } from '../lib/copy';
-import { entityHref, entityPageRef, searchHref, searchPageRef, browseHref, nearHref, nearPageRef } from '../lib/nav';
+import { entityHref, entityPageRef, searchHref, searchPageRef, browseHref, nearHref, nearPageRef, mapFocusHref, directionsHref } from '../lib/nav';
 import { useTrip, tripItemFromSummary } from '../lib/trip';
 import { copyText } from '../lib/clipboard';
 import ProfileOwnership from '../components/ProfileOwnership';
@@ -244,6 +244,11 @@ export default function EntityPage({ pointId, onVisit }: Props) {
     navigate(nearHref(coordinates));
   }
 
+  function openOnMap() {
+    if (!coordinates) return;
+    navigate(mapFocusHref(pointId));
+  }
+
   return (
     <div className={styles.page}>
       <Breadcrumb crumbs={crumbs} />
@@ -253,6 +258,11 @@ export default function EntityPage({ pointId, onVisit }: Props) {
         className={styles.header}
         style={{ '--accent': meta.accent } as React.CSSProperties}
       >
+        {typeof f.imageUrl === 'string' && f.imageUrl && (
+          <div className={styles.hero}>
+            <img className={styles.heroImg} src={f.imageUrl} alt="" loading="lazy" />
+          </div>
+        )}
         <div className={styles.headerTop}>
           <EntityBadge type={entityType} size="lg" />
           <div className={styles.headerActions}>
@@ -260,9 +270,17 @@ export default function EntityPage({ pointId, onVisit }: Props) {
               type="button"
               className={`${styles.actionBtn} ${trip.has(summary.pointId) ? styles.actionBtnActive : ''}`}
               onClick={() => trip.toggle(tripItemFromSummary(summary))}
-              title={trip.has(summary.pointId) ? 'Remove from your trip' : 'Add to your trip'}
+              title={trip.has(summary.pointId) ? 'Liked — remove' : 'Like (adds to your trip & tunes recommendations)'}
             >
-              {trip.has(summary.pointId) ? '✓ In trip' : '＋ Add to trip'}
+              {trip.has(summary.pointId) ? '♥ Liked' : '♡ Like'}
+            </button>
+            <button
+              type="button"
+              className={`${styles.actionBtn} ${trip.isDisliked(summary.pointId) ? styles.actionBtnActive : ''}`}
+              onClick={() => trip.toggleDislike(tripItemFromSummary(summary))}
+              title={trip.isDisliked(summary.pointId) ? 'Undo — not for me' : 'Not for me (steers recommendations away)'}
+            >
+              {trip.isDisliked(summary.pointId) ? '✕ Not for me' : '✕ Not for me'}
             </button>
             <CopyLinkButton />
             {external && (
@@ -352,6 +370,27 @@ export default function EntityPage({ pointId, onVisit }: Props) {
               <button
                 type="button"
                 className={styles.contactLink}
+                onClick={openOnMap}
+                title={`Show ${title} on the map`}
+              >
+                ⊙ View on map
+              </button>
+            )}
+            {coordinates && (
+              <a
+                href={directionsHref(coordinates)}
+                target="_blank"
+                rel="noreferrer"
+                className={styles.contactLink}
+                title={`Directions to ${title} in Google Maps`}
+              >
+                ➤ Directions
+              </a>
+            )}
+            {coordinates && (
+              <button
+                type="button"
+                className={styles.contactLink}
                 onClick={openNearby}
                 title={COPY.event.findNear(coordinates)}
               >
@@ -407,11 +446,8 @@ export default function EntityPage({ pointId, onVisit }: Props) {
         />
       </section>
 
-      {/* Connections (list fields + edge vocabulary) */}
-      <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>{COPY.connections.heading}</h2>
-        <ConnectionsBlock fields={f} entityType={entityType} onSearch={onSoftLink} />
-      </section>
+      {/* Related places/events — hidden entirely when there's nothing to show. */}
+      <ConnectionsBlock fields={f} onSearch={onSoftLink} />
 
       {/* Semantic neighbors */}
       <SemanticNeighborGrid
@@ -530,11 +566,9 @@ function EventRow({
 // Renders list-field "Connections" + an honest note about edge vocabulary.
 function ConnectionsBlock({
   fields,
-  entityType,
   onSearch,
 }: {
   fields: Record<string, unknown>;
-  entityType: string;
   onSearch: (value: string, field: string) => void;
 }) {
   const domain = useDomain();
@@ -559,44 +593,20 @@ function ConnectionsBlock({
     return out;
   }, [fields, domain]);
 
-  const relVocab = domain.relVocabForType(entityType);
-
-  if (listSections.length === 0) {
-    return (
-      <div>
-        <div className={styles.empty}>{COPY.connections.emptyForEntry}</div>
-        {relVocab.length > 0 && (
-          <div className={styles.vocab}>
-            <span className={styles.vocabLabel}>
-              This {domain.typeMeta(entityType).singular} can participate in:
-            </span>{' '}
-            {relVocab.map((r) => humanise(r)).join(' · ')}
-            <div className={styles.vocabNote}>
-              No direct edges are stored in the payload — following a name runs a search.
-            </div>
-          </div>
-        )}
-      </div>
-    );
-  }
+  // Nothing to relate → show nothing at all (no graph jargon for a low-tech crowd).
+  if (listSections.length === 0) return null;
 
   return (
-    <div>
+    <section className={styles.section}>
+      <h2 className={styles.sectionTitle}>{COPY.connections.heading}</h2>
       {listSections.map((sec) => (
         <RelatedRail
           key={sec.field}
           heading={humanise(sec.field)}
-          mechanism={`via ${sec.field}[] · list field`}
           items={sec.items}
           onItemClick={(e) => onSearch(e.title, sec.field)}
         />
       ))}
-      {relVocab.length > 0 && (
-        <div className={styles.vocabNote}>
-          Relationship vocabulary for this type: {relVocab.map((r) => humanise(r)).join(' · ')}.
-          Following an item runs a name search (no hard edges stored).
-        </div>
-      )}
-    </div>
+    </section>
   );
 }

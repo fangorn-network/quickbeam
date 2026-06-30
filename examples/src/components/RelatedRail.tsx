@@ -6,7 +6,7 @@ import styles from './RelatedRail.module.css';
 
 interface Props {
   heading: string;
-  mechanism: string; // small muted label, e.g. "via byArtist"
+  mechanism?: string; // optional small muted label, e.g. "via byArtist"
   items: EntitySummary[];
   loading?: boolean;
   totalCount?: number;
@@ -29,7 +29,7 @@ export default function RelatedRail({
     <section className={styles.section}>
       <div className={styles.head}>
         <span className={styles.heading}>{heading}</span>
-        <span className={styles.mechanism}>{mechanism}</span>
+        {mechanism && <span className={styles.mechanism}>{mechanism}</span>}
       </div>
       {loading ? (
         <div className={styles.loading}>
@@ -37,7 +37,7 @@ export default function RelatedRail({
           <SkeletonBlock height="1.4rem" />
         </div>
       ) : shown.length === 0 ? (
-        <div className={styles.empty}>No connections recorded for this entry.</div>
+        <div className={styles.empty}>Nothing related yet.</div>
       ) : (
         <ul className={styles.list}>
           {shown.map((e) => (
