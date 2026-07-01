@@ -1,188 +1,38 @@
-// In-browser GENERATIVE model for the /ask concierge. This is distinct from
-// lib/embed.ts: that loads an *embedding* model (turns a query into a vector for
-// semantic search); this loads a small *instruction-tuned* LLM that (1) turns a
-// casual request into an explainable search plan and (2) writes a grounded,
-// one-sentence "why this fits" for a result — using only the facts we hand it.
-//
-// Runs entirely client-side via transformers.js. WebGPU when available (f16,
-// fast), else CPU/WASM (q4, slower but works everywhere). The model (~330MB) is
-// downloaded once and cached by the browser; warmLLM() lets the UI prefetch it.
+// Concierge logic for the discovery surface: (1) turn a casual request into
+// structured filters, (2) re-rank semantic candidates by true fit, and (3) write a
+// grounded "why it fits" line. The generative model (~330MB Qwen2.5-0.5B) and the
+// transformers.js runtime now live in a dedicated Web Worker (lib/ml.worker.ts) so
+// token decoding never blocks the UI thread — see lib/mlWorker.ts for the bridge.
+// This module keeps only the MAIN-THREAD concerns: the capability gate (navigator /
+// matchMedia, which workers can't see), prompt construction, and output parsing.
 import type { EntitySummary } from './types';
 import { intentFromLlmJson, LLM_AMENITY_TOKENS, type LlmIntent } from './queryParse';
+import { workerGenerate, workerWarm, getLlmStatus, onLlmStatus, type LlmStatus } from './mlWorker';
 
-// Qwen2.5-0.5B-Instruct: small enough for a first-visit web download (incl. phones),
-// stable, and capable enough to follow the JSON / single-sentence instructions below.
-// A larger model (e.g. 1.5B) can be opted into with VITE_CONCIERGE_MODEL.
-const CPU_MODEL = 'onnx-community/Qwen2.5-0.5B-Instruct';
+// The download/status API is served by the worker bridge; re-export so existing
+// importers (progress bar) keep their import path.
+export type { LlmStatus };
+export { getLlmStatus, onLlmStatus };
 
-// Optional escape hatches for local testing without editing code.
 const llmEnv = ((import.meta as { env?: Record<string, string | undefined> }).env) ?? {};
-const MODEL_OVERRIDE = llmEnv.VITE_CONCIERGE_MODEL;
-const DTYPE_OVERRIDE = llmEnv.VITE_CONCIERGE_DTYPE;
 
-// A candidate load: which model, on which backend, at which quantization. We try
-// these in order and keep the first that constructs a session — so a machine that
-// can't fit 1.5B self-downgrades to 0.5B instead of hard-failing with std::bad_alloc.
-interface LoadConfig {
-  model: string;
-  device: 'webgpu' | 'wasm';
-  dtype: string;
-}
-
-function loadChain(webgpu: boolean): LoadConfig[] {
-  if (MODEL_OVERRIDE) {
-    const device = webgpu ? 'webgpu' : 'wasm';
-    return [{ model: MODEL_OVERRIDE, device, dtype: DTYPE_OVERRIDE ?? (webgpu ? 'q4f16' : 'q4') }];
-  }
-  // Default to the 0.5B everywhere: it's the proven-stable model, small enough to
-  // load on phones, and produces coherent output. The 1.5B is bigger and was
-  // unstable (fp16 garbage on GPU, OOM on mobile), so it's opt-in only via
-  // VITE_CONCIERGE_MODEL=onnx-community/Qwen2.5-1.5B-Instruct.
-  if (webgpu) {
-    return [
-      { model: CPU_MODEL, device: 'webgpu', dtype: DTYPE_OVERRIDE ?? 'q4f16' },
-      { model: CPU_MODEL, device: 'wasm', dtype: 'q4' },
-    ];
-  }
-  return [{ model: CPU_MODEL, device: 'wasm', dtype: DTYPE_OVERRIDE ?? 'q4' }];
-}
-
-// WebGPU presence isn't enough: `navigator.gpu` can exist while no usable adapter
-// does. Probe for a real adapter so we don't route a heavy model onto WASM.
-async function detectWebGPU(): Promise<boolean> {
-  try {
-    const gpu = (navigator as unknown as { gpu?: { requestAdapter(): Promise<unknown> } }).gpu;
-    if (!gpu) return false;
-    return !!(await gpu.requestAdapter());
-  } catch {
-    return false;
-  }
-}
-
-// ---- load status (the Ask page subscribes to show a download progress bar) ----
-export interface LlmStatus {
-  stage: 'idle' | 'loading' | 'ready' | 'error';
-  progress: number; // 0..1 across the model's files while loading
-  message: string;
-}
-let status: LlmStatus = { stage: 'idle', progress: 0, message: 'Concierge asleep' };
-const listeners = new Set<(s: LlmStatus) => void>();
-function setStatus(next: Partial<LlmStatus>) {
-  status = { ...status, ...next };
-  for (const fn of listeners) fn(status);
-}
-export function getLlmStatus(): LlmStatus {
-  return status;
-}
-export function onLlmStatus(fn: (s: LlmStatus) => void): () => void {
-  listeners.add(fn);
-  fn(status);
-  return () => listeners.delete(fn);
-}
-
-// Aggregate per-file download progress into a single 0..1 fraction so the UI can
-// show one bar instead of a flurry of file events.
-const fileProgress = new Map<string, number>();
-function trackProgress(e: { status?: string; file?: string; progress?: number }) {
-  if (e.status === 'progress' && e.file && typeof e.progress === 'number') {
-    fileProgress.set(e.file, e.progress / 100);
-  } else if (e.status === 'done' && e.file) {
-    fileProgress.set(e.file, 1);
-  }
-  if (fileProgress.size) {
-    let sum = 0;
-    for (const v of fileProgress.values()) sum += v;
-    setStatus({ progress: sum / fileProgress.size, message: 'Downloading the concierge…' });
-  }
-}
-
-// transformers.js text-generation pipeline. Loosely typed: the library's chat
-// surface (messages in, messages out) isn't precisely captured by its d.ts here.
-type Generator = (
-  input: unknown,
-  opts: Record<string, unknown>,
-) => Promise<Array<{ generated_text: Array<{ role: string; content: string }> }>>;
-
-let _gen: Promise<Generator> | null = null;
-function generator(): Promise<Generator> {
-  return (_gen ??= (async () => {
-    setStatus({ stage: 'loading', progress: 0, message: 'Waking the concierge…' });
-    const { pipeline } = await import('@huggingface/transformers');
-    const webgpu = await detectWebGPU();
-    const chain = loadChain(webgpu);
-    let lastErr: unknown;
-    for (const cfg of chain) {
-      // Reset the download bar between attempts so a failed candidate's progress
-      // doesn't bleed into the next one's percentage.
-      fileProgress.clear();
-      setStatus({ progress: 0, message: 'Waking the concierge…' });
-      try {
-        const gen = (await pipeline('text-generation', cfg.model, {
-          device: cfg.device,
-          dtype: cfg.dtype as 'q4',
-          progress_callback: trackProgress,
-        })) as unknown as Generator;
-        const lite = cfg.model === CPU_MODEL;
-        setStatus({ stage: 'ready', progress: 1, message: lite ? 'Concierge ready (lite mode)' : 'Concierge ready' });
-        return gen;
-      } catch (e) {
-        lastErr = e;
-        console.error(`[concierge] load failed (${cfg.model} on ${cfg.device}/${cfg.dtype}):`, e);
-      }
-    }
-    setStatus({ stage: 'error', message: lastErr instanceof Error ? lastErr.message : 'Concierge failed to load' });
-    throw lastErr;
-  })());
-}
-
-// Lets the Ask page kick off the (large) download the moment the user arrives.
+// Lets the UI kick off the (large) model download the moment it's wanted.
 export function warmLLM(): void {
-  void generator();
+  workerWarm('llm');
 }
 
-// Run the chat model to completion and return the assistant's text. `onToken`
-// streams partial text for a typewriter reveal.
+// Run the chat model to completion and return the assistant's text. Generation
+// happens in the worker (off the UI thread). `onToken` is kept for API compat with
+// the retired Ask page's typewriter reveal; since we no longer stream token-by-token
+// it fires once with the final text.
 async function chat(
   system: string,
   user: string,
   maxTokens: number,
   onToken?: (full: string) => void,
 ): Promise<string> {
-  const gen = await generator();
-  const opts: Record<string, unknown> = {
-    max_new_tokens: maxTokens,
-    // Greedy keeps the output grounded, but a 0.5B model decodes into loops
-    // ("tacos tacos tacos…") without help. repetition_penalty discourages reusing
-    // any prior token; no_repeat_ngram_size HARD-bans repeating any 3-gram, which
-    // is what actually breaks the runaway phrase loops.
-    do_sample: false,
-    repetition_penalty: 1.3,
-    no_repeat_ngram_size: 3,
-    return_full_text: false,
-  };
-  if (onToken) {
-    const { TextStreamer } = await import('@huggingface/transformers');
-    let acc = '';
-    // @ts-expect-error — TextStreamer's tokenizer/options typing is loose here.
-    opts.streamer = new TextStreamer(gen.tokenizer, {
-      skip_prompt: true,
-      skip_special_tokens: true,
-      callback_function: (t: string) => {
-        acc += t;
-        onToken(acc.trim());
-      },
-    });
-  }
-  const messages = [
-    { role: 'system', content: system },
-    { role: 'user', content: user },
-  ];
-  const out = await gen(messages, opts);
-  const msgs = out[0]?.generated_text;
-  const last = Array.isArray(msgs) ? msgs[msgs.length - 1] : null;
-  const text = (last?.content ?? '').trim();
-  // TEMP DEBUG — paste this whole line to diagnose the garbage output.
-  console.debug('[concierge] raw output:', JSON.stringify(text), '| full:', out);
+  const text = await workerGenerate(system, user, maxTokens);
+  if (onToken) onToken(text);
   return text;
 }
 
@@ -232,10 +82,10 @@ export async function planQuery(request: string): Promise<QueryPlan> {
 }
 
 // ---- intent: refine a query into structured filters (augments queryParse) ----
-// This is the tiny model used where it's actually strong: not writing prose, but
-// making a fast, BOUNDED classification. It picks from a closed menu of the same
-// constraints the regexes know, so a wrong guess is cheap (semantic search still
-// runs) and the output is always something the filter pipeline already enforces.
+// The tiny model used where it's actually strong: not writing prose, but making a
+// fast, BOUNDED classification. It picks from a closed menu of the same constraints
+// the regexes know, so a wrong guess is cheap (semantic search still runs) and the
+// output is always something the filter pipeline already enforces.
 const INTERPRET_SYSTEM =
   'You convert a local-discovery search query into structured filters. ' +
   'Respond with ONLY a JSON object, no prose. Include a field ONLY when the query ' +

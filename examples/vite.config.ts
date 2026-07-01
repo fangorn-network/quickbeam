@@ -22,6 +22,9 @@ const proxy = {
 
 export default defineConfig({
   plugins: [react()],
+  // The ML worker (src/lib/ml.worker.ts) dynamically imports transformers.js, so
+  // its bundle must be ES (the default 'iife' can't code-split).
+  worker: { format: 'es' },
   server: { allowedHosts: ALLOWED_HOSTS, proxy },
   preview: { allowedHosts: ALLOWED_HOSTS, proxy },
 });

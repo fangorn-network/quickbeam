@@ -160,6 +160,15 @@
   transform: translateY(-1px);
 }
 
+/* Desktop: bound the map+list split height. MapLens is now embedded in Discover,
+   whose container has no height cap (the old standalone /map page provided one via
+   `.page { height: calc(100vh - 64px) }`). Without this the list grows to all ~300
+   cards and grid-stretch blows the map cell up to match. Bounding `.split` gives
+   the map a sane height and lets the list scroll within the same box. */
+@media (min-width: 901px) {
+  .split { height: clamp(400px, 72vh, 760px); }
+}
+
 @media (max-width: 900px) {
   .page { height: auto; }
   .split { grid-template-columns: 1fr; }
