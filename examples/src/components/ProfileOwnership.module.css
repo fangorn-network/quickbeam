@@ -67,3 +67,7 @@
   color: var(--text-muted);
   line-height: 1.6;
 }
+
+.lead {
+  margin: 0 0 var(--space-3);
+}

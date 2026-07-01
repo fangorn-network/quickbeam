@@ -97,6 +97,42 @@ reviews) **and** OSM's. Unmatched businesses from either source stand alone.
 
 ---
 
+## Variant: a typed edge instead of a merge (`hostedAt`, `worksAt`, …)
+
+Sometimes two records aren't the *same* thing — they're *related*. A tribe **Event**
+happens **at** a Google **Business**; you want the event and the business to stay two
+entities but be **linked**. That's the same linkset machinery with a different `rel`:
+anything other than `sameAs` becomes a **graph edge** (the View never merges them).
+
+When one source already stores the other's id (a **foreign key** — e.g. an event's
+`hostBusinessId` literally holds the host's Google `placeId`), there's nothing to
+match. `quickbeam data keylink` reads that field and emits one edge per node:
+
+```bash
+cd ~/fangorn/embeddings
+quickbeam data keylink \
+  --nodes stage_volumes/volume_4_events.json \
+  --fk-field hostBusinessId --to-namespace gplace \
+  --rel hostedAt --out host_links.json
+# → tribe:10020845  --hostedAt-->  gplace:ChIJY_QSTgI2VE0RjKCR4NfgWJI   (×156)
+```
+
+- `from` is each node's own local id (events already carry a namespaced one,
+  `tribe:10020845`) — the View resolves it as an endpoint automatically. (Override with
+  `--from-namespace`/`--from-field` if your node's local id isn't namespaced.)
+- `to` is `<to-namespace>:<fk value>` — the alias the target node already carries.
+
+Publish and attach it exactly like the `sameAs` linkset (steps 2–3 above) — one View
+can carry both: a `sameAs` linkset *and* a `hostedAt` linkset.
+
+> **Why not just keep the id on the event?** A foreign-key id stored as an *identity
+> alias* makes the View's union-find **merge** the event into the business (the
+> over-merge bug — children vanish into parents). Identity is for "same thing"; a
+> relation is an **edge**. `keylink` keeps them separate: the event stays its own
+> entity, joined to the business by a `hostedAt` edge you can project.
+
+---
+
 ## How it works (one paragraph)
 
 The View loads every source's nodes into one graph and runs a **union-find**: records
@@ -112,9 +148,14 @@ same links; regenerate and re-publish whenever either source changes.
 
 | Step | Command | Publishes? |
 |------|---------|-----------|
-| Match two sources → links file | `quickbeam data linkgen …` | no |
+| Match two sources → `sameAs` links | `quickbeam data linkgen …` | no |
+| Foreign-key field → typed-edge links | `quickbeam data keylink …` | no |
 | Publish the linkset | `tsx src/test/publish_linkset.ts --name … --links …` | yes |
 | Attach to a View + rebuild | `tsx src/test/publish_view.ts … --linkset-name …` then `quickbeam build --view …` | yes |
+
+**Two generators, one format, one View:** `linkgen` (fuzzy `sameAs` merge) and
+`keylink` (exact foreign-key edge) both emit the same `{from, rel, to}` list that
+`publish_linkset.ts` ships — only the `rel` differs (`sameAs` fuses, anything else links).
 
 The three publish scripts are siblings: **`publish_bundle.ts`** (a source's data),
 **`publish_linkset.ts`** (joins between sources), **`publish_view.ts`** (which sources

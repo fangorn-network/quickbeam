@@ -37,7 +37,9 @@ from quickbeam.embeddings import (
     _save_checkpoint,
     _save_role_map,
     _init_embed_engine,
+    _load_profiles,
     build_bundle_joined_data,
+    build_view_joined_data,
     _embed_and_upload,
     ensure_indexes,
     matryoshka,
@@ -58,11 +60,26 @@ def parse_args():
         epilog=__doc__,
     )
 
-    # ── Watch-specific ────────────────────────────────────────────────────────
-    p.add_argument("--bundle", required=True,
-                   help="Bundle schema as name=schemaId (required).")
+    # ── What to watch ─────────────────────────────────────────────────────────
+    # Exactly one of --bundle / --view. A bundle is one publisher's graph (edge-walk
+    # join). A view fuses several sources + linksets into one graph (union-find on
+    # global identity) — the only path that honors linksets. See embeddings.py.
+    p.add_argument("--bundle", default=None,
+                   help="Bundle schema as name=schemaId (single publisher's graph).")
+    p.add_argument("--view", default=None,
+                   help="View schema as name=schemaId (fuses sources + linksets).")
+
+    # Projection profiles — how graph roots become documents. Mirrors `build`.
     p.add_argument("--root-type", default="Track",
-                   help="Bundle root node type (default: Track).")
+                   help="Root node type when no --root-profile is given (default: Track).")
+    p.add_argument("--root-profile", action="append", default=[],
+                   help="Named projection(s) to emit, repeatable. Falls back to a single "
+                        "--root-type projection when omitted.")
+    p.add_argument("--profiles-file", default=None,
+                   help="Optional JSON file of custom/override root profiles.")
+    p.add_argument("--max-depth", type=int, default=2, help="Graph-walk depth per profile.")
+    p.add_argument("--label-cap", type=int, default=50, help="Max folded labels per group.")
+    p.add_argument("--node-cap", type=int, default=2000, help="Max nodes visited per root.")
 
     # Filter hierarchy
     g = p.add_argument_group("filter hierarchy (all optional, combinable)")
@@ -76,6 +93,18 @@ def parse_args():
 
     p.add_argument("--poll-interval", type=int, default=60,
                    help="Seconds between subgraph polls (default: 60).")
+
+    # ── Live CDN delivery ─────────────────────────────────────────────────────
+    # When set, after any cycle that embeds new records the watcher writes them as a
+    # delta shard into the baked CDN domain (see cdn.append_domain). This closes the
+    # loop: on-chain publish → embed → deliver, shipping only the delta (no re-bake).
+    g2 = p.add_argument_group("live CDN delivery (optional)")
+    g2.add_argument("--cdn-dir", default=None,
+                    help="Baked CDN directory. Enables live delta delivery when set.")
+    g2.add_argument("--cdn-domain", default=None,
+                    help="Domain to append new records to (must already be baked).")
+    g2.add_argument("--cdn-config", default="domains.json",
+                    help="Domain config used to resolve the append scan filter.")
 
     # ── Shared with build ─────────────────────────────────────────────────────
     p.add_argument("--subgraph-url",
@@ -103,7 +132,7 @@ def parse_args():
 # ---------------------------------------------------------------------------
 # SINGLE POLL CYCLE
 # ---------------------------------------------------------------------------
-async def _poll_once(args, qdrant, embed_engine, role_map_ref,
+async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
                      dim, truncate, owner_filter, name_filter):
     """
     Run one poll cycle. Returns (new_count, last_block_seen).
@@ -118,17 +147,27 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref,
     # next query so we only fetch truly new events.
     last_block = checkpoint.get("last_block", 0)
 
-    b_name, b_id = args.bundle.split("=", 1)
+    _, schema_id = (args.view or args.bundle).split("=", 1)
     new_count   = 0
     max_block   = last_block
 
-    async for mcid, records in build_bundle_joined_data(
-        args, b_id.strip(), args.root_type,
-        completed_manifest_cids=completed_manifest_cids,
-        owner_filter=owner_filter,
-        name_filter=name_filter,
-        block_gt=last_block if last_block > 0 else None,
-    ):
+    # View mode fuses sources + linksets, keyed on the view manifest CID; it does not
+    # take per-event owner/name/block filters (fusion is inherently cross-source).
+    if args.view:
+        data_gen = build_view_joined_data(
+            args, schema_id.strip(), profiles,
+            completed_manifest_cids=completed_manifest_cids,
+        )
+    else:
+        data_gen = build_bundle_joined_data(
+            args, schema_id.strip(), profiles,
+            completed_manifest_cids=completed_manifest_cids,
+            owner_filter=owner_filter,
+            name_filter=name_filter,
+            block_gt=last_block if last_block > 0 else None,
+        )
+
+    async for mcid, records in data_gen:
         new_records = [r for r in records if r["track_id"] not in processed_track_ids]
 
         if not new_records:
@@ -179,8 +218,16 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref,
 async def main():
     args = parse_args()
 
-    b_name, b_id = args.bundle.split("=", 1)
+    if bool(args.bundle) == bool(args.view):
+        sys.exit("[Watcher] pass exactly one of --bundle or --view.")
+
+    b_name, _ = (args.view or args.bundle).split("=", 1)
     b_name = b_name.strip()
+    mode = "view" if args.view else "bundle"
+
+    # Resolve projection profiles once (same as `build`). These drive how graph roots
+    # become documents; required by both the bundle and view join paths.
+    profiles = _load_profiles(args)
 
     owner_filter = {o.lower() for o in args.owners}  if args.owners  else None
     name_filter  = {d.lower() for d in args.datasets} if args.datasets else None
@@ -189,9 +236,12 @@ async def main():
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
 
-    print(f"[Watcher] Starting — bundle={b_name!r}")
-    print(f"[Watcher] owners  : {', '.join(args.owners)  or 'any'}")
-    print(f"[Watcher] datasets: {', '.join(args.datasets) or 'any'}")
+    prof_desc = ", ".join("{}->{}".format(p["name"], p["root_type"]) for p in profiles)
+    print(f"[Watcher] Starting — {mode}={b_name!r}")
+    print(f"[Watcher] profiles: {prof_desc}")
+    if args.bundle:
+        print(f"[Watcher] owners  : {', '.join(args.owners)  or 'any'}")
+        print(f"[Watcher] datasets: {', '.join(args.datasets) or 'any'}")
     print(f"[Watcher] poll interval: {args.poll_interval}s")
 
     qdrant = QdrantClient(
@@ -222,11 +272,22 @@ async def main():
         print(f"\n[Watcher] ── cycle {cycle} ──────────────────────────────")
         try:
             new_count, last_block = await _poll_once(
-                args, qdrant, embed_engine, role_map_ref,
+                args, qdrant, embed_engine, role_map_ref, profiles,
                 dim, truncate, owner_filter, name_filter
             )
             status = f"{new_count} new records embedded" if new_count else "no new records"
             print(f"[Watcher] Cycle {cycle} complete — {status} (last block {last_block})")
+
+            # Live CDN delivery: ship the just-embedded points as a delta shard so
+            # clients pull only the delta (no full re-bake). Runs off the same Qdrant
+            # client; a failure here never kills the watch loop.
+            if new_count and args.cdn_dir and args.cdn_domain:
+                try:
+                    from quickbeam.cdn import append_domain
+                    append_domain(qdrant, args.collection, args.cdn_dir,
+                                  args.cdn_domain, config_path=args.cdn_config)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[Watcher] CDN append error: {e}", file=sys.stderr)
         except Exception as e:
             print(f"[Watcher] Cycle {cycle} error: {e}", file=sys.stderr)
 

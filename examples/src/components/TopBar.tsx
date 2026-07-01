@@ -14,6 +14,7 @@ interface Props {
   onHome?: () => void;
   onDiscover?: () => void;
   onExplore?: () => void;
+  onPublish?: () => void;
   tripCount?: number;
   onTrip?: () => void;
 }
@@ -28,6 +29,7 @@ export default function TopBar({
   onHome,
   onDiscover,
   onExplore,
+  onPublish,
   tripCount = 0,
   onTrip,
 }: Props) {
@@ -103,6 +105,17 @@ export default function TopBar({
           >
             ✦ Explore
           </button>
+          {onPublish && (
+            <button
+              type="button"
+              className={styles.trip}
+              onClick={onPublish}
+              aria-label="Publish"
+              title="Publish — claim a business or publish a record on-chain"
+            >
+              ✎ Publish
+            </button>
+          )}
           <button
             type="button"
             className={styles.trip}

@@ -18,3 +18,8 @@ export const CDN_DOMAIN = env.VITE_DOMAIN ?? '';
 // Privy (Phase 3). Login is OPTIONAL — it gates actions (claim/tip), never
 // discovery. Override the app id with VITE_PRIVY_APP_ID.
 export const PRIVY_APP_ID = env.VITE_PRIVY_APP_ID ?? 'cmqad9j9b00i10cl7apzw6rq8';
+
+// Claim/ownership UI (the ProfileOwnership strip: "claim this profile" CTA + the
+// inline publish form). On by default; set VITE_CLAIMS=off to hide it entirely, e.g.
+// for deployments where on-chain publishing isn't wired yet.
+export const CLAIMS_ENABLED = (env.VITE_CLAIMS ?? 'on') !== 'off';

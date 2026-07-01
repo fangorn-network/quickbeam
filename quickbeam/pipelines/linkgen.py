@@ -142,5 +142,82 @@ def run():
         print("[linkgen] no matches — widen --radius-m or lower --min-name-sim.")
 
 
+def run_keylink():
+    """keylink — emit a typed-edge linkset straight from a FOREIGN-KEY field.
+
+    The fuzzy matcher above (`run`) joins two sources that share no id. This is the
+    opposite, exact case: source A already stores the id of a node in source B in one
+    of its fields (e.g. a tribe Event's `hostBusinessId` literally holds a Google
+    `placeId`). No matching needed — for every node we read that field and emit one
+    `{from, rel, to}` edge. `rel` is anything but `sameAs` (e.g. `hostedAt`): the View
+    turns it into a graph EDGE between the two entities, never a fusion. This is the
+    general primitive — any FK on any source becomes a typed cross-source relation.
+
+      from = the node's own local id (already `<ns>:<value>`, e.g. `tribe:10020845`),
+             which the View indexes as an addressable endpoint; override with
+             --from-namespace + --from-field to build `<ns>:<field>` instead.
+      to   = `<to-namespace>:<value of --fk-field>`.
+
+    Example — link tribe events to their Google host business:
+
+        quickbeam data keylink \
+          --nodes stage_volumes/volume_4_events.json \
+          --fk-field hostBusinessId --to-namespace gplace \
+          --rel hostedAt --out host_links.json
+    """
+    p = argparse.ArgumentParser(
+        description="Emit a typed-edge linkset from a foreign-key field (exact join, no matching).",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--nodes", required=True, help="Node file holding the foreign key (e.g. volume_4_events.json)")
+    p.add_argument("--fk-field", required=True, help="Field whose value is the TARGET node's id (e.g. hostBusinessId)")
+    p.add_argument("--to-namespace", required=True, help="Namespace of the target endpoint (e.g. gplace)")
+    p.add_argument("--rel", required=True, help="Relation to emit (anything but sameAs → a graph edge, e.g. hostedAt)")
+    p.add_argument("--from-field", default=None,
+                   help="Build the source endpoint as <from-namespace>:<this field> instead of using the node's "
+                        "(already-namespaced) local id")
+    p.add_argument("--from-namespace", default=None, help="Namespace for --from-field (required with it)")
+    p.add_argument("--out", required=True, help="Output linkset JSON path")
+    args = p.parse_args()
+
+    if args.rel == "sameAs":
+        raise SystemExit("keylink emits typed EDGES; use `linkgen` for sameAs fusion.")
+    if bool(args.from_field) != bool(args.from_namespace):
+        raise SystemExit("--from-field and --from-namespace must be given together.")
+
+    with open(args.nodes) as f:
+        nodes = json.load(f)
+
+    links, skipped = [], 0
+    for n in nodes:
+        fields = n.get("fields", {})
+        fk = fields.get(args.fk_field)
+        if not fk:
+            continue  # node has no foreign key → nothing to link
+        if args.from_field:
+            src = fields.get(args.from_field)
+            if not src:
+                skipped += 1
+                continue
+            frm = f"{args.from_namespace}:{src}"
+        else:
+            frm = n.get("name") or n.get("id")  # already-namespaced local id
+            if not frm:
+                skipped += 1
+                continue
+        links.append({"from": frm, "rel": args.rel, "to": f"{args.to_namespace}:{fk}"})
+
+    with open(args.out, "w") as f:
+        json.dump(links, f, indent=2)
+    print(f"[keylink] wrote {len(links)} {args.rel!r} edge(s) from {args.fk_field!r} → {args.out}"
+          + (f" (skipped {skipped} with no source id)" if skipped else ""))
+    for lk in links[:10]:
+        print(f"   {lk['from']}  --{lk['rel']}-->  {lk['to']}")
+    if len(links) > 10:
+        print(f"   … +{len(links) - 10} more")
+    if not links:
+        print(f"[keylink] no nodes carried {args.fk_field!r} — nothing to link.")
+
+
 if __name__ == "__main__":
     run()

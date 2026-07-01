@@ -1,7 +1,7 @@
 {
   "name": "places",
   "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
-  "count": 836,
+  "count": 917,
   "dim": 256,
   "model": "nomic-ai/nomic-embed-text-v1.5",
   "distance": "Cosine",
@@ -14,7 +14,7 @@
       "Landmark"
     ]
   },
-  "created_at": 1782859149,
+  "created_at": 1782882652,
   "role_map": {
     "identity": "placeId",
     "title": "title",
@@ -40,7 +40,7 @@
       "temporal": "End Date",
       "spatial": "Coordinate",
       "media": "Source",
-      "tags": "Reviews, Reviewers, Categories, Organizers, Localities",
+      "tags": "Reviews, Reviewers, Businesses, Events, Organizers, Localities",
       "measures": "Gem Score, Rating",
       "text": "Hours, Summary, Text"
     },
@@ -48,15 +48,15 @@
       "address",
       "amenities",
       "businessStatus",
+      "businesses",
       "categories",
       "coordinates",
-      "cuisine",
       "dateLabel",
-      "distance",
       "editorialSummary",
       "endDate",
       "entityType",
       "eventId",
+      "events",
       "gemScore",
       "googleMapsUri",
       "hostBusinessId",
@@ -66,14 +66,10 @@
       "isAnchor",
       "isFree",
       "isPast",
-      "landmarkType",
       "localities",
       "locality",
-      "network",
-      "openingHours",
       "organizerName",
       "organizers",
-      "osmId",
       "phone",
       "placeId",
       "priceLevel",
@@ -82,7 +78,6 @@
       "ratingTier",
       "reviewers",
       "reviews",
-      "routeType",
       "schemaVersion",
       "shortAddress",
       "source",
@@ -96,38 +91,25 @@
       "title",
       "userRatingCount",
       "venueName",
-      "waterType",
       "website"
     ]
   },
   "entity_types": [
     {
       "type": "Event",
-      "count": 500
+      "count": 654
     },
     {
       "type": "Business",
-      "count": 314
-    },
-    {
-      "type": "Landmark",
-      "count": 10
-    },
-    {
-      "type": "Lake",
-      "count": 9
-    },
-    {
-      "type": "Trail",
-      "count": 3
+      "count": 263
     }
   ],
   "shards": [
     {
-      "file": "shard-0000-8bed85d1b53c.ndjson.gz",
-      "count": 836,
-      "bytes": 3819435,
-      "sha256": "8bed85d1b53cb49188f6186c0773e1c74a1a0b8c48e4752f0ce36dbff9a10667"
+      "file": "shard-0000-ff60bbfbe81c.ndjson.gz",
+      "count": 917,
+      "bytes": 5796376,
+      "sha256": "ff60bbfbe81c104aaea57d3d5c7bee4ee15c356283cc4e25ccd3d65d1354cd88"
     }
   ],
   "presentation": {

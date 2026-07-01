@@ -406,6 +406,7 @@ export default function EntityPage({ pointId, onVisit }: Props) {
         <ProfileOwnership
           placeId={typeof f.placeId === 'string' ? f.placeId : null}
           owner={typeof point.data.payload?.owner === 'string' ? point.data.payload.owner : null}
+          fields={f}
         />
       )}
 

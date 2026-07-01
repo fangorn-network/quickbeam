@@ -19,6 +19,7 @@ import EntityPage from './pages/EntityPage';
 import Discover from './pages/Discover';
 import Trip from './pages/Trip';
 import Atlas from './pages/Atlas';
+import Create from './pages/Create';
 import styles from './App.module.css';
 
 // The raw type token from the path/query, if any (validated against the domain below).
@@ -105,6 +106,7 @@ export default function App() {
         onHome={() => navigate('/')}
         onDiscover={() => navigate('/discover')}
         onExplore={() => navigate('/atlas')}
+        onPublish={() => navigate('/create')}
         tripCount={tripItems.length}
         onTrip={() => navigate('/trip')}
       />
@@ -127,6 +129,8 @@ export default function App() {
                 <Route path="/discover" element={<Discover onVisit={onVisit} />} />
                 <Route path="/atlas" element={<Atlas />} />
                 <Route path="/trip" element={<Trip />} />
+                <Route path="/create" element={<Create />} />
+                <Route path="/create/:schemaId" element={<Create />} />
                 <Route path="/entity/:pointId" element={<EntityRoute onVisit={onVisit} />} />
                 {/* Back-compat: the old separate surfaces are now lenses on /discover. */}
                 <Route path="/search" element={<RedirectToDiscover />} />

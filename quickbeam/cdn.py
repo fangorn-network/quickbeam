@@ -399,6 +399,217 @@ def bake_main():
 
 
 # ---------------------------------------------------------------------------
+# APPEND — deliver newly-embedded points as a delta shard (no full re-bake)
+# ---------------------------------------------------------------------------
+# `cdn bake` re-scrolls the WHOLE collection and rewrites the domain's shard, so a
+# single new record mints a fresh content-hash shard containing everything — the
+# client re-downloads the whole snapshot. `cdn append` instead writes ONLY the
+# points not already in a shard as one additional content-addressed shard and
+# appends it to the (mutable, no-cache) manifest. Existing shards are immutable and
+# untouched, so a returning client pulls only the delta (every old shard is a hard
+# HTTP cache hit). This is the incremental-delivery path the live pipeline uses.
+def _append_args():
+    p = argparse.ArgumentParser(
+        prog="quickbeam cdn append",
+        description="Append newly-embedded points to an already-baked domain as a "
+                    "delta shard, without rewriting existing shards.")
+    p.add_argument("--config", default="domains.json",
+                   help="Domain config — the domain's `filter` selects which points "
+                        "to consider (same population `cdn bake` used).")
+    p.add_argument("--cdn-dir", default="./cdn", help="Baked CDN directory.")
+    p.add_argument("--collection", default="fangorn", help="Source Qdrant collection.")
+    p.add_argument("--domain", required=True,
+                   help="Domain to append to (must already be baked).")
+    p.add_argument("--entity-type", action="append", default=[], dest="entity_types",
+                   metavar="TYPE",
+                   help="Narrow the scan to these entityTypes (repeatable). "
+                        "Default: the domain's configured filter.")
+    p.add_argument("--owner", action="append", default=[], dest="owners",
+                   metavar="ADDRESS",
+                   help="Narrow the scan to these owners (repeatable).")
+    p.add_argument("--scroll-batch", type=int, default=2000,
+                   help="Qdrant scroll page size.")
+    _add_qdrant_args(p)
+    return p.parse_args()
+
+
+def _sha256_path(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _existing_baked_ids(domain_dir: str, manifest: dict) -> set:
+    """Read every existing shard once to collect the track_ids already delivered.
+    Append is idempotent: a point already in a shard is never re-emitted, so
+    re-running append (after a partial run, or after re-embedding) is safe."""
+    ids: set = set()
+    for s in manifest.get("shards", []):
+        path = os.path.join(domain_dir, s["file"])
+        if not os.path.exists(path):
+            continue
+        with gzip.open(path, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ids.add(json.loads(line)["track_id"])
+                except Exception:  # noqa: BLE001 - skip a corrupt line, keep going
+                    pass
+    return ids
+
+
+def _sync_catalog(cdn_dir: str, domain: str, manifest: dict) -> None:
+    """Keep catalog.json's domain entry in sync after an append (count / bytes /
+    shard_count / entity_types). Bytes is re-summed from the manifest's shards."""
+    catalog_path = os.path.join(cdn_dir, "catalog.json")
+    if not os.path.exists(catalog_path):
+        return
+    with open(catalog_path) as f:
+        cat = json.load(f)
+    total_bytes = sum(s.get("bytes", 0) for s in manifest.get("shards", []))
+    for e in cat.get("domains", []):
+        if e.get("name") == domain:
+            e["count"] = manifest.get("count", e.get("count"))
+            e["bytes"] = total_bytes
+            e["shard_count"] = len(manifest.get("shards", []))
+            e["entity_types"] = [t["type"] for t in manifest.get("entity_types", [])]
+    cat["generated_at"] = int(time.time())
+    with open(catalog_path, "w") as f:
+        json.dump(cat, f, indent=2)
+
+
+def append_domain(qdrant, collection: str, cdn_dir: str, domain: str,
+                  config_path: str | None = None,
+                  entity_types: list | None = None, owners: list | None = None,
+                  scroll_batch: int = 2000) -> dict | None:
+    """Scroll `collection` for points not already in `domain`'s shards and, if any,
+    write them as a delta shard. Returns the new shard entry (or None if nothing new
+    / the domain isn't baked). Reusable by the CLI and the live watcher — the watcher
+    passes its already-open Qdrant client so a delta ships right after each embed
+    cycle, closing the on-chain → embed → deliver loop with no full re-bake."""
+    domain_dir = os.path.join(cdn_dir, domain)
+    manifest_path = os.path.join(domain_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        print(f"[append] domain {domain!r} not baked yet (no {manifest_path}) "
+              f"— run `cdn bake` first; skipping")
+        return None
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+
+    # Resolve the scan filter: explicit entity_types/owners override; otherwise reuse
+    # the domain's configured filter so the append selects the same population as bake.
+    spec_filter: dict = {}
+    if config_path and os.path.exists(config_path):
+        with open(config_path) as f:
+            cfg = json.load(f).get("domains", {})
+        spec_filter = (cfg.get(domain) or {}).get("filter", {}) or {}
+    scan = dict(spec_filter)
+    if entity_types:
+        scan["entityType"] = entity_types
+    if owners:
+        scan["owner"] = owners
+    q_filter = _build_filter(scan)
+
+    baked = _existing_baked_ids(domain_dir, manifest)
+    print(f"[append] domain {domain!r}: {len(baked)} points already delivered")
+
+    # Scroll the filtered collection; keep only points not already in a shard.
+    new_rows: list[dict] = []
+    type_counts: dict[str, int] = {}
+    offset = None
+    while True:
+        points, offset = qdrant.scroll(
+            collection_name=collection, scroll_filter=q_filter,
+            limit=scroll_batch, offset=offset,
+            with_payload=True, with_vectors=True,
+        )
+        for pt in points:
+            row = _shard_row(pt)
+            if row["embedding"] is None or row["track_id"] in baked:
+                continue
+            new_rows.append(row)
+            et = (pt.payload or {}).get("entityType")
+            if et:
+                type_counts[et] = type_counts.get(et, 0) + 1
+        if offset is None:
+            break
+
+    if not new_rows:
+        print("[append] no new points — manifest unchanged")
+        return None
+
+    entry = write_delta_shard(cdn_dir, domain, new_rows, type_counts,
+                              manifest=manifest, manifest_path=manifest_path)
+    print(f"[append] domain {domain!r}: +{len(new_rows)} points in {entry['file']} "
+          f"({entry['bytes'] / 1e3:.1f} KB); types={dict(type_counts)}; "
+          f"total now {manifest['count']}")
+    return entry
+
+
+def append_main():
+    args = _append_args()
+    qdrant = make_qdrant(args)
+    if not qdrant.collection_exists(args.collection):
+        sys.exit(f"[append] source collection {args.collection!r} does not exist")
+    append_domain(qdrant, args.collection, args.cdn_dir, args.domain,
+                  config_path=args.config, entity_types=args.entity_types,
+                  owners=args.owners, scroll_batch=args.scroll_batch)
+
+
+def write_delta_shard(cdn_dir: str, domain: str, new_rows: list, type_counts: dict,
+                      manifest: dict | None = None,
+                      manifest_path: str | None = None) -> dict:
+    """Write `new_rows` as ONE new content-addressed delta shard and fold it into the
+    domain's mutable manifest + catalog. Existing shards are never touched, so a
+    client pulls only this file. Returns the shard entry. Reusable by both `cdn
+    append` (which scrolls Qdrant) and the watcher (which already holds the rows).
+
+    `manifest`/`manifest_path` are loaded from disk when not supplied. `manifest` is
+    mutated in place so a caller that passed one sees the bumped counts."""
+    domain_dir = os.path.join(cdn_dir, domain)
+    if manifest_path is None:
+        manifest_path = os.path.join(domain_dir, "manifest.json")
+    if manifest is None:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+
+    # The shard index continues the existing sequence; the digest is folded into the
+    # filename so the URL is immutable (a re-bake/append mints a fresh URL, never
+    # serving stale bytes from a year-long cache).
+    shard_idx = len(manifest.get("shards", []))
+    tmp_path = os.path.join(domain_dir, f"shard-{shard_idx:04d}.ndjson.gz")
+    with gzip.GzipFile(tmp_path, mode="wb", mtime=0) as fh:  # mtime=0 → stable header
+        for row in new_rows:
+            fh.write((json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8"))
+    size = os.path.getsize(tmp_path)
+    digest = _sha256_path(tmp_path)
+    hashed_name = f"shard-{shard_idx:04d}-{digest[:12]}.ndjson.gz"
+    os.replace(tmp_path, os.path.join(domain_dir, hashed_name))
+    entry = {"file": hashed_name, "count": len(new_rows), "bytes": size, "sha256": digest}
+
+    # Update the mutable, no-cache manifest: append the shard, bump the count, merge
+    # the entityType vocabulary. role_map is deliberately left stable across appends
+    # (re-inferring per delta would let the client's field mapping drift).
+    manifest.setdefault("shards", []).append(entry)
+    manifest["count"] = manifest.get("count", 0) + len(new_rows)
+    manifest["created_at"] = int(time.time())
+    et_map = {e["type"]: e["count"] for e in manifest.get("entity_types", [])}
+    for t, c in type_counts.items():
+        et_map[t] = et_map.get(t, 0) + c
+    manifest["entity_types"] = [{"type": t, "count": c}
+                                for t, c in sorted(et_map.items(), key=lambda kv: -kv[1])]
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    _sync_catalog(cdn_dir, domain, manifest)
+    return entry
+
+
+# ---------------------------------------------------------------------------
 # SERVE — static file CDN (FileResponse handles HTTP Range automatically)
 # ---------------------------------------------------------------------------
 def _serve_args():

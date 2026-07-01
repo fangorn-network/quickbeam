@@ -1,0 +1,121 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.compact {
+  gap: var(--space-3);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.label {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.req {
+  color: var(--accent, #c2562b);
+}
+.lock {
+  font-size: var(--text-xs);
+}
+
+.input {
+  font-size: var(--text-sm);
+  font-family: inherit;
+  color: var(--text-primary);
+  background: var(--bg-base, var(--bg-surface));
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+  width: 100%;
+  box-sizing: border-box;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--accent, var(--text-primary));
+}
+.textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.invalid {
+  border-color: color-mix(in srgb, var(--accent, #c2562b) 60%, transparent);
+}
+
+.help {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.primary {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: #fff;
+  background: var(--accent, #1f6f4f);
+  border: none;
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-4);
+  cursor: pointer;
+  align-self: flex-start;
+}
+.primary:hover {
+  filter: brightness(1.05);
+}
+.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.foot {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.gate {
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.error {
+  font-size: var(--text-sm);
+  color: var(--accent, #c2562b);
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.result p {
+  margin: 0;
+}
+.ok {
+  border-color: color-mix(in srgb, var(--ok, #2e7d32) 40%, transparent);
+}
+.draft {
+  border-color: color-mix(in srgb, var(--accent, #c2562b) 30%, transparent);
+}
+
+.uri {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  word-break: break-all;
+}

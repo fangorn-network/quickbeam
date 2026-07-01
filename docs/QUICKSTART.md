@@ -56,7 +56,7 @@ export EVENTS_PG_DSN=postgresql://places:places@localhost:5432/places_db
 
 ---
 
-## A. One-shot demo — single merged bundle (you own both domains)
+## A. One-shot demo — single merged bundle
 
 ```bash
 # scrape (Stage A) — events are free; Google Places costs money (try --dry-run first)
@@ -77,7 +77,7 @@ cd ~/fangorn/fangorn && pnpm dotenvx run -f .env -- tsx src/test/publish_bundle.
   --input-dir $STAGE --volume 0
 
 # embed + bake (Stage C/D) — it's a bundle, so --bundle
-quickbeam build --bundle "eagleriver.sond3r.com.localcore.v1=0x<bundleId>" $BUILD_AUTH \
+quickbeam build --bundle "eagleriver.sond3r.com.localcore.v2=0x50d7a94abbbe0ece9f16a17daf5b594306a86a6e0ca4194b138cbf33b6a3dc23" $BUILD_AUTH \
   --root-profile business --root-profile review --root-profile localevent --reset
 quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
 quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
@@ -111,7 +111,7 @@ Two operations, kept distinct:
 > Every event source reuses **one** event schema (`…evt`); the sources stay separate as
 > distinct **datasources** via `--dataset`, not as distinct schemas.
 
-### B1. Places (OSM) — one datasource  *(you already did this)*
+### B1. Places (OSM) — one datasource
 
 ```bash
 quickbeam data osm --place wi--eagle-river --volume 3 --output-dir $STAGE

@@ -1,11 +1,16 @@
 import { useState } from 'react';
 import { useAuth } from '../lib/auth';
 import { useClaim, shortAddr } from '../lib/claims';
+import SchemaForm from './SchemaForm';
+import { getSchema } from '../lib/schemas';
+import { CLAIMS_ENABLED } from '../lib/config';
 import styles from './ProfileOwnership.module.css';
 
 interface Props {
   placeId: string | null;
   owner?: string | null;
+  /** The listing's fields, used to pre-fill the claim/profile form. */
+  fields?: Record<string, unknown>;
 }
 
 // The ownership / provenance strip on a Business profile. Two states:
@@ -13,10 +18,22 @@ interface Props {
 //   • unclaimed — provenance ("Listed by …") + a "claim this profile" call-to-action
 // The claim flow itself is Phase 3/4 (login + on-chain registry); for now the CTA
 // opens an honest explainer rather than faking a transaction.
-export default function ProfileOwnership({ placeId, owner }: Props) {
+export default function ProfileOwnership({ placeId, owner, fields }: Props) {
   const claim = useClaim(placeId);
   const { authenticated, login } = useAuth();
-  const [showInfo, setShowInfo] = useState(false);
+  const [claiming, setClaiming] = useState(false);
+
+  // Hard off-switch for the claim/ownership UI (VITE_CLAIMS=off). Placed after the
+  // hooks so their call order stays stable (Rules of Hooks).
+  if (!CLAIMS_ENABLED) return null;
+
+  // The write target for a claim: the BusinessProfile schema, pre-filled from this
+  // listing so the owner edits rather than re-types. Publishing it runs the full
+  // pipeline (on-chain → watcher embeds → CDN delta shard).
+  const profileSchema = getSchema('fangorn.places.businessprofile.v0');
+  const prefill = profileSchema?.prefillFrom
+    ? profileSchema.prefillFrom({ ...(fields ?? {}), placeId: placeId ?? '' })
+    : undefined;
 
   if (claim.claimed) {
     return (
@@ -46,8 +63,8 @@ export default function ProfileOwnership({ placeId, owner }: Props) {
           )}
         </span>
         {authenticated ? (
-          <button type="button" className={styles.claimBtn} onClick={() => setShowInfo((v) => !v)}>
-            Claim this profile
+          <button type="button" className={styles.claimBtn} onClick={() => setClaiming((v) => !v)}>
+            {claiming ? 'Cancel' : 'Claim this profile'}
           </button>
         ) : (
           <button type="button" className={styles.claimBtn} onClick={login}>
@@ -55,12 +72,19 @@ export default function ProfileOwnership({ placeId, owner }: Props) {
           </button>
         )}
       </div>
-      {showInfo && (
+      {claiming && profileSchema && (
         <div className={styles.info}>
-          You're signed in — claiming will verify ownership and record it on Base (a
-          public registry mapping this place to your address), after which you can
-          receive tips. That on-chain step ships next. Nothing you search or browse is
-          ever part of it — only the claim itself is public.
+          <p className={styles.lead}>
+            Publish an owner-authored profile for this place. It’s signed with your
+            wallet and recorded on-chain — only this record is public, never what you
+            search or browse.
+          </p>
+          <SchemaForm
+            schema={profileSchema}
+            prefill={prefill}
+            compact
+            onDone={() => setClaiming(false)}
+          />
         </div>
       )}
     </div>

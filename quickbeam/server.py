@@ -49,6 +49,10 @@ try:
     from quickbeam import x402 as x402mod
 except ImportError:
     import x402 as x402mod
+try:
+    from quickbeam.embeddings import matryoshka
+except ImportError:
+    from embeddings import matryoshka
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -980,13 +984,14 @@ def join_records(entries_by_schema: dict[str, list[dict]], primary: str) -> list
 # ---------------------------------------------------------------------------
 
 def _truncate_normalize(vec: list[float], dim: int) -> list[float]:
-    """Matryoshka truncation. nomic-embed-text-v1.5 is trained so the leading
-    components of its 768-dim output form valid lower-dim embeddings; slice to
-    `dim` and re-normalize so query vectors line up with a snapshot built at `dim`.
+    """Matryoshka truncation, delegating to the SAME transform the builder uses
+    (quickbeam.embeddings.matryoshka): LayerNorm over the full vector, THEN slice
+    to `dim`, THEN L2-normalize. Query and document vectors must go through the
+    identical transform or cosine similarity is corrupted — a plain truncate here
+    (no LayerNorm) leaves queries in a different space than the built snapshot and
+    makes retrieval brittle/near-lexical.
     """
-    v = vec[:dim]
-    norm = math.sqrt(sum(x * x for x in v)) or 1.0
-    return [x / norm for x in v]
+    return matryoshka(vec, dim)
 
 def _embed_texts(texts: list[str], prefix: str = "search_document") -> list[list[float]]:
     # nomic-embed-text-v1.5 is asymmetric: documents must be prefixed

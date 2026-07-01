@@ -112,6 +112,14 @@ def cdn_bake(ctx: typer.Context):
     bake_main()
 
 
+@cdn_app.command("append", **_PASSTHROUGH)
+def cdn_append(ctx: typer.Context):
+    """Append newly-embedded points to a baked domain as a delta shard (no re-bake)."""
+    _fwd("quickbeam cdn append", ctx.args)
+    from quickbeam.cdn import append_main
+    append_main()
+
+
 @cdn_app.command("serve", **_PASSTHROUGH)
 def cdn_serve(ctx: typer.Context):
     """Serve baked Semantic CDN shards as static, resumable files."""
@@ -221,6 +229,14 @@ def linkgen(ctx: typer.Context):
     _fwd("quickbeam data linkgen", ctx.args)
     from quickbeam.pipelines.linkgen import run
     run()
+
+
+@data_app.command(**_PASSTHROUGH)
+def keylink(ctx: typer.Context):
+    """Emit a typed-edge linkset from a foreign-key field (e.g. event hostedAt business)."""
+    _fwd("quickbeam data keylink", ctx.args)
+    from quickbeam.pipelines.linkgen import run_keylink
+    run_keylink()
 
 
 if __name__ == "__main__":

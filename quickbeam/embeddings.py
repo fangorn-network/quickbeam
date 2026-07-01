@@ -1,6 +1,7 @@
 import certifi
 import os
 import io
+import re
 import sys
 import argparse
 import asyncio
@@ -1269,13 +1270,26 @@ class _DSU:
         self._p[rb] = ra
 
 
+_NS_LOCAL_ID = re.compile(r"^[a-z][a-z0-9]*:.+$")  # `tribe:10020845`, `gplace:ChIJ…`
+
+
 def _alias_index(nodes_by_id):
     """alias string -> a node key that carries it (first wins). Lets a linkset
-    endpoint expressed as an alias (`isrc:…`) resolve to an actual fused node."""
+    endpoint expressed as an alias (`isrc:…`) resolve to an actual fused node.
+
+    A node's own local id is ALSO indexed when it's already namespaced
+    (`<ns>:<value>`, e.g. an event's `tribe:10020845`) — that makes every node
+    addressable as a linkset endpoint without minting an alias on the node itself.
+    Crucially this feeds *endpoint resolution only*, not `_fuse_nodes`' union-find,
+    so a node stays pointable (`hostedAt` edge target/source) without becoming a
+    fusion join key — the distinction that keeps foreign-key edges from over-merging."""
     idx = {}
     for key, node in nodes_by_id.items():
         for al in (node.get("aliases") or []):
             idx.setdefault(al, key)
+        lid = node.get("id")
+        if isinstance(lid, str) and _NS_LOCAL_ID.match(lid):
+            idx.setdefault(lid, key)
     return idx
 
 

@@ -123,3 +123,32 @@ def test_alias_index_first_node_wins():
         "k2": {"aliases": ["isrc:X"], "fields": {}},
     }
     assert _alias_index(nodes)["isrc:X"] in ("k1", "k2")
+
+
+def test_namespaced_local_id_is_addressable_without_being_a_fusion_key():
+    # An alias-less event whose local id is already namespaced (`tribe:10020845`)
+    # must be resolvable as a linkset endpoint (so a `hostedAt` edge can point at it)…
+    nodes = {
+        "fangorn:0xEV/tribe:10020845": {
+            "id": "tribe:10020845", "type": "Event",
+            "entityUri": "fangorn:0xEV/tribe:10020845", "aliases": [], "fields": {},
+        },
+        "fangorn:0xBIZ/g1": {
+            "id": "g1", "type": "Business", "entityUri": "fangorn:0xBIZ/g1",
+            "aliases": ["gplace:ChIJ_host"], "fields": {},
+        },
+    }
+    idx = _alias_index(nodes)
+    assert _resolve_endpoint("tribe:10020845", nodes, idx) == "fangorn:0xEV/tribe:10020845"
+    assert _resolve_endpoint("gplace:ChIJ_host", nodes, idx) == "fangorn:0xBIZ/g1"
+    # …yet the namespaced local id must NOT feed the union-find: the event and the
+    # business it's hostedAt stay TWO entities (a typed edge, not a fusion).
+    _d, merged = _fuse_nodes(nodes)
+    assert len(merged) == 2
+
+
+def test_bare_local_id_is_not_indexed_as_alias():
+    # A non-namespaced local id (`g1`) must not pollute the endpoint index.
+    nodes = {"fangorn:0xBIZ/g1": {"id": "g1", "type": "Business",
+                                  "entityUri": "fangorn:0xBIZ/g1", "aliases": [], "fields": {}}}
+    assert _resolve_endpoint("g1", nodes, _alias_index(nodes)) is None

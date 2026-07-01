@@ -1,5 +1,5 @@
 {
-  "generated_at": 1782859149,
+  "generated_at": 1782882652,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
   "collection": "fangorn",
   "domains": [
@@ -28,16 +28,13 @@
     {
       "name": "places",
       "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
-      "count": 836,
+      "count": 917,
       "dim": 256,
-      "bytes": 3819435,
+      "bytes": 5796376,
       "shard_count": 1,
       "entity_types": [
         "Event",
-        "Business",
-        "Landmark",
-        "Lake",
-        "Trail"
+        "Business"
       ],
       "manifest": "places/manifest.json"
     }

@@ -232,7 +232,7 @@ def eb_discovery(place: str, max_events: int, bbox: str = "") -> list[dict]:
         time.sleep(REQUEST_PAUSE_SEC)
     return rows[:max_events]
 
-
+# purpose built for event brite data
 def eb_expand_past(rows: list[dict], max_events: int) -> list[dict]:
     """For every distinct organizer discovered, pull their past events via the
     show-more endpoint (discovery is upcoming-only). Venues are backfilled from the

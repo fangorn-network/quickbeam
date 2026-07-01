@@ -22,8 +22,8 @@
       "bundle_schema": "stage_volumes/schemas/fangorn.mb.creativecore.v4.json"
     },
     "places": {
-      "description": "Local places, events & the outdoors — Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
-      "filter": { "entityType": ["Business", "Event", "Trail", "Lake", "Landmark"] },
+      "description": "Local places, events & the outdoors — Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks + owner-claimed business profiles",
+      "filter": { "entityType": ["Business", "Event", "Trail", "Lake", "Landmark", "BusinessProfile"] },
       "bundle_schema": "stage_volumes/schemas/fangorn.places.eagleriver-localcore.0.json",
       "role_map": {
         "identity": "placeId",
@@ -40,6 +40,7 @@
       "presentation": {
         "types": {
           "Business": { "icon": "🏪", "accent": "#d98a2b", "singular": "Place", "plural": "Places" },
+          "BusinessProfile": { "icon": "✔️", "accent": "#2b8ca6", "singular": "Claimed Business", "plural": "Claimed Businesses" },
           "Event": { "icon": "🎫", "accent": "#c2562b", "singular": "Event", "plural": "Events" },
           "Organizer": { "icon": "📣", "accent": "#2f7d57", "singular": "Organizer", "plural": "Organizers" },
           "Trail": { "icon": "🥾", "accent": "#6f9e44", "singular": "Trail", "plural": "Trails" },
