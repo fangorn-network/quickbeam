@@ -43,11 +43,14 @@ from quickbeam.embeddings import (
     _embed_and_upload,
     ensure_indexes,
     matryoshka,
+    resolve_tip_commit,
+    tombstone_commit_delta,
     write_umap_coords,
 )
+from quickbeam.objects import resolve_embed
 from qdrant_client import QdrantClient
 from qdrant_client import models
-from quickbeam.roles import infer_roles
+from quickbeam.roles import infer_roles, role_map_applies
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +136,17 @@ def parse_args():
 # SINGLE POLL CYCLE
 # ---------------------------------------------------------------------------
 async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
-                     dim, truncate, owner_filter, name_filter):
+                     dim, truncate, owner_filter, name_filter, edges_sink=None,
+                     tombstones_sink=None):
     """
     Run one poll cycle. Returns (new_count, last_block_seen).
 
     role_map_ref is a one-element list so we can update it in place across
-    cycles without needing a nonlocal or class.
+    cycles without needing a nonlocal or class. edges_sink, when provided, collects
+    the typed edges fetched this cycle so the caller can ship them to the CDN's
+    relational axis (bundle mode only; view mode fuses linksets differently).
+    tombstones_sink collects the track_ids delete-propagation removed this cycle so
+    the caller can mirror the deletes into the delivered CDN domain.
     """
     checkpoint = _load_checkpoint(args.checkpoint_file)
     completed_manifest_cids = set(checkpoint["completed_manifest_cids"])
@@ -148,8 +156,30 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
     last_block = checkpoint.get("last_block", 0)
 
     _, schema_id = (args.view or args.bundle).split("=", 1)
+    schema_id = schema_id.strip()
     new_count   = 0
     max_block   = last_block
+
+    # Delete propagation (slice 2): before building, diff the current tip commit
+    # against the last one we built and tombstone any entities it dropped. Bundle
+    # mode only — view-tip diffing arrives with merge commits (slice 4). Keyed on
+    # schema here (one repo per schema); multi-dataset repos refine this later.
+    if args.bundle:
+        gw_headers = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
+        last_tip = checkpoint.get("last_tip", {}).get(schema_id)
+        try:
+            tip_cid, tip_commit, _ = await resolve_tip_commit(
+                args, schema_id, gw_headers, owner_filter, name_filter)
+            if tip_commit and tip_cid != last_tip:
+                removed = await tombstone_commit_delta(args, qdrant, tip_commit, last_tip, gw_headers)
+                if removed:
+                    print(f"[Watcher] delete-propagation: removed {len(removed)} point(s)")
+                    if tombstones_sink is not None:
+                        tombstones_sink.extend(removed)
+                checkpoint.setdefault("last_tip", {})[schema_id] = tip_cid
+                _save_checkpoint(checkpoint, args.checkpoint_file)
+        except Exception as e:  # noqa: BLE001
+            print(f"[Watcher] tombstone step skipped: {e}", file=sys.stderr)
 
     # View mode fuses sources + linksets, keyed on the view manifest CID; it does not
     # take per-event owner/name/block filters (fusion is inherently cross-source).
@@ -165,6 +195,7 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
             owner_filter=owner_filter,
             name_filter=name_filter,
             block_gt=last_block if last_block > 0 else None,
+            edges_sink=edges_sink,
         )
 
     async for mcid, records in data_gen:
@@ -178,9 +209,16 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
             _save_checkpoint(checkpoint, args.checkpoint_file)
             continue
 
-        # Infer role map from first real batch if none loaded yet.
-        if not role_map_ref[0]:
-            role_map_ref[0] = infer_roles([r["fields"] for r in new_records])
+        # Infer the role map from the first real batch if none is loaded yet, OR if
+        # the loaded map doesn't apply to these records — a stale ./db/role_map.json
+        # from a different corpus would otherwise make every record embed the same
+        # empty "Title: . Tags:" text, collapsing all vectors to one point.
+        rec_fields = [r["fields"] for r in new_records]
+        if not role_map_ref[0] or not role_map_applies(role_map_ref[0], rec_fields):
+            if role_map_ref[0]:
+                print("[Watcher] loaded role map does not match these records "
+                      "(stale/foreign) — re-inferring")
+            role_map_ref[0] = infer_roles(rec_fields)
             _save_role_map(role_map_ref[0], args.role_map_file)
             print(f"[Watcher] Role map inferred and saved to {args.role_map_file}")
 
@@ -232,6 +270,25 @@ async def main():
     owner_filter = {o.lower() for o in args.owners}  if args.owners  else None
     name_filter  = {d.lower() for d in args.datasets} if args.datasets else None
 
+    # Inherit the embedding contract from the tip commit (FRAMEWORK Gap A): the
+    # model / dim / distance the index is sized to come from the *data's* commit,
+    # not a hardcoded CLI default. Falls back to the flags when the tip carries no
+    # embed contract (or is a legacy raw-manifest tip).
+    embed_distance = "Cosine"
+    gw_headers = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
+    _, schema_id0 = (args.view or args.bundle).split("=", 1)
+    try:
+        _, tip_commit0, _ = await resolve_tip_commit(args, schema_id0.strip(), gw_headers)
+        if tip_commit0 and tip_commit0.get("embed"):
+            embed = resolve_embed(tip_commit0, args.embedding_model, args.dim)
+            print(f"[Watcher] inheriting embed contract from tip commit: "
+                  f"model={embed['model']} dim={embed['dim']} distance={embed['distance']}")
+            args.embedding_model = embed["model"]
+            args.dim = embed["dim"]
+            embed_distance = embed["distance"]
+    except Exception as e:  # noqa: BLE001
+        print(f"[Watcher] embed-contract resolve skipped: {e}", file=sys.stderr)
+
     model_dim = MODEL_DIM_MAP.get(args.embedding_model, 768)
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
@@ -250,9 +307,13 @@ async def main():
     )
 
     if not qdrant.collection_exists(args.collection):
+        _d = str(embed_distance).lower()
+        _dist = (models.Distance.DOT if _d.startswith("dot")
+                 else models.Distance.EUCLID if _d.startswith("eucl")
+                 else models.Distance.COSINE)
         qdrant.create_collection(
             args.collection,
-            vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE, on_disk=True)
+            vectors_config=models.VectorParams(size=dim, distance=_dist, on_disk=True)
         )
     ensure_indexes(qdrant, args.collection)
 
@@ -266,14 +327,37 @@ async def main():
         with open(args.role_map_file) as f:
             role_map_ref[0] = json.load(f)
 
+    # Bootstrap live CDN delivery. The per-cycle delta path (append_domain) can only
+    # EXTEND an already-baked domain, so if a delivery target is set but not yet baked,
+    # bake it once now from whatever the collection already holds. This makes `cdn serve`
+    # start immediately (no manual `cdn bake`) and gives append_domain the base manifest
+    # it grows each cycle. Domains need no domains.json entry — a missing spec bakes all.
+    if args.cdn_dir and args.cdn_domain:
+        manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
+        if os.path.exists(manifest_path):
+            print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per cycle")
+        else:
+            print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
+            try:
+                from quickbeam.cdn import bake_domain
+                entry = bake_domain(qdrant, args.collection, args.cdn_dir, args.cdn_domain,
+                                    config_path=args.cdn_config, model=args.embedding_model)
+                print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
+                      f"{args.cdn_dir}/{args.cdn_domain}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+
     cycle = 0
     while True:
         cycle += 1
         print(f"\n[Watcher] ── cycle {cycle} ──────────────────────────────")
         try:
+            cycle_edges: list = []
+            cycle_tombstones: list = []
             new_count, last_block = await _poll_once(
                 args, qdrant, embed_engine, role_map_ref, profiles,
-                dim, truncate, owner_filter, name_filter
+                dim, truncate, owner_filter, name_filter, edges_sink=cycle_edges,
+                tombstones_sink=cycle_tombstones
             )
             status = f"{new_count} new records embedded" if new_count else "no new records"
             print(f"[Watcher] Cycle {cycle} complete — {status} (last block {last_block})")
@@ -288,6 +372,39 @@ async def main():
                                   args.cdn_domain, config_path=args.cdn_config)
                 except Exception as e:  # noqa: BLE001
                     print(f"[Watcher] CDN append error: {e}", file=sys.stderr)
+
+            # Mirror this cycle's delete propagation into the delivered domain:
+            # shards are immutable, so removals ride the manifest's tombstones
+            # list (clients drop those rows at load; dead edges are pruned).
+            # The blob-level diff over-reports: an entity in a *changed* blob is
+            # "removed" then re-embedded the same cycle — so only ids that are
+            # actually absent from the index after the cycle are tombstoned.
+            if cycle_tombstones and args.cdn_dir and args.cdn_domain:
+                try:
+                    from quickbeam.cdn import append_tombstones
+                    from quickbeam.embeddings import _str_to_uuid
+                    by_uuid = {_str_to_uuid(t): t for t in set(cycle_tombstones)}
+                    found = qdrant.retrieve(args.collection, ids=list(by_uuid),
+                                            with_payload=False, with_vectors=False)
+                    alive = {str(pt.id) for pt in found}
+                    dead = [t for u, t in by_uuid.items() if u not in alive]
+                    if dead:
+                        append_tombstones(args.cdn_dir, args.cdn_domain, dead)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[Watcher] CDN tombstone error: {e}", file=sys.stderr)
+
+            # Relational axis: merge this cycle's typed edges into the served
+            # edges.json so `neighbors` grows with the stream (dedup + incremental,
+            # mirroring the shard delta). Isolated so a failure never kills the loop.
+            if cycle_edges and args.cdn_dir and args.cdn_domain:
+                try:
+                    from quickbeam.cdn import append_edges
+                    added = append_edges(args.cdn_dir, args.cdn_domain, cycle_edges)
+                    if added:
+                        print(f"[Watcher] CDN edges: +{added['added']} new "
+                              f"({added['count']} total; relations={added['relations']})")
+                except Exception as e:  # noqa: BLE001
+                    print(f"[Watcher] CDN edges error: {e}", file=sys.stderr)
         except Exception as e:
             print(f"[Watcher] Cycle {cycle} error: {e}", file=sys.stderr)
 

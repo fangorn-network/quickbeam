@@ -1,7 +1,7 @@
 {
-  "generated_at": 1782882652,
+  "generated_at": 1783110052,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
-  "collection": "fangorn",
+  "collection": "robinhood",
   "domains": [
     {
       "name": "music",
@@ -37,6 +37,23 @@
         "Business"
       ],
       "manifest": "places/manifest.json"
+    },
+    {
+      "name": "robinhood",
+      "description": "Robinhood Chain tokenized-stock market \u2014 live asset snapshots + notable on-chain transfer flow",
+      "count": 950,
+      "dim": 256,
+      "bytes": 3109439,
+      "shard_count": 16,
+      "entity_types": [
+        "Transfer",
+        "Asset"
+      ],
+      "manifest": "robinhood/manifest.json",
+      "edge_count": 367,
+      "relations": [
+        "hasTransfer"
+      ]
     }
   ]
 }

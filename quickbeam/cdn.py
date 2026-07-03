@@ -345,6 +345,64 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
     }
 
 
+def _read_catalog(cdn_dir: str) -> tuple[str, dict]:
+    """Return (catalog_path, {name: entry}). Preserves entries for domains not being
+    re-baked this run so a single-domain bake never drops the others."""
+    catalog_path = os.path.join(cdn_dir, "catalog.json")
+    catalog: dict = {}
+    if os.path.exists(catalog_path):
+        try:
+            with open(catalog_path) as f:
+                for e in json.load(f).get("domains", []):
+                    catalog[e["name"]] = e
+        except Exception:
+            pass
+    return catalog_path, catalog
+
+
+def _write_catalog(catalog_path: str, catalog: dict, model: str, collection: str) -> None:
+    with open(catalog_path, "w") as f:
+        json.dump({"generated_at": int(time.time()),
+                   "embedding_model": model,
+                   "collection": collection,
+                   "domains": list(catalog.values())}, f, indent=2)
+
+
+def bake_domain(qdrant, collection: str, cdn_dir: str, domain: str,
+                spec: dict | None = None, config_path: str | None = "domains.json",
+                model: str = "nomic-ai/nomic-embed-text-v1.5",
+                shard_size: int = 50000, scroll_batch: int = 2000,
+                limit: int = 0, project: str = "none") -> dict:
+    """Bake ONE domain from a live Qdrant client (no argv). Reusable by the CLI and
+    the watcher's bootstrap: it resolves dim/distance from the collection, bakes the
+    domain's shards, and folds the result into catalog.json.
+
+    The domain `spec` is resolved from `config_path` when not passed; if the domain
+    isn't configured there, a bake-everything spec (`{}`) is synthesized so a
+    single-publisher watcher target (e.g. `playground`) needs no domains.json entry."""
+    if spec is None:
+        spec = {}
+        if config_path and os.path.exists(config_path):
+            with open(config_path) as f:
+                cfg = json.load(f)
+            spec = (cfg.get("domains", cfg).get(domain) or {})
+    info = qdrant.get_collection(collection)
+    vparams = info.config.params.vectors
+    dim = getattr(vparams, "size", None)
+    distance = str(getattr(vparams, "distance", "Cosine"))
+
+    os.makedirs(cdn_dir, exist_ok=True)
+    entry = _bake_domain(
+        qdrant, collection, domain, spec, os.path.join(cdn_dir, domain),
+        shard_size, scroll_batch, model, dim, distance,
+        limit=limit, project=project,
+    )
+    catalog_path, catalog = _read_catalog(cdn_dir)
+    catalog[domain] = entry
+    _write_catalog(catalog_path, catalog, model, collection)
+    return entry
+
+
 def bake_main():
     args = _bake_args()
     if not os.path.exists(args.config):
@@ -369,16 +427,7 @@ def bake_main():
     distance = str(getattr(vparams, "distance", "Cosine"))
 
     os.makedirs(args.cdn_dir, exist_ok=True)
-    catalog_path = os.path.join(args.cdn_dir, "catalog.json")
-    # Preserve catalog entries for domains we're NOT re-baking this run.
-    catalog = {}
-    if os.path.exists(catalog_path):
-        try:
-            with open(catalog_path) as f:
-                for e in json.load(f).get("domains", []):
-                    catalog[e["name"]] = e
-        except Exception:
-            pass
+    catalog_path, catalog = _read_catalog(args.cdn_dir)
 
     for name, spec in domains.items():
         entry = _bake_domain(
@@ -390,11 +439,7 @@ def bake_main():
         )
         catalog[name] = entry
 
-    with open(catalog_path, "w") as f:
-        json.dump({"generated_at": int(time.time()),
-                   "embedding_model": args.embedding_model,
-                   "collection": args.collection,
-                   "domains": list(catalog.values())}, f, indent=2)
+    _write_catalog(catalog_path, catalog, args.embedding_model, args.collection)
     print(f"[bake] catalog written: {catalog_path} ({len(catalog)} domain(s))")
 
 
@@ -441,11 +486,22 @@ def _sha256_path(path: str) -> str:
     return h.hexdigest()
 
 
-def _existing_baked_ids(domain_dir: str, manifest: dict) -> set:
-    """Read every existing shard once to collect the track_ids already delivered.
-    Append is idempotent: a point already in a shard is never re-emitted, so
-    re-running append (after a partial run, or after re-embedding) is safe."""
-    ids: set = set()
+def _fields_digest(fields: dict) -> str:
+    """Canonical digest of a row's fields — the update detector for append. Two
+    rows with the same track_id but different digests mean the record CHANGED
+    (e.g. a live price refresh) and must be re-delivered."""
+    return hashlib.sha256(
+        json.dumps(fields or {}, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _existing_baked_ids(domain_dir: str, manifest: dict) -> dict:
+    """Read every existing shard once, returning {track_id: fields_digest} for the
+    rows already delivered. Later shards override earlier ones (last-wins), the same
+    dedupe rule every pull-client applies. Append is idempotent: an UNCHANGED point
+    is never re-emitted; a point whose fields digest moved is re-delivered as an
+    updated row in the next delta shard."""
+    ids: dict = {}
     for s in manifest.get("shards", []):
         path = os.path.join(domain_dir, s["file"])
         if not os.path.exists(path):
@@ -456,7 +512,8 @@ def _existing_baked_ids(domain_dir: str, manifest: dict) -> set:
                 if not line:
                     continue
                 try:
-                    ids.add(json.loads(line)["track_id"])
+                    row = json.loads(line)
+                    ids[row["track_id"]] = _fields_digest(row.get("fields"))
                 except Exception:  # noqa: BLE001 - skip a corrupt line, keep going
                     pass
     return ids
@@ -517,8 +574,12 @@ def append_domain(qdrant, collection: str, cdn_dir: str, domain: str,
     baked = _existing_baked_ids(domain_dir, manifest)
     print(f"[append] domain {domain!r}: {len(baked)} points already delivered")
 
-    # Scroll the filtered collection; keep only points not already in a shard.
+    # Scroll the filtered collection; emit points not yet in a shard (new) AND
+    # points whose fields changed since delivery (updated — e.g. a live price
+    # refresh). Updated rows re-ship under the same track_id; clients dedupe
+    # last-wins, so the newest delta shard's row displaces the stale one.
     new_rows: list[dict] = []
+    n_updated = 0
     type_counts: dict[str, int] = {}
     offset = None
     while True:
@@ -529,24 +590,30 @@ def append_domain(qdrant, collection: str, cdn_dir: str, domain: str,
         )
         for pt in points:
             row = _shard_row(pt)
-            if row["embedding"] is None or row["track_id"] in baked:
+            if row["embedding"] is None:
                 continue
-            new_rows.append(row)
-            et = (pt.payload or {}).get("entityType")
-            if et:
-                type_counts[et] = type_counts.get(et, 0) + 1
+            prev = baked.get(row["track_id"])
+            if prev is None:
+                new_rows.append(row)
+                et = (pt.payload or {}).get("entityType")
+                if et:
+                    type_counts[et] = type_counts.get(et, 0) + 1
+            elif prev != _fields_digest(row["fields"]):
+                new_rows.append(row)
+                n_updated += 1
         if offset is None:
             break
 
     if not new_rows:
-        print("[append] no new points — manifest unchanged")
+        print("[append] no new or updated points — manifest unchanged")
         return None
 
     entry = write_delta_shard(cdn_dir, domain, new_rows, type_counts,
-                              manifest=manifest, manifest_path=manifest_path)
-    print(f"[append] domain {domain!r}: +{len(new_rows)} points in {entry['file']} "
-          f"({entry['bytes'] / 1e3:.1f} KB); types={dict(type_counts)}; "
-          f"total now {manifest['count']}")
+                              manifest=manifest, manifest_path=manifest_path,
+                              new_unique=len(new_rows) - n_updated)
+    print(f"[append] domain {domain!r}: +{len(new_rows) - n_updated} new, "
+          f"{n_updated} updated in {entry['file']} ({entry['bytes'] / 1e3:.1f} KB); "
+          f"types={dict(type_counts)}; total now {manifest['count']}")
     return entry
 
 
@@ -562,14 +629,19 @@ def append_main():
 
 def write_delta_shard(cdn_dir: str, domain: str, new_rows: list, type_counts: dict,
                       manifest: dict | None = None,
-                      manifest_path: str | None = None) -> dict:
+                      manifest_path: str | None = None,
+                      new_unique: int | None = None) -> dict:
     """Write `new_rows` as ONE new content-addressed delta shard and fold it into the
     domain's mutable manifest + catalog. Existing shards are never touched, so a
     client pulls only this file. Returns the shard entry. Reusable by both `cdn
     append` (which scrolls Qdrant) and the watcher (which already holds the rows).
 
     `manifest`/`manifest_path` are loaded from disk when not supplied. `manifest` is
-    mutated in place so a caller that passed one sees the bumped counts."""
+    mutated in place so a caller that passed one sees the bumped counts.
+
+    `new_unique` is how many of `new_rows` are brand-new track_ids (the rest are
+    updates re-shipped under an existing id). The manifest `count` — the client's
+    unique-record count — grows only by that; omitted means all rows are new."""
     domain_dir = os.path.join(cdn_dir, domain)
     if manifest_path is None:
         manifest_path = os.path.join(domain_dir, "manifest.json")
@@ -595,8 +667,14 @@ def write_delta_shard(cdn_dir: str, domain: str, new_rows: list, type_counts: di
     # the entityType vocabulary. role_map is deliberately left stable across appends
     # (re-inferring per delta would let the client's field mapping drift).
     manifest.setdefault("shards", []).append(entry)
-    manifest["count"] = manifest.get("count", 0) + len(new_rows)
+    manifest["count"] = manifest.get("count", 0) + (
+        len(new_rows) if new_unique is None else new_unique)
     manifest["created_at"] = int(time.time())
+    # A re-delivered id supersedes any earlier tombstone for it.
+    if manifest.get("tombstones"):
+        delivered = {r["track_id"] for r in new_rows}
+        manifest["tombstones"] = [t for t in manifest["tombstones"]
+                                  if t not in delivered]
     et_map = {e["type"]: e["count"] for e in manifest.get("entity_types", [])}
     for t, c in type_counts.items():
         et_map[t] = et_map.get(t, 0) + c
@@ -607,6 +685,149 @@ def write_delta_shard(cdn_dir: str, domain: str, new_rows: list, type_counts: di
 
     _sync_catalog(cdn_dir, domain, manifest)
     return entry
+
+
+def append_tombstones(cdn_dir: str, domain: str, track_ids: list) -> dict | None:
+    """Record delete propagation in the delivered domain: merge `track_ids` into the
+    manifest's `tombstones` list and prune the served edges touching them. Shards
+    are immutable, so a removed record's row stays on disk — clients drop any row
+    whose track_id is tombstoned at load time (mirroring the Qdrant delete the
+    watcher already performed). Idempotent; returns a summary or None if no-op."""
+    domain_dir = os.path.join(cdn_dir, domain)
+    manifest_path = os.path.join(domain_dir, "manifest.json")
+    if not track_ids or not os.path.exists(manifest_path):
+        return None
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    existing = set(manifest.get("tombstones", []))
+    added = [t for t in dict.fromkeys(track_ids) if t and t not in existing]
+    if not added:
+        return None
+    manifest["tombstones"] = sorted(existing | set(added))
+    manifest["created_at"] = int(time.time())
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    # Prune the relational axis: an edge whose endpoint is gone is a dead end.
+    dead = set(manifest["tombstones"])
+    edges_path = os.path.join(domain_dir, "edges.json")
+    pruned = 0
+    if os.path.exists(edges_path):
+        with open(edges_path) as f:
+            edges = _coerce_edges(json.load(f))
+        kept = [e for e in edges if e["from"] not in dead and e["to"] not in dead]
+        pruned = len(edges) - len(kept)
+        if pruned:
+            write_edges(cdn_dir, domain, kept)
+
+    print(f"[tombstone] domain {domain!r}: +{len(added)} tombstone(s) "
+          f"({len(dead)} total; {pruned} edge(s) pruned)")
+    return {"domain": domain, "added": len(added),
+            "total": len(dead), "edges_pruned": pruned}
+
+
+# ---------------------------------------------------------------------------
+# EDGES — deliver the RELATIONAL axis (linkset) alongside the record shards
+# ---------------------------------------------------------------------------
+# The shard files carry the SEMANTIC axis (embedded records). A dataset's typed
+# relationships — the linkset the View fuses in (`{rel, from, to, fromType,
+# toType}`, see pipelines/linkgen.py) — are separate data. This installs a
+# domain's edges into the CDN as `edges.json`, served at `/domains/{name}/edges`,
+# so a pull-client (mcp_server.py) can walk the graph offline. `from`/`to` are the
+# same node endpoints (== a record's `track_id`), so the two axes join by id.
+def _coerce_edges(data) -> list[dict]:
+    """Accept a bare list of edges or {edges|links: [...]}; keep only well-formed
+    triples ({rel, from, to} required)."""
+    if isinstance(data, dict):
+        data = data.get("edges") or data.get("links") or []
+    out = []
+    for e in data:
+        if isinstance(e, dict) and e.get("from") and e.get("to") and e.get("rel"):
+            out.append({k: e[k] for k in ("rel", "from", "to", "fromType", "toType")
+                        if e.get(k) is not None})
+    return out
+
+
+def write_edges(cdn_dir: str, domain: str, edges: list[dict]) -> dict:
+    """Write `edges` as `cdn/<domain>/edges.json` and record the count in the
+    catalog. Returns a small summary. Reusable by the CLI and the watcher (which
+    already holds the linkset it just published). The domain must already be baked
+    so the edge endpoints resolve to delivered records."""
+    domain_dir = os.path.join(cdn_dir, domain)
+    if not os.path.exists(os.path.join(domain_dir, "manifest.json")):
+        raise SystemExit(f"[edges] domain {domain!r} not baked yet — run `cdn bake` first")
+    edges = _coerce_edges(edges)
+    rels = sorted({e["rel"] for e in edges})
+    payload = {"generated_at": int(time.time()), "count": len(edges),
+               "relations": rels, "edges": edges}
+    # Mutable pointer (like the manifest): overwrite atomically.
+    tmp = os.path.join(domain_dir, "edges.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(payload, f)
+    os.replace(tmp, os.path.join(domain_dir, "edges.json"))
+
+    # Reflect edge availability in the catalog so `list_datasets`/`describe` and
+    # operators can see the relational axis exists without fetching it.
+    catalog_path = os.path.join(cdn_dir, "catalog.json")
+    if os.path.exists(catalog_path):
+        with open(catalog_path) as f:
+            cat = json.load(f)
+        for e in cat.get("domains", []):
+            if e.get("name") == domain:
+                e["edge_count"] = len(edges)
+                e["relations"] = rels
+        with open(catalog_path, "w") as f:
+            json.dump(cat, f, indent=2)
+
+    print(f"[edges] domain {domain!r}: {len(edges)} edge(s); relations={rels}")
+    return {"domain": domain, "count": len(edges), "relations": rels}
+
+
+def _edge_key(e: dict) -> tuple:
+    return (e.get("rel"), e.get("from"), e.get("to"))
+
+
+def append_edges(cdn_dir: str, domain: str, new_edges: list[dict]) -> dict | None:
+    """Merge `new_edges` into the domain's served `edges.json`, deduping by
+    (rel, from, to). Returns a summary of what was added, or None if every edge was
+    already present. This is the incremental counterpart to `write_edges` — the live
+    watcher calls it each cycle so the relational axis grows alongside the record
+    delta shards, without ever re-shipping the whole linkset. Idempotent."""
+    path = os.path.join(cdn_dir, domain, "edges.json")
+    existing: list[dict] = []
+    if os.path.exists(path):
+        with open(path) as f:
+            existing = _coerce_edges(json.load(f))
+    seen = {_edge_key(e) for e in existing}
+    added = [e for e in _coerce_edges(new_edges) if _edge_key(e) not in seen]
+    if not added:
+        return None
+    # write_edges rewrites edges.json with the full set and re-syncs the catalog.
+    summary = write_edges(cdn_dir, domain, existing + added)
+    summary["added"] = len(added)
+    return summary
+
+
+def _edges_args():
+    p = argparse.ArgumentParser(
+        prog="quickbeam cdn edges",
+        description="Install a domain's linkset (typed edges) into the CDN so a "
+                    "pull-client can walk the knowledge graph offline.")
+    p.add_argument("--cdn-dir", default="./cdn", help="Baked CDN directory.")
+    p.add_argument("--domain", required=True, help="Domain to attach edges to (must be baked).")
+    p.add_argument("--source", required=True, metavar="PATH",
+                   help="Linkset JSON: a list of {rel, from, to, fromType, toType} "
+                        "edges, or {edges:[...]} (the shape linkgen/robinhood stage).")
+    return p.parse_args()
+
+
+def edges_main():
+    args = _edges_args()
+    if not os.path.exists(args.source):
+        sys.exit(f"[edges] source not found: {args.source}")
+    with open(args.source) as f:
+        data = json.load(f)
+    write_edges(args.cdn_dir, args.domain, data)
 
 
 # ---------------------------------------------------------------------------
@@ -668,6 +889,16 @@ def build_app(cdn_dir: str, cors: bool = False):
             raise HTTPException(status_code=404, detail=f"unknown domain {name!r}")
         return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
 
+    @app.get("/domains/{name}/edges")
+    def edges(name: str):
+        # The relational axis (linkset). Mutable pointer like the manifest, so it
+        # is always revalidated. Absent (404) for domains with no linkset yet —
+        # the pull-client treats that as "no relational layer" and moves on.
+        path = _safe(name, "edges.json")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"no edges for domain {name!r}")
+        return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
+
     @app.get("/domains/{name}/shards/{file}")
     def shard(name: str, file: str):
         if not file.startswith("shard-") or not file.endswith(".ndjson.gz"):
@@ -686,6 +917,7 @@ def build_app(cdn_dir: str, cors: bool = False):
     def root():
         return JSONResponse({"service": "fangorn-semantic-cdn",
                              "routes": ["/catalog", "/domains/{name}/manifest",
+                                        "/domains/{name}/edges",
                                         "/domains/{name}/shards/{file}", "/health"]})
     return app
 

@@ -120,6 +120,14 @@ def cdn_append(ctx: typer.Context):
     append_main()
 
 
+@cdn_app.command("edges", **_PASSTHROUGH)
+def cdn_edges(ctx: typer.Context):
+    """Install a domain's linkset (typed edges) into the CDN for graph traversal."""
+    _fwd("quickbeam cdn edges", ctx.args)
+    from quickbeam.cdn import edges_main
+    edges_main()
+
+
 @cdn_app.command("serve", **_PASSTHROUGH)
 def cdn_serve(ctx: typer.Context):
     """Serve baked Semantic CDN shards as static, resumable files."""
@@ -237,6 +245,14 @@ def keylink(ctx: typer.Context):
     _fwd("quickbeam data keylink", ctx.args)
     from quickbeam.pipelines.linkgen import run_keylink
     run_keylink()
+
+
+@data_app.command(**_PASSTHROUGH)
+def robinhood(ctx: typer.Context):
+    """Ingest Robinhood-Chain financial events into the embed → Qdrant → CDN-delta loop."""
+    _fwd("quickbeam data robinhood", ctx.args)
+    from quickbeam.pipelines.robinhood import run
+    run()
 
 
 if __name__ == "__main__":

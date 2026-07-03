@@ -1,5 +1,46 @@
 {
   "domains": {
+    "robinhood": {
+      "description": "Robinhood Chain tokenized-stock market — live asset snapshots + notable on-chain transfer flow",
+      "filter": { "entityType": ["Asset", "Transfer"] },
+      "bundle_schema": "stage_volumes/schemas/test.robinhood.chain.market.07032026.0.json",
+      "role_map": {
+        "identity": null,
+        "title": "name",
+        "subtitle": "symbol",
+        "temporal": null,
+        "spatial": null,
+        "media": null,
+        "tags": [],
+        "measures": ["price", "dayChangePct", "marketCap", "holders", "totalSupply", "recentVolume", "recentTransfers", "value"],
+        "relations": [],
+        "text": ["text"]
+      },
+      "presentation": {
+        "types": {
+          "Asset": { "icon": "📈", "accent": "#00c805", "singular": "Asset", "plural": "Assets" },
+          "Transfer": { "icon": "⇄", "accent": "#7aa2f7", "singular": "Transfer", "plural": "Transfers" }
+        },
+        "fieldLabels": {
+          "dayChangePct": "Day Change %",
+          "marketCap": "Market Cap",
+          "holders": "Holders",
+          "totalSupply": "Supply",
+          "recentVolume": "Recent Volume",
+          "recentTransfers": "Recent Transfers",
+          "actionType": "Type",
+          "signal": "Signal",
+          "value": "Amount",
+          "fromAddr": "From",
+          "toAddr": "To",
+          "txHash": "Tx"
+        },
+        "externalUrl": {
+          "Asset": "https://robinhoodchain.blockscout.com/token/{address}",
+          "Transfer": "https://robinhoodchain.blockscout.com/tx/{txHash}"
+        }
+      }
+    },
     "music": {
       "description": "MusicBrainz creative core — recordings & artists",
       "filter": { "entityType": ["Recording", "Artist"] },

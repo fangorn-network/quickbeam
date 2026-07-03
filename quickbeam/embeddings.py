@@ -14,7 +14,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from fastembed import TextEmbedding
-from quickbeam.roles import infer_roles
+from quickbeam.roles import infer_roles, role_map_applies
 from tqdm import tqdm
 
 if sys.platform == 'win32':
@@ -132,9 +132,13 @@ def _load_checkpoint(path):
                 ck = {"manifests": ck, "processed_track_ids": []}
             ck.setdefault("completed_manifest_cids", [])
             ck.setdefault("processed_track_ids", [])
+            # last_tip: schemaId -> last-built tip (commit) CID, for commit-diff
+            # delete propagation across cycles (slice 2).
+            ck.setdefault("last_tip", {})
             return ck
     except Exception:
-        return {"manifests": {}, "processed_track_ids": [], "completed_manifest_cids": []}
+        return {"manifests": {}, "processed_track_ids": [],
+                "completed_manifest_cids": [], "last_tip": {}}
 
 
 def _save_checkpoint(ck, path):
@@ -946,6 +950,24 @@ ROOT_PROFILES: dict[str, dict] = {
         "root_type": "Event", "max_depth": 2,
         "include": ["Business", "Organizer", "Category", "Locality"],
     },
+    # Robinhood-Chain financial graph (robinhood.py): one document per tokenized
+    # equity (Asset), folding in that stock's notable on-chain transfer flow so a
+    # semantic query matches the equity WITH its live context. Depth 1 — every
+    # Transfer hangs directly off its Asset. Each Transfer also embeds as its own
+    # record via the `transfer` profile, so a query can hit the event directly.
+    "asset": {
+        "root_type": "Asset", "max_depth": 1,
+        "include": ["Transfer"],
+        # fold each Transfer's verbalized blurb, not its label (the company name)
+        "content_fields": ["text"],
+    },
+    # one document per Transfer, folding in its Asset's blurb (business profile +
+    # live stats) so a semantic query matches the flow through what the company IS.
+    "transfer": {
+        "root_type": "Transfer", "max_depth": 1,
+        "include": ["Asset"],
+        "content_fields": ["text"],
+    },
 }
 
 
@@ -997,15 +1019,19 @@ def _node_label(node: dict) -> str:
     return ""
 
 
-def _node_content(node: dict) -> str:
+def _node_content(node: dict, extra_keys=()) -> str:
     """Folded value for a neighbour node. Prefer a free-form *content* field (a
     Review `body`, an event/summary `description`) so that text becomes searchable
     when the node is folded into a root document — without this a Review folds in
     only its "<author> on <business>" title and the body ("best tacos in town") is
     silently dropped. Content-less nodes (Category, Locality, Reviewer) have none
-    of these fields and fall back to their title label, so they don't bloat the doc."""
+    of these fields and fall back to their title label, so they don't bloat the doc.
+
+    `extra_keys` (a profile's `content_fields`) are consulted first — e.g. the
+    robinhood graph carries its verbalized blurb in `text`, which would otherwise
+    lose to the label ("NVIDIA") and fold every transfer down to the company name."""
     f = node.get("fields", {}) or {}
-    for k in ("body", "summary", "description"):
+    for k in (*(extra_keys or ()), "body", "summary", "description"):
         v = f.get(k)
         if isinstance(v, str) and v.strip():
             return v.strip()
@@ -1069,6 +1095,7 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
     include_set = set(include) if include else None
 
     groups: dict = {}
+    content_fields = profile.get("content_fields") or ()
     for nid, _depth in _walk_graph(_node_key(root), adj, depth, node_cap):
         nb = nodes_by_id.get(nid)
         if not nb:
@@ -1076,7 +1103,7 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
         t = nb.get("type")
         if include_set is not None and t not in include_set:
             continue
-        value = _node_content(nb)
+        value = _node_content(nb, content_fields)
         if value:
             groups.setdefault(_group_key(t), []).append(value)
 
@@ -1099,6 +1126,132 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
 #   name_filter             : set of lowercase dataset names  (None = any)
 #   block_gt                : if set, only query events with blockNumber > this
 # ---------------------------------------------------------------------------
+async def _unwrap_commit(args, tip_obj, gw_headers):
+    """Resolve an on-chain tip to its tree manifest.
+
+    Post-slice-1 the `manifestCid` slot holds a *commit* CID, not a manifest CID
+    (the "defer the redeploy" trick). A commit is a small JSON object whose `tree`
+    field points at the actual manifest and whose `embed` field carries the
+    embedding contract the indexer should inherit (FRAMEWORK Gap A). Older
+    publishes still put a raw manifest CID in the slot, so:
+
+      - commit tip  → fetch `commit.tree`, return (manifest, commit)
+      - raw manifest → return (obj, None)  [back-compat]
+
+    Returns (manifest_or_None, commit_or_None).
+    """
+    from quickbeam.objects import is_commit
+    if not is_commit(tip_obj):
+        return tip_obj, None
+    tree = (await fetch_all_ipfs(
+        [tip_obj["tree"]], args.ipfs_gateway, args.ipfs_timeout,
+        args.concurrency, desc="Commit tree", headers=gw_headers)).get(tip_obj["tree"])
+    return tree, tip_obj
+
+
+def _blob_point_ids(records):
+    """Deterministic Qdrant point ids for the entities in one blob's records.
+
+    Mirrors the id derivation at embed time (`_str_to_uuid(_track_id(...))` with
+    the node/record id preferred), so the ids computed here for a *removed* blob
+    are exactly the points that blob's entities were upserted under."""
+    ids = []
+    for r in records or []:
+        if not isinstance(r, dict):
+            continue
+        ids.append(_str_to_uuid(_track_id(r, prefer=r.get("id"))))
+    return ids
+
+
+def collect_tombstone_ids(removed_uris, blobs_by_uri):
+    """Map removed blob uris → point ids to delete. The fan-out/de-dup lives in the
+    dep-free `objects.collect_removed_point_ids` (unit-tested there); here we just
+    supply the real, embed-time id derivation."""
+    from quickbeam.objects import collect_removed_point_ids
+    return collect_removed_point_ids(
+        removed_uris, blobs_by_uri,
+        lambda r: _str_to_uuid(_track_id(r, prefer=r.get("id"))))
+
+
+async def tombstone_commit_delta(args, qdrant, tip_commit, last_commit_cid, gw_headers):
+    """Propagate deletes: remove from the index every entity a new commit dropped
+    relative to the last-built commit (slice 2). Diffs the two trees, fetches only
+    the *removed* blobs (from the parent) to learn which entities they held, and
+    deletes those points. Returns the removed track_ids (so the caller can also
+    tombstone the delivered CDN domain — the shards are immutable, so the delete
+    must ride the manifest instead).
+
+    A content-addressed no-op (only uris changed) diffs to zero removed blobs, so
+    this costs nothing when nothing was actually deleted."""
+    from quickbeam.objects import is_commit, plan_delta, collect_removed_point_ids
+
+    if not last_commit_cid or not is_commit(tip_commit):
+        return []
+
+    async def _fetch(cids):
+        return await fetch_all_ipfs(cids, args.ipfs_gateway, args.ipfs_timeout,
+                                    args.concurrency, desc="Delta", headers=gw_headers)
+
+    last_commit = (await _fetch([last_commit_cid])).get(last_commit_cid)
+    if not is_commit(last_commit):
+        return []
+    trees = await _fetch([tip_commit["tree"], last_commit["tree"]])
+    child, parent = trees.get(tip_commit["tree"]), trees.get(last_commit["tree"])
+    if not child or not parent:
+        return []
+
+    plan = plan_delta(child, parent)
+    if not plan.removed_uris:
+        return []
+
+    removed_blobs = await _fetch(plan.removed_uris)
+    # A removed EDGE blob's records are {rel, from, to} triples, not entities —
+    # they were never upserted as points, and mapping them through _track_id
+    # would mint random ids (junk deletes + junk CDN tombstones). Skip them.
+    removed_blobs = {
+        uri: [r for r in (records or [])
+              if isinstance(r, dict) and not ("rel" in r and "from" in r and "to" in r)]
+        for uri, records in removed_blobs.items()
+    }
+    # Same fan-out/de-dup as the point ids, keyed on the record's track_id; the
+    # point id is a deterministic uuid5 of it (see _blob_point_ids).
+    track_ids = collect_removed_point_ids(
+        plan.removed_uris, removed_blobs,
+        lambda r: _track_id(r, prefer=r.get("id")))
+    if track_ids:
+        qdrant.delete(collection_name=args.collection,
+                      points_selector=models.PointIdsList(
+                          points=[_str_to_uuid(t) for t in track_ids]),
+                      wait=True)
+        print(f"[Builder] tombstoned {len(track_ids)} point(s) from "
+              f"{len(plan.removed_uris)} removed blob(s)")
+    return track_ids
+
+
+async def resolve_tip_commit(args, schema_id, gw_headers, owner_filter=None, name_filter=None):
+    """Resolve the current on-chain tip for a schema → (tip_cid, commit, manifest).
+
+    ``commit`` is None for a legacy raw-manifest tip. Used by the watcher to (a)
+    inherit the embedding contract from the tip commit at startup (Gap A) and (b)
+    diff the new tip against the last-built one for delete propagation."""
+    publishes, updates = await _fetch_all_events_async(
+        args.subgraph_url, args.graph_api_key, schema_id, args.page_size)
+    events = publishes + updates
+    if owner_filter:
+        events = [e for e in events if e.get("owner", "").lower() in owner_filter]
+    if name_filter:
+        events = [e for e in events if e.get("name", "").lower() in name_filter]
+    if not events:
+        return None, None, None
+    ev = max(events, key=lambda e: int(e.get("blockNumber", 0)))
+    tip_cid = ev["manifestCid"]
+    obj = (await fetch_all_ipfs(
+        [tip_cid], args.ipfs_gateway, args.ipfs_timeout,
+        args.concurrency, desc="Tip", headers=gw_headers)).get(tip_cid)
+    manifest, commit = await _unwrap_commit(args, obj, gw_headers) if obj else (None, None)
+    return tip_cid, commit, manifest
+
+
 async def build_bundle_joined_data(
     args,
     schema_id,
@@ -1107,6 +1260,7 @@ async def build_bundle_joined_data(
     owner_filter=None,
     name_filter=None,
     block_gt=None,
+    edges_sink=None,
 ):
     completed = completed_manifest_cids or set()
     defaults = {"max_depth": args.max_depth, "label_cap": args.label_cap,
@@ -1150,12 +1304,18 @@ async def build_bundle_joined_data(
 
     for mcid in pending_cids:
         m = manifests.get(mcid)
+        # The on-chain tip may be a git-native commit (slice 1) wrapping the tree,
+        # or a raw manifest (older publishes). Unwrap commits to their tree first.
+        m, commit = await _unwrap_commit(args, m, gw_headers) if m else (None, None)
         # v3 bundle manifests are tagged either by `kind: "bundle"` (current
         # publisher format) or a legacy `version: 3`. Both carry nodeChunks +
         # edgeChunk; accept either tag.
         if not m or not (m.get("kind") == "bundle" or m.get("version") == 3):
             print(f"[Builder] Skipping invalid manifest {_cid_to_path(mcid)!r}: {str(m)[:120]!r}")
             continue
+        if commit:
+            print(f"[Builder] tip {_cid_to_path(mcid)[:16]}... is commit "
+                  f"(parents={len(commit.get('parents', []))}, tree={_cid_to_path(commit['tree'])[:12]}...)")
 
         node_cids = [c["dataCid"] for c in m.get("nodeChunks", [])]
         # Edges are chunked into many leaves (`edgeChunks`); older manifests had a
@@ -1190,6 +1350,17 @@ async def build_bundle_joined_data(
         edges = []
         for ecid in edge_cids:
             edges.extend(chunks.get(ecid) or [])
+
+        # Surface this manifest's typed edges to the caller (the watcher ships them
+        # to the CDN's relational axis). Endpoints are kept as the publisher-local
+        # ids, which is exactly what a record's `track_id` uses — so the delivered
+        # edges join the delivered records by id in the pull-client's `neighbors`.
+        if edges_sink is not None:
+            for e in edges:
+                if e.get("from") and e.get("to") and e.get("rel"):
+                    edges_sink.append({k: e[k] for k in
+                                       ("rel", "from", "to", "fromType", "toType")
+                                       if e.get(k) is not None})
 
         # Build adjacency once per manifest, reused across every profile.
         #   `out` — outgoing edges only (legacy one-hop field fold).
@@ -1374,6 +1545,9 @@ async def build_view_joined_data(args, view_schema_id, profiles, completed_manif
         return
     vman = (await fetch_all_ipfs([view_mcid], args.ipfs_gateway, args.ipfs_timeout,
                                  args.concurrency, desc="View Manifest", headers=gw_headers)).get(view_mcid)
+    # A view tip may itself be a commit (its parents are the fused source tips,
+    # slice 4); unwrap to the view manifest for back-compat with slice-1 pushes.
+    vman, _view_commit = await _unwrap_commit(args, vman, gw_headers) if vman else (None, None)
     if not vman or vman.get("kind") != "view":
         print(f"[View] {_cid_to_path(view_mcid)!r} is not a view manifest: {str(vman)[:120]!r}")
         return
@@ -1548,6 +1722,51 @@ async def build_view_joined_data(args, view_schema_id, profiles, completed_manif
 # Embeds records in SAVE_BATCH_SIZE chunks and uploads to Qdrant.
 # Writes partial progress to checkpoint after each batch for crash recovery.
 # ---------------------------------------------------------------------------
+def compose_document_text(fields: dict, role_map: dict,
+                          searchable_fields: str = "auto") -> str:
+    """Build the `search_document:`-prefixed text embedded for one record — the
+    single source of truth for the document side of retrieval (the query side is
+    `search_query:` + the same nomic model). Mirrors the server's runtime composer
+    (`_build_searchable_text`). Keeping this ONE function means the live embed loop
+    and any re-embed/backfill produce byte-identical text for the same input.
+
+    With `searchable_fields="auto"` the text is driven by the role map: the `title`,
+    `tags`, `subtitle`, and (crucially) the `text` role — the rich human-readable
+    blurb that is otherwise invisible to vector search — plus any projected neighbor
+    lists folded in for graph context. A correct role map is load-bearing here: a
+    stale/foreign map collapses every record to the same empty `"Title: . Tags:"`
+    text (see `roles.role_map_applies`)."""
+    if searchable_fields != "auto":
+        text_str = " ".join(str(fields[k]) for k in searchable_fields.split(",")
+                            if fields.get(k))
+        return f"search_document: {text_str[:1000]}"
+
+    tags = " ".join(
+        fields.get(t, "") if isinstance(fields.get(t), str) else ""
+        for t in role_map.get("tags", [])
+    )
+    # Fold any projected neighbor lists (artists, events, …) into the document text
+    # so each projection embeds its full graph context — the whole point of root
+    # profiles. (Legacy scalar records have no list fields, so this is a no-op.)
+    rels = "; ".join(
+        f"{k}: {', '.join(str(x) for x in v[:20] if x)}"
+        for k, v in fields.items()
+        if isinstance(v, list) and v and k != "entityType"
+    )
+    subtitle = fields.get(role_map.get("subtitle", ""), "")
+    text_terms = "; ".join(
+        str(fields[t]) for t in (role_map.get("text", []) or []) if fields.get(t)
+    )
+    text_str = f"Title: {fields.get(role_map.get('title', ''), '')}. Tags: {tags}"
+    if subtitle:
+        text_str += f". Subtitle: {subtitle}"
+    if text_terms:
+        text_str += f". {text_terms}"
+    if rels:
+        text_str += f". {rels}"
+    return f"search_document: {text_str[:1000]}"
+
+
 async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, truncate, checkpoint):
     SAVE_BATCH_SIZE = 5000
     n_batches = max(1, (len(records) + SAVE_BATCH_SIZE - 1) // SAVE_BATCH_SIZE)
@@ -1556,43 +1775,8 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
         if n_batches > 1:
             print(f"  [Embed] sub-batch {i // SAVE_BATCH_SIZE + 1}/{n_batches} ({len(chunk)} records)")
 
-        texts = []
-        for item in chunk:
-            fields = item["fields"]
-            if args.searchable_fields == "auto":
-                tags = " ".join(
-                    fields.get(t, "") if isinstance(fields.get(t), str) else ""
-                    for t in role_map.get("tags", [])
-                )
-                # Fold any projected neighbor lists (artists, events, …) into the
-                # document text so each projection embeds its full graph context —
-                # the whole point of root profiles. (Legacy scalar records have no
-                # list fields, so this is a no-op for them.)
-                rels = "; ".join(
-                    f"{k}: {', '.join(str(x) for x in v[:20] if x)}"
-                    for k, v in fields.items()
-                    if isinstance(v, list) and v and k != "entityType"
-                )
-                # Fold scalar role fields (subtitle + the `text` role) into the
-                # document text. The `text` role carries the rich human-readable
-                # blurb (amenities, rating, hours, editorial, price for Business
-                # records) that is otherwise invisible to vector search because
-                # it is a scalar string, not a tag/list field. Mirrors the
-                # server's runtime composer (_build_searchable_text).
-                subtitle = fields.get(role_map.get("subtitle", ""), "")
-                text_terms = "; ".join(
-                    str(fields[t]) for t in (role_map.get("text", []) or []) if fields.get(t)
-                )
-                text_str = f"Title: {fields.get(role_map.get('title', ''), '')}. Tags: {tags}"
-                if subtitle:
-                    text_str += f". Subtitle: {subtitle}"
-                if text_terms:
-                    text_str += f". {text_terms}"
-                if rels:
-                    text_str += f". {rels}"
-            else:
-                text_str = " ".join(str(fields[k]) for k in args.searchable_fields.split(",") if fields.get(k))
-            texts.append(f"search_document: {text_str[:1000]}")
+        texts = [compose_document_text(item["fields"], role_map, args.searchable_fields)
+                 for item in chunk]
 
         vectors = []
         SUB_CHUNK_SIZE = 1000
@@ -1761,8 +1945,16 @@ async def main():
                 embed_engine = _init_embed_engine(args)
                 print(f"[Builder] model dim={model_dim}, output dim={dim} (truncate={truncate})")
 
-            if not role_map:
-                role_map = infer_roles([r["fields"] for r in new_records])
+            # (Re)infer when there's no map, OR when the loaded map doesn't apply to
+            # these records — a stale ./db/role_map.json from a different corpus would
+            # otherwise make every record embed the same empty "Title: . Tags:" text,
+            # collapsing all vectors to one point (identical, undiscriminating scores).
+            record_fields = [r["fields"] for r in new_records]
+            if not role_map or not role_map_applies(role_map, record_fields):
+                if role_map:
+                    print("[Builder] loaded role map does not match these records "
+                          "(stale/foreign) — re-inferring")
+                role_map = infer_roles(record_fields)
                 _save_role_map(role_map, args.role_map_file)
                 print(f"[Builder] Role map inferred and saved to {args.role_map_file}")
 
