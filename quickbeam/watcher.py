@@ -163,7 +163,7 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
     # Delete propagation (slice 2): before building, diff the current tip commit
     # against the last one we built and tombstone any entities it dropped. Bundle
     # mode only — view-tip diffing arrives with merge commits (slice 4). Keyed on
-    # schema here (one repo per schema); multi-dataset repos refine this later.
+# schema here (one repo per schema); multi-dataset repos refine this later.
     if args.bundle:
         gw_headers = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
         last_tip = checkpoint.get("last_tip", {}).get(schema_id)

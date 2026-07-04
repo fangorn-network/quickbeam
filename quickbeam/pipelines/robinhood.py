@@ -114,6 +114,20 @@ def _pct(a, b):
     return round((a - b) / b * 100.0, 3)
 
 
+def _iso_to_epoch(s):
+    """Blockscout ISO-8601 timestamp (e.g. "2024-01-15T12:34:56.000000Z") → epoch
+    seconds, or None if absent/unparseable. Blockscout stamps each transfer with the
+    real on-chain block time — this is what lets downstream sequence flow (holding
+    periods, before/after splits) instead of guessing from read order."""
+    if not s:
+        return None
+    try:
+        import datetime as _dt
+        return int(_dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # BUSINESS PROFILES — one factual sentence per ticker describing WHAT the company
 # does. Blockscout gives us price/holders/market-cap but no description, so every
@@ -290,7 +304,7 @@ def shape_fields(ev: dict) -> dict:
     }
     for k in ("price", "dayChangePct", "marketCap", "oldPrice", "newPrice",
               "oldDepth", "newDepth", "sentiment", "holders", "totalSupply",
-              "value", "recentVolume", "recentTransfers"):
+              "value", "usdValue", "recentVolume", "recentTransfers"):
         if ev.get(k) is not None:
             fields[k] = _num(ev[k])
     if ev.get("address"):
@@ -298,6 +312,18 @@ def shape_fields(ev: dict) -> dict:
     for k in ("fromAddr", "toAddr", "txHash"):     # transfer provenance
         if ev.get(k):
             fields[k] = ev[k]
+    # TIME-ORDERING — stamp discrete on-chain events (transfers, actions, oracle
+    # moves) with their real block time + height so the index can SEQUENCE flow:
+    # holding periods, turnover, before/after splits. Asset snapshots are LIVE quotes
+    # stamped at chain head — their block/ts are read-time, not an event time — so we
+    # deliberately don't index them (they'd read as "everything happened now").
+    if ev.get("type") != "asset":
+        blk = _num(ev.get("blockNumber"))
+        ts = _num(ev.get("blockTimestamp"))
+        if blk is not None:
+            fields["blockNumber"] = int(blk)
+        if ts is not None:
+            fields["timestamp"] = int(ts)
     if ev.get("type") == "oracle_update":
         dev = _pct(ev.get("newPrice"), ev.get("oldPrice"))
         if dev is not None:
@@ -339,6 +365,7 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
     assets: dict[str, dict] = {}          # symbol -> Asset node (latest snapshot)
     asset_block: dict[str, int] = {}      # symbol -> block of the kept snapshot
     others: dict[str, list[dict]] = {}    # entityType -> node list
+    wallets: dict[str, dict] = {}         # id -> Wallet node (deduped by address)
     edges: list[dict] = []
     seen_nodes: set[str] = set()
 
@@ -351,6 +378,30 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
                 "text": f"{ev.get('name') or sym} ({sym}) — tokenized "
                         f"{ev.get('sector') or 'equity'} stock.",
             }}
+
+    def _ensure_wallet(addr: str | None) -> str | None:
+        """Promote a bare from/to address string into a first-class Wallet node.
+        The id is LOWERCASED (Blockscout returns checksummed, mixed-case hashes — a
+        raw-case id would fragment one wallet into several). Deduped by that id, so
+        every wallet is a single node no matter how many transfers touch it. Once a
+        Transfer links to its wallets, `Wallet → Transfer → Asset` is walkable via the
+        existing hasTransfer edge — no separate wallet→asset edge needed."""
+        if not addr:
+            return None
+        wid = f"rh:wallet:{addr.lower()}"
+        if wid not in wallets:
+            try:
+                is_mint = int(addr, 16) == 0        # 0x000…0 = ERC-20 mint/burn sentinel
+            except ValueError:
+                is_mint = False
+            wallets[wid] = {"name": wid, "fields": {
+                "entityType": "Wallet",
+                "address":    addr,                 # checksummed, for display
+                "signal":     "mint" if is_mint else "wallet",
+                "text":       (f"Mint/burn address {addr} (ERC-20 zero address)."
+                               if is_mint else f"On-chain wallet {addr}."),
+            }}
+        return wid
 
     for ev in events:
         sym = ev.get("symbol")
@@ -374,21 +425,81 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
         if sym:
             edges.append({"rel": rel, "from": f"rh:asset:{sym}", "to": nid,
                           "fromType": "Asset", "toType": entity})
+        # Wallet endpoints: a Transfer points at its sender/receiver, making each
+        # wallet a traversable node. Only transfers carry from/to addresses.
+        frm, to = _ensure_wallet(ev.get("fromAddr")), _ensure_wallet(ev.get("toAddr"))
+        if frm:
+            edges.append({"rel": "sentBy", "from": nid, "to": frm,
+                          "fromType": entity, "toType": "Wallet"})
+        if to:
+            edges.append({"rel": "receivedBy", "from": nid, "to": to,
+                          "fromType": entity, "toType": "Wallet"})
 
     nodes = {"Asset": list(assets.values())}
     nodes.update(others)
+    if wallets:
+        nodes["Wallet"] = list(wallets.values())
     return nodes, edges
 
 
 # stem name (the volume_N_<stem>.json suffix) per entity type.
 _STEM = {"Asset": "assets", "CorporateAction": "corporateactions",
          "OracleUpdate": "oracleupdates", "LiquidityRebalance": "liquidity",
-         "NewsSentiment": "news", "Transfer": "transfers"}
+         "NewsSentiment": "news", "Transfer": "transfers", "Wallet": "wallets"}
+
+# Stems rewritten wholesale every cycle vs. accumulated into a growing ledger.
+# Assets are LIVE snapshots keyed on a stable id (rh:asset:SYM) — the latest quote
+# wins, so replacing the file each cycle is correct (the index upserts by id). Every
+# other stem is a stream of DISCRETE on-chain events (transfers, actions): with
+# --accumulate we MERGE new rows into the staged file (dedup by node name, existing
+# rows kept in place) so each fangorn commit is a SUPERSET of the last. That
+# superset property is what stops the watcher's delete-propagation from garbage-
+# collecting flow that scrolled out of Blockscout's newest-N window — see watcher's
+# tombstone_commit_delta: a replace-snapshot makes it delete everything the new
+# commit dropped, pinning the index at ~300; a superset commit drops nothing.
+_SNAPSHOT_STEMS = {"assets"}
 
 
-def emit_volumes(events: list[dict], output_dir: str, volume: int = 1) -> dict:
+def _load_node_list(path: str) -> list[dict]:
+    """Existing staged nodes/edges (empty list if absent/unreadable). A corrupt
+    staged file must not stall ingest — we start that stem fresh instead."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, list) else []
+    except Exception as e:  # noqa: BLE001
+        print(f"[robinhood] staged file {path!r} unreadable ({e}); starting stem fresh",
+              file=sys.stderr)
+        return []
+
+
+def _merge_keep_order(existing: list[dict], new: list[dict], key) -> tuple[list[dict], int]:
+    """Append rows from `new` whose key isn't already present, preserving the
+    existing order (so fangorn's content-addressed chunking reuses unchanged
+    chunks — old rows stay byte-identical). Returns (merged, added_count)."""
+    seen = {key(r) for r in existing}
+    merged = list(existing)
+    added = 0
+    for r in new:
+        k = key(r)
+        if k not in seen:
+            seen.add(k)
+            merged.append(r)
+            added += 1
+    return merged, added
+
+
+def emit_volumes(events: list[dict], output_dir: str, volume: int = 1,
+                 accumulate: bool = False) -> dict:
     """INGEST OUTPUT — write the staged node/edge volume files `schemagen` reads.
-    This is all `quickbeam data robinhood` does. Returns a per-type count summary."""
+    This is all `quickbeam data robinhood` does. Returns a per-type count summary.
+
+    accumulate=True turns the event stems (transfers, actions) into a growing
+    ledger: new rows are MERGED into the staged file rather than overwriting it, so
+    each commit is a superset and the watcher never tombstones prior flow. Asset
+    snapshots are always rewritten wholesale (latest quote wins)."""
     os.makedirs(output_dir, exist_ok=True)
     nodes, edges = build_graph(events)
     counts: dict = {}
@@ -397,20 +508,42 @@ def emit_volumes(events: list[dict], output_dir: str, volume: int = 1) -> dict:
         stem = _STEM.get(entity, entity.lower())
         written_stems.add(stem)
         path = os.path.join(output_dir, f"volume_{volume}_{stem}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(node_list, f)
-        counts[entity] = len(node_list)
-        print(f"   ✅ {entity:<18}: {len(node_list):,} → {os.path.basename(path)}")
+        if accumulate and stem not in _SNAPSHOT_STEMS:
+            merged, added = _merge_keep_order(
+                _load_node_list(path), node_list, lambda r: r.get("name"))
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(merged, f)
+            counts[entity] = len(merged)
+            print(f"   ✅ {entity:<18}: {len(merged):,} (+{added:,} new) → "
+                  f"{os.path.basename(path)}")
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(node_list, f)
+            counts[entity] = len(node_list)
+            print(f"   ✅ {entity:<18}: {len(node_list):,} → {os.path.basename(path)}")
     epath = os.path.join(output_dir, f"volume_{volume}_edges.json")
-    with open(epath, "w", encoding="utf-8") as f:
-        json.dump(edges, f)
-    counts["edges"] = len(edges)
-    print(f"   ✅ {'edges':<18}: {len(edges):,} → {os.path.basename(epath)}")
+    if accumulate:
+        merged_e, added_e = _merge_keep_order(
+            _load_node_list(epath), edges,
+            lambda e: (e.get("rel"), e.get("from"), e.get("to")))
+        with open(epath, "w", encoding="utf-8") as f:
+            json.dump(merged_e, f)
+        counts["edges"] = len(merged_e)
+        print(f"   ✅ {'edges':<18}: {len(merged_e):,} (+{added_e:,} new) → "
+              f"{os.path.basename(epath)}")
+    else:
+        with open(epath, "w", encoding="utf-8") as f:
+            json.dump(edges, f)
+        counts["edges"] = len(edges)
+        print(f"   ✅ {'edges':<18}: {len(edges):,} → {os.path.basename(epath)}")
     # Remove stale robinhood type-volumes for this volume that this run didn't write
     # (e.g. a prior --with-transfers left volume_N_transfers.json, now Asset-only) so a
     # commit never picks up stale data. Only touches OUR known stems — never another
-    # pipeline's files sharing the dir.
-    for stem in set(_STEM.values()) - written_stems:
+    # pipeline's files sharing the dir. Under --accumulate the ledger stems are meant
+    # to persist across cycles, so only prune snapshot stems (which never go stale).
+    prunable = ({s for s in _STEM.values() if s in _SNAPSHOT_STEMS}
+                if accumulate else set(_STEM.values()))
+    for stem in prunable - written_stems:
         stale = os.path.join(output_dir, f"volume_{volume}_{stem}.json")
         if os.path.exists(stale):
             os.remove(stale)
@@ -588,13 +721,30 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
 
         # Real on-chain flow: recent ERC-20 Transfer events for this token. Enriches
         # the Asset with volume/count and emits the largest as their own `transfer`
-        # events (→ a `hasTransfer` edge). One extra call per token.
+        # events (→ a `hasTransfer` edge). PAGINATED — Blockscout returns ~50 transfers
+        # per page, so we walk `next_page_params` (same cursor pattern as token
+        # discovery above) until we've collected `max_transfers` or run out of pages.
+        # Without this the read is capped at the most recent ~50 no matter how high
+        # max_transfers goes, starving the ledger of depth.
         if with_transfers and addr:
-            try:
-                items = (_get(f"/api/v2/tokens/{addr}/transfers") or {}).get("items", [])
-            except Exception as e:  # noqa: BLE001 — flow is best-effort, never fatal
-                print(f"[robinhood] transfers for {sym} failed ({e})", file=sys.stderr)
-                items = []
+            items: list[dict] = []
+            # Cap the page walk: enough pages to reach max_transfers (~50/page) plus a
+            # little slack, hard-bounded so a stuck cursor can never loop forever.
+            max_pages = min(200, max(1, -(-max_transfers // 50) + 2))
+            tparams: dict | None = None
+            prev_tcursor: dict | None = None
+            for _ in range(max_pages):
+                try:
+                    page = _get(f"/api/v2/tokens/{addr}/transfers", tparams) or {}
+                except Exception as e:  # noqa: BLE001 — flow is best-effort, never fatal
+                    print(f"[robinhood] transfers for {sym} failed ({e})", file=sys.stderr)
+                    break
+                items.extend(page.get("items", []))
+                npp = page.get("next_page_params")
+                if not npp or npp == prev_tcursor or len(items) >= max_transfers:
+                    break
+                prev_tcursor = npp
+                tparams = _enc_cursor(npp)
 
             def _tokens_moved(it):
                 tot = it.get("total") or {}
@@ -606,16 +756,22 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
             asset_ev["recentTransfers"] = len(items)
             asset_ev["recentVolume"] = round(sum(v for v, _ in sized), 4)
             out.append(asset_ev)
+            px = asset_ev.get("price")             # token→USD at this snapshot
             for v, it in sized[:max_transfers]:
                 out.append({
                     "type": "transfer", "symbol": sym, "name": name, "sector": sector,
                     "value": round(v, 4),
+                    # USD notional so cross-asset flow sums (aggregate sum:usdValue)
+                    # are comparable — raw `value` is in each token's own units.
+                    "usdValue": round(v * px, 2) if px else None,
                     "fromAddr": (it.get("from") or {}).get("hash"),
                     "toAddr": (it.get("to") or {}).get("hash"),
                     "txHash": it.get("transaction_hash"),
                     "logIndex": it.get("log_index"),
                     "blockNumber": int(it.get("block_number") or head),
-                    "blockTimestamp": now,
+                    # Real on-chain block time from Blockscout (not the read wall-clock)
+                    # so the Transfer record carries a genuine, sortable timestamp.
+                    "blockTimestamp": _iso_to_epoch(it.get("timestamp")) or now,
                 })
                 n_transfers += 1
         else:
@@ -651,7 +807,11 @@ def _parse_args():
                         "largest transfers as linked `Transfer` nodes (a 2nd entity "
                         "type + edges). One extra Blockscout call per token.")
     p.add_argument("--max-transfers", type=int, default=5,
-                   help="Largest recent transfers to emit per token (--with-transfers).")
+                   help="How many recent transfers to collect per token "
+                        "(--with-transfers). Now PAGINATED: values above ~50 walk "
+                        "Blockscout's transfer pages to reach the target depth (the "
+                        "largest by size are emitted as Transfer nodes). Raise this "
+                        "(e.g. 500) to capture real flow depth instead of the newest ~50.")
     p.add_argument("--block-gt", type=int, default=0,
                    help="Only read events with blockNumber greater than this (a manual, "
                         "one-shot floor; --start-block/--checkpoint-file are the persisted "
@@ -669,6 +829,16 @@ def _parse_args():
                         "misses across restarts. Combined with --start-block as the floor. "
                         "NOTE: this is the INGEST checkpoint; `watch --checkpoint-file` is a "
                         "separate embed-side cursor.")
+
+    p.add_argument("--accumulate", action="store_true",
+                   help="Grow a transfer LEDGER instead of overwriting: merge new "
+                        "transfers/edges into the staged files (dedup by id, old rows "
+                        "kept) so each fangorn commit is a superset of the last. This is "
+                        "what lets the watcher's index grow past the current snapshot — "
+                        "without it, every commit replaces the prior flow and the "
+                        "watcher's delete-propagation collapses the index back to ~one "
+                        "snapshot. Asset quotes are always rewritten (latest wins). Pair "
+                        "with --checkpoint-file so a restart resumes the ledger.")
 
     p.add_argument("--output-dir", default="./stage_volumes",
                    help="Where to write volume_<n>_*.json node/edge files.")
@@ -779,7 +949,7 @@ def _ingest_once(args) -> int:
         return len(events)
     print(f"[robinhood] ingesting {len(events)} event(s) → {args.output_dir} "
           f"(volume {args.volume})")
-    emit_volumes(events, args.output_dir, args.volume)
+    emit_volumes(events, args.output_dir, args.volume, accumulate=args.accumulate)
     # Advance the checkpoint to the highest transfer block actually staged this cycle
     # (asset snapshots are stamped at chain head, so exclude them or the floor would
     # jump to head and drop transfers that land in lower blocks next cycle). After
@@ -804,7 +974,7 @@ def _watch_ingest(args) -> None:
     floor = max(args.block_gt, args.start_block, _load_ingest_checkpoint(args.checkpoint_file))
     print(f"[robinhood] ingest daemon — source=live-chain, out={args.output_dir} "
           f"(volume {args.volume}), publish={args.publish}, poll={args.poll_interval}s, "
-          f"transfer floor=block>{floor}"
+          f"transfer floor=block>{floor}, mode={'ledger (accumulate)' if args.accumulate else 'snapshot (replace)'}"
           + (f" (checkpoint {args.checkpoint_file})" if args.checkpoint_file else ""))
     cycle = 0
     while True:

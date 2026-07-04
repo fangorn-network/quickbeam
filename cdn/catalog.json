@@ -1,58 +1,25 @@
 {
-  "generated_at": 1783110052,
+  "generated_at": 1783198434,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
   "collection": "robinhood",
   "domains": [
     {
-      "name": "music",
-      "description": "MusicBrainz creative core \u2014 recordings & artists",
-      "count": 0,
-      "dim": 256,
-      "bytes": 0,
-      "shard_count": 0,
-      "entity_types": [],
-      "manifest": "music/manifest.json"
-    },
-    {
-      "name": "venues",
-      "description": "Places & events",
-      "count": 622,
-      "dim": 256,
-      "bytes": 1697317,
-      "shard_count": 1,
-      "entity_types": [
-        "Event"
-      ],
-      "manifest": "venues/manifest.json"
-    },
-    {
-      "name": "places",
-      "description": "Local places, events & the outdoors \u2014 Google Places + Eventbrite/Tribe + OpenStreetMap trails, lakes & landmarks",
-      "count": 917,
-      "dim": 256,
-      "bytes": 5796376,
-      "shard_count": 1,
-      "entity_types": [
-        "Event",
-        "Business"
-      ],
-      "manifest": "places/manifest.json"
-    },
-    {
       "name": "robinhood",
       "description": "Robinhood Chain tokenized-stock market \u2014 live asset snapshots + notable on-chain transfer flow",
-      "count": 950,
+      "count": 22165,
       "dim": 256,
-      "bytes": 3109439,
-      "shard_count": 16,
+      "bytes": 330877925,
+      "shard_count": 22,
       "entity_types": [
         "Transfer",
         "Asset"
       ],
       "manifest": "robinhood/manifest.json",
-      "edge_count": 367,
+      "edge_count": 67281,
       "relations": [
-        "hasTransfer"
+        "hasTransfer",
+        "receivedBy",
+        "sentBy"
       ]
     }
   ]

@@ -131,17 +131,39 @@ def test_build_graph_links_events_to_one_asset():
 def test_transfer_shapes_and_links_to_asset():
     ev = {"type": "transfer", "symbol": "NVDA", "name": "NVIDIA",
           "sector": "semiconductors", "value": 4.62, "fromAddr": "0xAAAA1111",
-          "toAddr": "0xBBBB2222", "txHash": "0xdead", "logIndex": 3, "blockNumber": 100}
+          "toAddr": "0xBBBB2222", "txHash": "0xdead", "logIndex": 3,
+          "blockNumber": 100, "blockTimestamp": 1_700_000_100}
     r = shape_event(ev)
     assert r["entity_type"] == "Transfer"
     assert r["track_id"] == "rh:xfer:0xdead:3"       # stable on tx + log index
     assert r["fields"]["value"] == 4.62
     assert r["fields"]["signal"] == "notable-transfer"
     assert "4.62 NVDA" in r["fields"]["text"]
+    # Time-ordering: discrete events carry a real, indexed block time + height so
+    # downstream can sequence flow (holding periods, before/after splits).
+    assert r["fields"]["timestamp"] == 1_700_000_100
+    assert r["fields"]["blockNumber"] == 100
     # A transfer links from its Asset (which is synthesized if unseen).
     _nodes, edges = build_graph([ev])
     rels = {(e["from"], e["rel"], e["toType"]) for e in edges}
     assert ("rh:asset:NVDA", "hasTransfer", "Transfer") in rels
+
+
+def test_asset_snapshot_carries_no_event_timestamp():
+    # Asset snapshots are live quotes stamped at chain head — indexing their read-time
+    # block/ts would make everything look like it "happened now", so they're excluded.
+    r = shape_event({"type": "asset", "symbol": "AAPL", "price": 100,
+                     "blockNumber": 10, "blockTimestamp": 1_700_000_010})
+    assert "timestamp" not in r["fields"]
+    assert "blockNumber" not in r["fields"]
+
+
+def test_iso_to_epoch_parses_blockscout_timestamps():
+    from quickbeam.pipelines.robinhood import _iso_to_epoch
+    assert _iso_to_epoch("1970-01-01T00:00:00.000000Z") == 0
+    assert _iso_to_epoch("2024-01-15T12:34:56Z") == 1_705_322_096
+    assert _iso_to_epoch(None) is None
+    assert _iso_to_epoch("not-a-date") is None
 
 
 def test_emit_volumes_writes_expected_files(tmp_path):

@@ -1,5 +1,56 @@
 # Robinhood-Chain Ingestion for Fangorn / quickbeam
 
+## Quickstart — grow a live transfer ledger
+
+Bring the four processes up **in order**. The critical flag is **`--accumulate`** on
+the ingest daemon: without it, every commit is a full-replacement "newest-250"
+snapshot, and the watcher's delete-propagation garbage-collects the old flow — pinning
+the index at ~300 points no matter how long you run. `--accumulate` merges new
+transfers into the staged files so each commit is a **superset**, so the watcher drops
+nothing and the index grows. (Asset price quotes always replace wholesale — latest
+wins, stable ids upsert.)
+
+**Depth lever — `--max-transfers`:** transfer reads are paginated, so this is how
+much real flow you capture per token per cycle. The default (5) emits only the 5
+largest transfers per token; raise it (e.g. `500`) to walk Blockscout's transfer
+pages and pull genuine on-chain volume. This, times `--accumulate`, is what turns a
+few-hundred-point sampler into a deep ledger.
+
+```bash
+# 1. Ingest daemon — chain → fangorn commit/push, as a GROWING LEDGER.
+#    --checkpoint-file makes each cycle read only new flow instead of re-scanning.
+#    Look for "mode=ledger (accumulate)" and per-cycle "Transfer : N (+k new)".
+quickbeam data robinhood --with-transfers --watch --poll-interval 120 \
+  --output-dir $STAGE --volume 1 --publish --repo <your-fangorn-repo> \
+  --accumulate --checkpoint-file db/robinhood_ingest_block.json \
+  --max-transfers 500
+
+# 2. Watcher — on-chain tip → embed → Qdrant → CDN delta.
+./watch_robinhood.sh
+
+# 3. CDN — serve the baked domain + delta shards.
+quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
+
+# 4. MCP — the tool surface agents query.
+quickbeam mcp --cdn-url http://localhost:8090 --transport http --port 8765
+```
+
+**Switching an existing (snapshot-mode) deployment to ledger mode:** the index was
+built from replace-snapshots, so reset it once so the watcher rebuilds from the
+growing superset tip (wipe the collection **and** its checkpoint together, or nothing
+re-embeds):
+
+```bash
+curl -s -X DELETE http://localhost:6333/collections/robinhood
+rm -f db/robinhood_checkpoint.json          # then restart ./watch_robinhood.sh
+```
+
+The ledger grows **forward** from launch — it starts near the current newest-250 and
+climbs as new transfers land; it does not backfill history the snapshots already
+dropped. To seed deeper history, run a one-shot `--start-block <N>` before enabling
+the daemon.
+
+---
 
   Running processes (background tasks of this session — if you restart the machine, bring them
   back in this order):

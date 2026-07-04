@@ -33,6 +33,15 @@ Tools
     search(dataset, query, ...)        semantic search → raw records + provenance
     get(dataset, id)                   one record, full fields + provenance
     neighbors(dataset, id, rel, ...)   walk the linkset edges (relational axis)
+    aggregate(dataset, group_by, ...)  group-by/reduce server-side → the answer, not the data
+    export(dataset, entity_type, ...)  projected slice → local file PATH (bulk offline analytics)
+
+Three axes, not two: `search` is semantic and `neighbors` is relational, but both
+hand back per-record payloads — unsuited to corpus-wide analytics, where streaming
+every record through the agent's context is the dominant cost. `aggregate` reduces
+server-side and returns an N-row table; `export` spills a projected column slice to
+local disk and returns only its path, so the agent queries it with its own code
+(duckdb/pandas) instead of paying to move the bytes through the model.
 
 Run
 ---
@@ -326,6 +335,182 @@ def _shape(rec: dict, score: float | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# ANALYTICAL AXIS — structured filter / group-by / bulk export
+# ---------------------------------------------------------------------------
+# search() is semantic and returns fat records; it is the WRONG primitive for
+# corpus-wide analytics (rank every wallet, sum flow per asset, dump a column
+# for offline compute). Those jobs want the ANSWER, not the raw data streamed
+# through the agent's context. These helpers run over the same in-memory records
+# and either reduce server-side (aggregate) or spill to a local file (export).
+def _num(x):
+    """Best-effort float; None for non-numeric / missing (so sums skip them)."""
+    if isinstance(x, bool):
+        return None
+    if isinstance(x, (int, float)):
+        return float(x)
+    if isinstance(x, str):
+        try:
+            return float(x)
+        except ValueError:
+            return None
+    return None
+
+
+def _cmp(val, cond) -> bool:
+    """One field predicate. `cond` is a scalar (equality) or a dict of operators
+    {eq,ne,gt,gte,lt,lte,in,contains,exists}."""
+    if not isinstance(cond, dict):
+        return val == cond
+    for op, operand in cond.items():
+        if op == "eq" and val != operand:
+            return False
+        if op == "ne" and val == operand:
+            return False
+        if op in ("gt", "gte", "lt", "lte"):
+            n, o = _num(val), _num(operand)
+            if n is None or o is None:
+                return False
+            if op == "gt" and not n > o:
+                return False
+            if op == "gte" and not n >= o:
+                return False
+            if op == "lt" and not n < o:
+                return False
+            if op == "lte" and not n <= o:
+                return False
+        if op == "in" and val not in operand:
+            return False
+        if op == "contains" and (val is None or str(operand) not in str(val)):
+            return False
+        if op == "exists" and (val is not None) != bool(operand):
+            return False
+    return True
+
+
+def _match_where(fields: dict, where: dict | None) -> bool:
+    return not where or all(_cmp(fields.get(k), c) for k, c in where.items())
+
+
+def _iter_records(ds: "_Dataset", entity_type: str | None, where: dict | None):
+    for rec in ds.records:
+        if entity_type is not None and rec.get("entityType") != entity_type:
+            continue
+        f = rec.get("fields") or {}
+        if _match_where(f, where):
+            yield rec
+
+
+def _parse_measure(spec: str):
+    """"count" | "sum:field" | "avg:field" | "min:field" | "max:field" |
+    "distinct:field" → (fn, field)."""
+    if spec in ("count", "count:*"):
+        return "count", None
+    fn, _, field = spec.partition(":")
+    return fn, (field or None)
+
+
+def _sort_key(v):
+    """Type-safe sort key: numerics first (by value), then everything else by str."""
+    n = _num(v)
+    return (0, n) if n is not None else (1, "" if v is None else str(v))
+
+
+def _do_aggregate(ds, group_by, measures, entity_type, where, order_by, limit):
+    if isinstance(group_by, str):
+        group_by = [group_by]
+    measures = measures or {"count": "count"}
+    groups: dict[tuple, dict] = {}
+    for rec in _iter_records(ds, entity_type, where):
+        f = rec.get("fields") or {}
+        key = tuple(f.get(g) for g in group_by)
+        acc = groups.get(key)
+        if acc is None:
+            acc = {m: {"sum": 0.0, "n": 0, "min": None, "max": None,
+                       "set": set(), "cnt": 0} for m in measures}
+            groups[key] = acc
+        for name, spec in measures.items():
+            fn, field = _parse_measure(spec)
+            a = acc[name]
+            if fn == "count":
+                a["cnt"] += 1
+            elif fn in ("distinct", "count_distinct"):
+                a["set"].add(f.get(field))
+            else:
+                v = _num(f.get(field))
+                if v is not None:
+                    a["sum"] += v
+                    a["n"] += 1
+                    a["min"] = v if a["min"] is None else min(a["min"], v)
+                    a["max"] = v if a["max"] is None else max(a["max"], v)
+    rows = []
+    for key, acc in groups.items():
+        row = dict(zip(group_by, key))
+        for name, spec in measures.items():
+            fn, _f = _parse_measure(spec)
+            a = acc[name]
+            if fn == "count":
+                row[name] = a["cnt"]
+            elif fn in ("distinct", "count_distinct"):
+                row[name] = len(a["set"])
+            elif fn == "sum":
+                row[name] = round(a["sum"], 6)
+            elif fn == "avg":
+                row[name] = round(a["sum"] / a["n"], 6) if a["n"] else None
+            elif fn == "min":
+                row[name] = a["min"]
+            elif fn == "max":
+                row[name] = a["max"]
+        rows.append(row)
+    total = len(rows)
+    if order_by:
+        desc = order_by.startswith("-")
+        k = order_by[1:] if desc else order_by
+        rows.sort(key=lambda r: _sort_key(r.get(k)), reverse=desc)
+    if limit and limit > 0:
+        rows = rows[:limit]
+    return {"dataset": ds.name, "entity_type": entity_type, "group_by": group_by,
+            "measures": measures, "groups": total, "rows": rows}
+
+
+def _write_rows(rows: list[dict], fmt: str, stem: str):
+    """Spill rows to a local file; return (path, bytes, count). ndjson or csv."""
+    import tempfile
+    import secrets
+    export_dir = os.environ.get("QUICKBEAM_EXPORT_DIR") or \
+        os.path.join(tempfile.gettempdir(), "quickbeam-exports")
+    os.makedirs(export_dir, exist_ok=True)
+    ext = "csv" if fmt == "csv" else "ndjson"
+    path = os.path.join(export_dir, f"{stem}-{secrets.token_hex(3)}.{ext}")
+    if fmt == "csv":
+        import csv
+        cols: list[str] = []
+        for r in rows:
+            for k in r:
+                if k not in cols:
+                    cols.append(k)
+        with open(path, "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=cols)
+            w.writeheader()
+            w.writerows(rows)
+    else:
+        with open(path, "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")
+    return path, os.path.getsize(path), len(rows)
+
+
+def _project_record(rec: dict, fields: list[str] | None) -> dict:
+    f = rec.get("fields") or {}
+    out = {"id": rec["id"], "entityType": rec.get("entityType")}
+    if fields is None:
+        out.update(f)
+    else:
+        for k in fields:
+            out[k] = f.get(k)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # TOOLS
 # ---------------------------------------------------------------------------
 @mcp.tool
@@ -571,6 +756,114 @@ async def neighbors(dataset: str, id: str, rel: str | None = None,
     if settlement is not None:
         out["payment"] = settlement
     return out
+
+
+@mcp.tool
+async def aggregate(dataset: str, group_by, measures: dict | None = None,
+                    entity_type: str | None = None, where: dict | None = None,
+                    order_by: str | None = None, limit: int = 50) -> dict:
+    """Group records SERVER-SIDE and return only the aggregated rows — the answer,
+    not the raw data. Use this instead of pulling a whole entity type through
+    `search` when the question is "how much / how many / top-N per X": largest
+    traders, flow per asset, holders by sector, transfer counts per wallet.
+
+    The heavy reduction happens here over the in-memory records, so a 3,500-row
+    corpus comes back as an N-row table — no large result set crosses the context.
+
+    Args:
+        dataset: The dataset name from `list_datasets`.
+        group_by: A field name (or list of field names) to group on, e.g.
+            "fromAddr" or ["symbol", "signal"].
+        measures: Map of output_name → aggregation, where each aggregation is one
+            of "count", "sum:FIELD", "avg:FIELD", "min:FIELD", "max:FIELD",
+            "distinct:FIELD". Defaults to {"count": "count"}.
+        entity_type: Optional — restrict to one entityType before grouping
+            (e.g. "Transfer"), see `describe`.
+        where: Optional field predicates ANDed together. Each value is a scalar
+            (equality) or a dict of operators: {gt,gte,lt,lte,ne,in,contains,exists}.
+            Example: {"symbol": "BABA", "value": {"gte": 1}}.
+        order_by: Output column to sort by; prefix "-" for descending
+            (e.g. "-usd"). Numerics sort numerically.
+        limit: Max rows returned after ordering (default 50; 0 = all).
+
+    Returns:
+        { "dataset", "entity_type", "group_by", "measures", "groups": <total
+          distinct groups>, "rows": [ {<group fields>, <measures>} ... ] }
+
+    Example — largest traders by outbound activity and token volume:
+        aggregate("robinhood", "fromAddr", entity_type="Transfer",
+                  measures={"legs": "count", "tok": "sum:value"}, order_by="-legs")
+    Free — no payment required.
+    """
+    try:
+        ds = await _ensure_loaded(dataset)
+    except httpx.HTTPError as exc:
+        return {"error": "dataset_unavailable", "dataset": dataset, "detail": str(exc)}
+    try:
+        return _do_aggregate(ds, group_by, measures, entity_type, where, order_by, limit)
+    except Exception as exc:  # noqa: BLE001 — surface bad measure/field specs to the agent
+        return {"error": "aggregate_failed", "dataset": dataset, "detail": str(exc)}
+
+
+@mcp.tool
+async def export(dataset: str, entity_type: str | None = None,
+                 fields: list[str] | None = None, kind: str = "records",
+                 where: dict | None = None, format: str = "ndjson") -> dict:
+    """Spill a PROJECTED slice of the dataset to a LOCAL FILE and return its PATH —
+    not the rows. Use for corpus-wide analytics an agent runs in its own code:
+    pull only the columns you need, then query the file with duckdb/pandas/jq.
+    This is how you get the full 3,500-record transfer log without streaming
+    megabytes of JSON through the model context.
+
+    Co-located only: the file is written to this server's local disk (the pull-
+    client is designed to sit on the same box as its consumer). The returned path
+    is absolute.
+
+    Args:
+        dataset: The dataset name from `list_datasets`.
+        entity_type: Optional — restrict to one entityType (e.g. "Transfer").
+        fields: Optional list of field names to project. Omit for all fields.
+            Each output row is FLAT — {id, entityType, <fields...>} — so it loads
+            straight into a dataframe or SQL table.
+        kind: "records" (default) or "edges" (dump the linkset {rel,from,to,
+            fromType,toType} for graph/cycle analysis — `entity_type`/`fields`
+            are ignored).
+        where: Optional field predicates (same grammar as `aggregate.where`),
+            applied to records only.
+        format: "ndjson" (default) or "csv".
+
+    Returns:
+        { "dataset", "kind", "path", "rows", "bytes", "format", "fields" }
+
+    Example — the four columns needed for wallet-flow analysis:
+        export("robinhood", entity_type="Transfer",
+               fields=["symbol", "fromAddr", "toAddr", "value"])
+    Free — no payment required.
+    """
+    try:
+        ds = await _ensure_loaded(dataset)
+    except httpx.HTTPError as exc:
+        return {"error": "dataset_unavailable", "dataset": dataset, "detail": str(exc)}
+
+    fmt = "csv" if format == "csv" else "ndjson"
+    if kind == "edges":
+        edges = await _ensure_edges(ds)
+        rows = [{"rel": e.get("rel"), "from": e.get("from"), "to": e.get("to"),
+                 "fromType": e.get("fromType"), "toType": e.get("toType")}
+                for e in edges]
+        stem = f"{dataset}-edges"
+        out_fields = ["rel", "from", "to", "fromType", "toType"]
+    else:
+        rows = [_project_record(rec, fields)
+                for rec in _iter_records(ds, entity_type, where)]
+        stem = f"{dataset}-{entity_type or 'all'}"
+        out_fields = fields
+    try:
+        path, nbytes, count = _write_rows(rows, fmt, stem)
+    except OSError as exc:
+        return {"error": "export_failed", "dataset": dataset, "detail": str(exc)}
+    return {"dataset": dataset, "kind": kind, "path": path, "rows": count,
+            "bytes": nbytes, "format": fmt, "fields": out_fields}
 
 
 # ---------------------------------------------------------------------------

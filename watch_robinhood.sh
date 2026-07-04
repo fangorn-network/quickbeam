@@ -14,7 +14,7 @@ fi
 
 # Current market bundle (see stage_volumes/.fangorn/config.json — keep in sync
 # after a `fangorn repo init` against a new schema version).
-BUNDLE="test.robinhood.chain.market.07032026.1=0x5656c4bccb0d4c9cdd26bd60693687cb8b2e9bc30850a4cbb3a7d4c5b96643ca"
+BUNDLE="tony.robinhood.chain.market.v2=0xfa7778dfe96d30e47e328189a73c4d33c8d5f801a30d9b0929db698169faba2d"
 
 # Dedicated checkpoint + role-map files: the defaults (./db/ingest_checkpoint.json,
 # ./db/role_map.json) are shared across every watched bundle — a robinhood run must
@@ -34,5 +34,5 @@ exec "$QUICKBEAM" watch \
   --role-map-file ./db/robinhood_role_map.json \
   --cdn-dir ./cdn \
   --cdn-domain robinhood \
-  --poll-interval 60 \
+  --poll-interval 30 \
   $BUILD_AUTH
