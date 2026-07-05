@@ -17,11 +17,13 @@ pages and pull genuine on-chain volume. This, times `--accumulate`, is what turn
 few-hundred-point sampler into a deep ledger.
 
 ```bash
+cd ~/fangorn/embeddings && source venv/bin/activate
+export STAGE=~/fangorn/embeddings/stage_volumes
 # 1. Ingest daemon — chain → fangorn commit/push, as a GROWING LEDGER.
 #    --checkpoint-file makes each cycle read only new flow instead of re-scanning.
 #    Look for "mode=ledger (accumulate)" and per-cycle "Transfer : N (+k new)".
 quickbeam data robinhood --with-transfers --watch --poll-interval 120 \
-  --output-dir $STAGE --volume 1 --publish --repo <your-fangorn-repo> \
+  --output-dir $STAGE --volume 1 --publish --repo ~/fangorn/embeddings \
   --accumulate --checkpoint-file db/robinhood_ingest_block.json \
   --max-transfers 500
 
@@ -307,7 +309,7 @@ fangorn's structural sharing re-uploads only the tokens that changed.
 cd ~/fangorn/embeddings
 quickbeam data robinhood --watch --poll-interval 120 \
   --output-dir $STAGE --volume 1 \
-  --publish --repo ~/fangorn/embeddings/rh-market
+  --publish --repo ~/fangorn/embeddings/
 #   (drop --publish to only re-write volumes and let an external cron do commit/push;
 #    or run this one-shot from cron every N min instead of --watch)
 ```
@@ -453,7 +455,7 @@ sentiment tone, asset blurb leads with the business profile, role-map text compo
 | `quickbeam/pipelines/robinhood.py` | **new** — pure shaper (`verbalize` + `_PROFILES`), live `_read_robinhood_chain` reader, `build_graph`/`emit_volumes` (ingest), publish leg |
 | `quickbeam/pipelines/test_robinhood.py` | **new** — 9 unit tests |
 | `quickbeam/cli.py` | **edit** — registered `quickbeam data robinhood` (ingest only) |
-| `quickbeam/embeddings.py` | **edit** — added the `asset` root profile to `ROOT_PROFILES` |
+| `quickbeam/ingest/graph/projection.py` | **edit** — added the `asset` root profile to `ROOT_PROFILES` |
 
 ---
 

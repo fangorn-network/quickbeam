@@ -73,11 +73,9 @@ def parse_args():
                    help="View schema as name=schemaId (fuses sources + linksets).")
 
     # Projection profiles — how graph roots become documents. Mirrors `build`.
-    p.add_argument("--root-type", default="Track",
-                   help="Root node type when no --root-profile is given (default: Track).")
     p.add_argument("--root-profile", action="append", default=[],
-                   help="Named projection(s) to emit, repeatable. Falls back to a single "
-                        "--root-type projection when omitted.")
+                   help="Named projection(s) to emit, repeatable (required). "
+                        "e.g. --root-profile asset --root-profile transfer.")
     p.add_argument("--profiles-file", default=None,
                    help="Optional JSON file of custom/override root profiles.")
     p.add_argument("--max-depth", type=int, default=2, help="Graph-walk depth per profile.")

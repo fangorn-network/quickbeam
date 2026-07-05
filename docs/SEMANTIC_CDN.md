@@ -99,7 +99,7 @@ per-type counts. Together these let a pulled domain drive a generic browser with
 hardcoding.
 
 Domains can overlap, slice by publisher (`"owner": ["0x…"]`), or mirror your
-[root profiles](../quickbeam/embeddings.py) (track / artist / place / event …). The
+[root profiles](../quickbeam/ingest/graph/projection.py) (track / artist / place / event …). The
 operator decides the granularity — fine-grained domains let users pull only what they
 want; a single broad domain ships the whole corpus at once.
 

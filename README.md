@@ -1,6 +1,6 @@
 # quickbeam
 
-This repo contains infrastructure for building and serving vector search over on-chain data sources registered with [Fangorn](https://github.com/fangorn-network/fangorn). The core script pulls manifests from The Graph, resolves payloads from IPFS, joins across schemas, and then builds embeddings via fastembed/ONNX.
+This repo contains infrastructure for building and serving vector search over on-chain data sources registered with [Fangorn](https://github.com/fangorn-network/fangorn). The core script pulls manifests from The Graph, resolves payloads from IPFS, walks the typed graph they describe, and then builds embeddings via fastembed/ONNX.
 
 > **Two meanings of "bundle".** This doc uses the word in two unrelated ways:
 > - **Schema bundle** (`--bundle`) — a registered subgraph schema whose v3 manifests carry typed node chunks plus an edge chunk. The builder walks those edges to join records.
@@ -16,12 +16,33 @@ This repo contains infrastructure for building and serving vector search over on
 - **`quickbeam mcp`**: a [Model Context Protocol](#mcp-server) layer for agents. A self-contained **local pull-client of the [Semantic CDN](#semantic-cdn)** — it pulls a dataset's shards and searches them locally (the query never leaves the process), exposing semantic search *and* typed-edge graph traversal over raw records, with on-chain provenance on every result, and can optionally charge the calling agent per tool call via [x402](#x402-payment-gating).
 - **`quickbeam cdn` + `quickbeam pull`**: the [Semantic CDN](#semantic-cdn) — instead of running queries on the server (where the node sees every query = intent), the operator *bakes* the embedded graph into immutable, content-addressed shard files (a "domain") and *serves* them as static, resumable downloads. A user *pulls* a domain into their own local Qdrant and queries it offline. Knowledge moves to the user; the network never sees a query. See [docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md).
 
-The builder produces the same record shape — `{ track_id, fields, meta }` — through one of two interchangeable join phases:
+The builder produces the record shape `{ track_id, fields, meta }` by walking a typed graph, through one of two data sources:
 
-- **Flat schemas (`--schema`/`--primary`)** — schemas are fetched independently, deduped (newest manifest wins per entry name), then joined on the primary schema's entry name (`trackId`).
-- **Schema bundle (`--bundle`)** — a single bundle schema publishes v3 manifests carrying typed node chunks (`{id, type, fields}`) and an edge chunk (`{rel, from, to}`). The builder walks outgoing edges from each root-type node and flattens neighbor fields into the root record — no track-id guessing.
+- **Schema bundle (`--bundle`)** — a single bundle schema publishes manifests carrying typed node chunks (`{id, type, fields}`) and edge chunks (`{rel, from, to}`). The builder walks one publisher's graph.
+- **Composed view (`--view`)** — fuses several publishers' bundles into one graph, joining on global identity (Entity URI + aliases + `sameAs` linksets) before projecting.
 
-Everything downstream (role inference, embedding text, Qdrant payload) is identical for both join modes.
+Both are projected the same way: one or more **root profiles** (`--root-profile`, see `ROOT_PROFILES`) each walk the graph from a chosen root type and emit a distinct document. Everything downstream (role inference, embedding text, Qdrant payload) is identical.
+
+### Ingest engine layout
+
+The offline ingestion engine (shared by `build` and `watch`) lives in the `quickbeam.ingest` package:
+
+```
+quickbeam/ingest/
+  build.py             the `quickbeam build` CLI (parse_args + main)
+  identity.py          deterministic point ids + the matryoshka vector transform
+  checkpoint.py        resumable-build state (ingest checkpoint + role map)
+  embed.py             fastembed engine (GPU-OOM resilient), doc-text composition, Qdrant indexes + upload
+  umap.py              2-D UMAP projection → catalog-map artifact / px-py payloads
+  commits.py           git-native tips: unwrap commits, diff, tombstone removed entities
+  sources/subgraph.py  The Graph event queries
+  sources/ipfs.py      IPFS CID resolution
+  graph/projection.py  ROOT_PROFILES, the graph walk, and the shared join helpers
+  graph/bundle.py      single-publisher bundle join
+  graph/view.py        multi-source view fusion (union-find over global identity)
+```
+
+`quickbeam/embeddings.py` is now a thin back-compat facade that re-exports this package, so existing `from quickbeam.embeddings import ...` imports keep working; new code should import from the specific `quickbeam.ingest.*` module.
 
 ---
 
@@ -69,8 +90,6 @@ pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-su
 
 ### 1. Run Qdrant
 
-quickbeam build --bundle "fangorn.mb.creativecore.v4=0xba5436c0aac6cf01d35f5da35ca2a8011d3da7dda14b5e52548b73075ec08f54" --root-type Recording --reset
-
 ```sh
 docker run -d -p 6333:6333 -p 6334:6334 \
   -v "$(pwd)/python/qdrant_storage:/qdrant/storage:z" \
@@ -91,26 +110,12 @@ $LD_LIBRARY_PATH
 python -c "import onnxruntime as ort; print('Available Providers:', ort.get_available_providers())"
 ```
 
-#### From flat schemas
-
-```sh
-quickbeam build \
-  -s test.sond3r.track.invariants.3=0xc4103f... \
-  -s test.sond3r.track.taxonomy.2=0x382fda... \
-  --primary test.sond3r.track.invariants.3 \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
-  --dim 256 \
-  --umap \
-  --reset
-```
-
 #### From a schema bundle
 
 ```sh
 quickbeam build \
   --bundle fangorn.mb.creativecore.v1=0xac92db425c174e4301cd41e81e16d99fd2c5f4e2f13b739004996e95875e990d \
-  --root-type Track \
+  --root-profile track \
   --graph-api-key <> \
   --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
   --dim 256 \
@@ -118,7 +123,7 @@ quickbeam build \
   --reset 
 ```
 
-`--bundle` and `--schema`/`--primary` are mutually exclusive. When `--bundle` is set the builder takes the edge-walk path.
+Pass `--root-profile` at least once (repeatable) to choose which projection(s) to emit. Use `--view NAME=0x...` instead of `--bundle` to fuse several publishers' bundles into one graph before projecting.
 
 #### Resuming a build
 
@@ -180,11 +185,8 @@ quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
 
 ```sh
 quickbeam serve \
-  -s test.sond3r.track.invariants.3=0xc4103f... \
-  -s test.sond3r.track.taxonomy.2=0x382fda... \
-  --primary test.sond3r.track.invariants.3 \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs
+  --collection fangorn \
+  --qdrant-host localhost --qdrant-port 6333
 ```
 
 The server starts immediately and serves whatever is already in Qdrant. Use `POST /reingest` to pull new subgraph data without restarting.
@@ -605,7 +607,7 @@ When done the script prints the bundle name and ID:
 ```sh
 quickbeam build \
   --bundle "fangorn.mb.bundle.v1=0xabc123..." \
-  --root-type Track \
+  --root-profile track \
   --graph-api-key <key> \
   --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
   --ipfs-gateway-key <pinata-jwt> \
@@ -624,10 +626,11 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 
 | Flag | Default | Description |
 |---|---|---|
-| `--schema` / `-s` | | `NAME=0x...` schema ID pair. Repeatable. Flat-schema join mode. |
-| `--bundle` | | `NAME=0x...` bundle schema. Edge-walk join mode (replaces `--schema`/`--primary`). |
-| `--primary` / `-p` | first schema | Schema whose entry names are the join key (flat-schema mode) |
-| `--root-type` | `Track` | Bundle node type emitted as one record per node (bundle mode) |
+| `--bundle` | | `NAME=0x...` bundle schema — walks one publisher's typed graph. |
+| `--view` | | `NAME=0x...` composed view — fuses several publishers' bundles into one graph before projecting. Mutually exclusive with `--bundle`. |
+| `--root-profile` | required | Named projection to emit, repeatable (see `ROOT_PROFILES`). e.g. `--root-profile track` |
+| `--profiles-file` | | JSON file of custom/override root profiles, merged over the built-ins |
+| `--max-depth` | `2` | Graph-walk depth for profiles that don't set one |
 | `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
 | `--graph-api-key` | `""` | The Graph gateway API key |
 | `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway |
@@ -654,7 +657,7 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 | Flag | Default | Description |
 |---|---|---|
 | `--bundle` | required | `NAME=0x...` bundle schema to watch |
-| `--root-type` | `Track` | Bundle root node type |
+| `--root-profile` | required | Named projection to emit, repeatable. e.g. `--root-profile asset --root-profile transfer` |
 | `--owner` | | Filter to this publisher address. Repeatable. |
 | `--dataset` | | Filter to these dataset names. Accepts multiple values. |
 | `--poll-interval` | `60` | Seconds between subgraph polls |
@@ -853,19 +856,11 @@ Join diagnostics — matched/unmatched track IDs across primary and secondary sc
 
 ## Join semantics
 
-### Flat schemas
+### Graph projection
 
-- The `--primary` schema's entry names are the join key (`trackId`)
-- All other schemas are indexed by entry name and merged into the primary field set; secondary wins on conflict (enrichment pattern)
-- Multiple secondary entries per key are merged left-to-right; last writer wins within that schema
-- Entries in secondary schemas with no matching primary entry are silently dropped
+- One record is emitted per node whose `type` matches a `--root-profile`'s `root_type`; the root node's stable, publisher-assigned `id` (or its Entity URI in a view) is the join key.
+- The profile walks the **undirected** graph up to `max_depth` hops from the root, folding the neighbor types it lists in `include` into grouped, deduped, capped label lists.
+- Nodes not reachable from any root contribute no fields.
+- Manifests that are not valid bundles (missing `kind: "bundle"` or `edgeChunks`) are skipped.
 
-### Schema bundle
-
-- One record is emitted per `--root-type` node; the root node's stable, publisher-assigned `id` is the join key
-- Only outgoing edges from the root node are walked (one hop); each neighbor's fields are flattened in
-- On key conflicts, the neighbor wins — same enrichment semantics as the flat secondary merge
-- Edges into the root, and nodes not reachable from any root, contribute no fields
-- Manifests that are not valid v3 bundles (missing `version: 3` or an `edgeChunk`) are skipped
-
-In both modes the semantic role map (`title`, `subtitle`, `tags`, `spatial`, etc.) is inferred automatically from field names and value shapes across the merged dataset. This is what makes the same server and app work for music tracks, OSM changesets, or any other Fangorn schema without per-domain configuration.
+The semantic role map (`title`, `subtitle`, `tags`, `spatial`, etc.) is inferred automatically from field names and value shapes across the merged dataset. This is what makes the same server and app work for music tracks, OSM changesets, or any other Fangorn schema without per-domain configuration.

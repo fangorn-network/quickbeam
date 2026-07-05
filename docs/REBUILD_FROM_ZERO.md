@@ -489,7 +489,7 @@ walking up to `max_depth` hops and folding the neighbor entities it cares about
 into grouped label lists. The same graph yields a Track view, an Artist view, a
 Place view, … — **each a separate embedding** carrying an `entityType` you can
 filter on at search time. Built-in profiles live in `ROOT_PROFILES` in
-`quickbeam/embeddings.py`:
+`quickbeam/ingest/graph/projection.py`:
 
 | Profile | Root type | Depth | Folds in |
 |---|---|---|---|

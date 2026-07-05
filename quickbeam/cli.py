@@ -191,14 +191,6 @@ def places_fetch(ctx: typer.Context):
     main()
 
 
-@data_app.command(**_PASSTHROUGH)
-def placespg(ctx: typer.Context):
-    """Convert Postgres places_raw (Google Places) into a Fangorn graph."""
-    _fwd("quickbeam data placespg", ctx.args)
-    from quickbeam.pipelines.places_pg import run
-    run()
-
-
 @data_app.command("events-fetch", **_PASSTHROUGH)
 def events_fetch(ctx: typer.Context):
     """Scrape Eventbrite organizers / Tribe calendars into Postgres events_raw."""
@@ -208,27 +200,11 @@ def events_fetch(ctx: typer.Context):
 
 
 @data_app.command(**_PASSTHROUGH)
-def eventspg(ctx: typer.Context):
-    """Convert events_raw (Eventbrite/Tribe) into a Fangorn graph, merged with places."""
-    _fwd("quickbeam data eventspg", ctx.args)
-    from quickbeam.pipelines.events_pg import run
-    run()
-
-
-@data_app.command(**_PASSTHROUGH)
 def prebake(ctx: typer.Context):
     """Embed local volume node files straight into Qdrant (offline build)."""
     _fwd("quickbeam data prebake", ctx.args)
     from quickbeam.pipelines.prebake import run
     run()
-
-
-@data_app.command(**_PASSTHROUGH)
-def osm(ctx: typer.Context):
-    """Fetch recent OSM changesets for a bounding box."""
-    _fwd("quickbeam data osm", ctx.args)
-    from quickbeam.pipelines.osm import main
-    main()
 
 
 @data_app.command(**_PASSTHROUGH)
@@ -247,12 +223,29 @@ def keylink(ctx: typer.Context):
     run_keylink()
 
 
-@data_app.command(**_PASSTHROUGH)
-def robinhood(ctx: typer.Context):
-    """Ingest Robinhood-Chain financial events into the embed → Qdrant → CDN-delta loop."""
-    _fwd("quickbeam data robinhood", ctx.args)
-    from quickbeam.pipelines.robinhood import run
-    run()
+# ── Pluggable ingestion sources — one `data <verb>` command per discovered Source.
+# Replaces the hand-written robinhood/osm/eventspg stanzas: `discover_sources()` merges
+# the in-tree registry with any `quickbeam.sources` entry points, so a third-party
+# scraper package gets its own `data <verb>` command (with the full watch/publish loop)
+# with zero changes here. Each command lazily loads its Source class and hands off to
+# the shared harness `run_source`.
+def _register_source_commands() -> None:
+    from quickbeam.ingest.scrapers import discover_sources
+    from quickbeam.ingest.scrapers import run_source
+
+    def _make(verb: str, loader):
+        def _cmd(ctx: typer.Context):
+            _fwd(f"quickbeam data {verb}", ctx.args)
+            run_source(loader()())
+        _cmd.__doc__ = (f"Ingest the '{verb}' source into staged node/edge volumes "
+                        f"(harness: --watch/--publish/--dry-run). See `data {verb} --help`.")
+        return _cmd
+
+    for verb, loader in discover_sources().items():
+        data_app.command(verb, **_PASSTHROUGH)(_make(verb, loader))
+
+
+_register_source_commands()
 
 
 if __name__ == "__main__":

@@ -93,7 +93,7 @@ Register + publish (fangorn CLI):
 fangorn schema register fangorn.places.businessprofile.v0 -e
 ```
 
-`entityType` is set at embed time from the record's root type (`embeddings.py:1085`),
+`entityType` is set at embed time from the record's root type (`quickbeam/ingest/graph/projection.py`, `_project`),
 so the RecordSet must be published with root type `BusinessProfile`.
 
 ## The submit form — a generic schema-browser shell (examples app)
