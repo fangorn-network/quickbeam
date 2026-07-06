@@ -35,16 +35,10 @@ dev   = ["pytest", "fastmcp", "eth-account"]
 [project.scripts]
 quickbeam = "quickbeam.cli:app"
 
-# Pluggable ingestion sources — each entry becomes a `quickbeam data <name>` command
-# (see quickbeam/ingest/scrapers). A third-party package registers its own scraper by
-# adding an entry to this group; `discover_sources()` picks it up automatically. These
-# in-tree entries mirror the built-in registry so a plain `pip install -e .` wires them
-# through the same discovery path an external package uses.
-[project.entry-points."quickbeam.sources"]
-robinhood = "quickbeam.ingest.scrapers.robinhood:RobinhoodSource"
-osm       = "quickbeam.ingest.scrapers.osm:OsmSource"
-eventspg  = "quickbeam.ingest.scrapers.events:EventsSource"
-placespg  = "quickbeam.ingest.scrapers.places:PlacesSource"
+# Pluggable ingestion sources — quickbeam core registers NONE. Each source lives in an
+# external package that adds an entry to the `quickbeam.sources` group; `discover_sources()`
+# picks it up so `quickbeam data <name>` (and `quickbeam.Publisher`) work for it. See the
+# `quickbeam-publisher` example project for how a source package registers itself.
 
 [tool.setuptools.packages.find]
 where = ["."]

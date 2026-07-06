@@ -224,11 +224,11 @@ def keylink(ctx: typer.Context):
 
 
 # ── Pluggable ingestion sources — one `data <verb>` command per discovered Source.
-# Replaces the hand-written robinhood/osm/eventspg stanzas: `discover_sources()` merges
-# the in-tree registry with any `quickbeam.sources` entry points, so a third-party
-# scraper package gets its own `data <verb>` command (with the full watch/publish loop)
-# with zero changes here. Each command lazily loads its Source class and hands off to
-# the shared harness `run_source`.
+# quickbeam core registers none: `discover_sources()` returns only the sources contributed
+# by installed packages via `quickbeam.sources` entry points, so a scraper package gets its
+# own `data <verb>` command (with the full watch/publish loop) with zero changes here. With
+# no source package installed, `data` simply exposes the built-in extract/schemagen verbs.
+# Each command lazily loads its Source class and hands off to the shared harness `run_source`.
 def _register_source_commands() -> None:
     from quickbeam.ingest.scrapers import discover_sources
     from quickbeam.ingest.scrapers import run_source

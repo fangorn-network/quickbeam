@@ -6,35 +6,36 @@ A `Source` (see `source.py`) supplies read + shape + cursor; `run_source` (see
 daemon, and publish-to-fangorn. See `docs/SCRAPER_HARNESS.md`.
 
 Sources are DISCOVERED (`discover_sources`) so `cli.py`'s `data` sub-app registers
-one command per source with no hand-written stanza. In-tree sources live in the
-built-in registry below; a third-party pip package registers by adding an entry point
-to the `quickbeam.sources` group — `quickbeam data <name>` then works with the full
-watch/publish/checkpoint loop for free.
+one command per source with no hand-written stanza. quickbeam core ships NO concrete
+sources — every source lives in an external package that registers an entry point in
+the `quickbeam.sources` group; `quickbeam data <name>` then works with the full
+watch/publish/checkpoint loop for free (and the same class is usable via
+`quickbeam.Publisher`). See the `quickbeam-publisher` example project.
 """
 from typing import Callable
 
-from .harness import compose_searchable_text, emit_volumes, run_source
+from .harness import (build_parser, compose_searchable_text, emit_volumes,
+                      fangorn_commit_push, fangorn_repo_init, ingest_once, run_source)
 from .source import Source, SourceBase
 
 __all__ = [
     "Source",
     "SourceBase",
     "run_source",
+    "ingest_once",
+    "build_parser",
     "emit_volumes",
     "compose_searchable_text",
+    "fangorn_commit_push",
+    "fangorn_repo_init",
     "discover_sources",
 ]
 
-# ── Built-in registry — CLI verb → "module:ClassName" for the in-tree sources.
-# The verb is the `data <verb>` command name; it need not equal Source.name (e.g.
-# `eventspg` runs EventsSource). Kept as strings so the (heavier) source modules are
-# imported only when a command actually runs, keeping CLI startup light.
-_BUILTIN: dict[str, str] = {
-    "robinhood": "quickbeam.ingest.scrapers.robinhood:RobinhoodSource",
-    "osm":       "quickbeam.ingest.scrapers.osm:OsmSource",
-    "eventspg":  "quickbeam.ingest.scrapers.events:EventsSource",
-    "placespg":  "quickbeam.ingest.scrapers.places:PlacesSource",
-}
+# quickbeam core registers NO built-in sources — the framework is source-agnostic.
+# Sources are contributed entirely by external packages via `quickbeam.sources` entry
+# points (see `discover_sources`). This dict exists only as the (empty) seed those
+# entry points overlay; keep it empty so core never hard-codes a concrete source.
+_BUILTIN: dict[str, str] = {}
 
 
 def _load_spec(spec: str) -> Callable[[], type]:

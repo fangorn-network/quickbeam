@@ -297,10 +297,69 @@ def watch_ingest(src: Source, args) -> None:
         time.sleep(args.poll_interval)
 
 
+# ---------------------------------------------------------------------------
+# FANGORN CLI DRIVERS — reusable subprocess helpers shared by the harness's
+# `--publish` leg and the programmatic `quickbeam.Publisher` façade. Each shells
+# to the fangorn CLI (`--fangorn-bin` may be a FULL command, not just a path — e.g.
+# the dev invocation `dotenvx run -f /abs/.env -- node /abs/dist/src/cli/cli.js` —
+# so it is shell-split). `tag` is only a log prefix.
+# ---------------------------------------------------------------------------
+def _run_fangorn_steps(steps: list[tuple[str, list[str]]], *, cwd: str,
+                       fangorn_bin: str, tag: str) -> bool:
+    """Run a sequence of (label, argv-tail) fangorn steps in `cwd`. Returns False on
+    the first failure (missing CLI or non-zero exit), True if all succeed."""
+    prefix = shlex.split(fangorn_bin)
+    for label, tail in steps:
+        cmd = [*prefix, *tail]
+        print(f"[{tag}] fangorn {label} (cwd={cwd}): {' '.join(cmd)}")
+        try:
+            r = subprocess.run(cmd, cwd=cwd)
+        except FileNotFoundError:
+            print(f"[{tag}] fangorn CLI not found (fangorn-bin {fangorn_bin!r}, resolved "
+                  f"to {prefix[0]!r}). Install the git-native fangorn or pass its full "
+                  f"invocation, e.g. \"dotenvx run -f ~/fangorn/fangorn/.env -- node "
+                  f"~/fangorn/fangorn/dist/src/cli/cli.js\".", file=sys.stderr)
+            return False
+        if r.returncode != 0:
+            print(f"[{tag}] fangorn {label} failed (exit {r.returncode})", file=sys.stderr)
+            return False
+    return True
+
+
+def fangorn_repo_init(*, repo: str, fangorn_bin: str, name: str, schema_name: str,
+                      tag: str = "publish") -> bool:
+    """`fangorn repo init <name> -s <schema_name>` in `repo`. The bundle schema id is
+    deterministic from its name, so this works BEFORE the schema is registered on-chain
+    (registration happens on the first `commit --bundle`). No-op-safe to call only when
+    `<repo>/.fangorn` is absent."""
+    return _run_fangorn_steps(
+        [("repo init", ["repo", "init", name, "-s", schema_name])],
+        cwd=repo, fangorn_bin=fangorn_bin, tag=tag)
+
+
+def fangorn_commit_push(*, repo: str, fangorn_bin: str, output_dir: str, volume: int,
+                        message: str, schemas_dir: str | None = None,
+                        tag: str = "publish") -> bool:
+    """`fangorn commit --bundle <output_dir> --volume N` (+ `--schemas-dir` when given,
+    which auto-registers any missing schemas) followed by `fangorn push`, run in `repo`.
+    This is the ingest→publish leg: the on-chain write that emits the DataSource events a
+    subgraph indexes and `watch --bundle` reads."""
+    commit_tail = ["commit", "--bundle", os.path.abspath(output_dir),
+                   "--volume", str(volume), "-m", message]
+    if schemas_dir:
+        commit_tail += ["--schemas-dir", os.path.abspath(schemas_dir)]
+    ok = _run_fangorn_steps(
+        [("commit", commit_tail), ("push", ["push"])],
+        cwd=repo, fangorn_bin=fangorn_bin, tag=tag)
+    if ok:
+        print(f"[{tag}] published snapshot to fangorn ✓")
+    return ok
+
+
 def _publish_to_fangorn(src: Source, args) -> bool:
-    """Publish the just-written volumes on-chain: `fangorn commit --bundle` + `fangorn
-    push`, run in the repo dir. This is the ingest→publish leg — the on-chain write
-    that emits the DataSource events a subgraph indexes and `watch --bundle` reads."""
+    """The harness `--publish` leg: commit + push the just-written volumes. Thin wrapper
+    over `fangorn_commit_push` that adds the initialized-repo preflight and default
+    commit message (behaviour-preserving)."""
     # Preflight: commit --bundle only works inside an initialized repo. Fail clearly
     # once instead of a confusing non-zero exit every cycle.
     if not os.path.isdir(os.path.join(args.repo, ".fangorn")):
@@ -311,33 +370,9 @@ def _publish_to_fangorn(src: Source, args) -> bool:
     msg = args.commit_message or (
         f"{src.name} snapshot "
         + datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
-    # --fangorn-bin may be a full command, not just an executable — e.g. the dev
-    # invocation `dotenvx run -f /abs/.env -- node /abs/dist/src/cli/cli.js`. Split it
-    # so the subcommand/args append cleanly.
-    prefix = shlex.split(args.fangorn_bin)
-    steps = [
-        ("commit", [*prefix, "commit", "--bundle",
-                    os.path.abspath(args.output_dir), "--volume", str(args.volume),
-                    "-m", msg]),
-        ("push", [*prefix, "push"]),
-    ]
-    for label, cmd in steps:
-        print(f"[{src.name}] fangorn {label} (cwd={args.repo}): {' '.join(cmd)}")
-        try:
-            r = subprocess.run(cmd, cwd=args.repo)
-        except FileNotFoundError:
-            print(f"[{src.name}] fangorn CLI not found (--fangorn-bin {args.fangorn_bin!r}, "
-                  f"resolved to {prefix[0]!r}). Install the git-native fangorn or pass its "
-                  f"full invocation, e.g. --fangorn-bin \"dotenvx run -f "
-                  f"~/fangorn/fangorn/.env -- node ~/fangorn/fangorn/dist/src/cli/cli.js\". "
-                  f"Skipping publish.", file=sys.stderr)
-            return False
-        if r.returncode != 0:
-            print(f"[{src.name}] fangorn {label} failed (exit {r.returncode})",
-                  file=sys.stderr)
-            return False
-    print(f"[{src.name}] published snapshot to fangorn ✓")
-    return True
+    return fangorn_commit_push(
+        repo=args.repo, fangorn_bin=args.fangorn_bin, output_dir=args.output_dir,
+        volume=args.volume, message=msg, tag=src.name)
 
 
 def run_source(src: Source, argv: list[str] | None = None) -> None:

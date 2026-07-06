@@ -12,3 +12,4 @@ node_modules/
 **/**stage_volumes/
 **/personal_notes/
 /cdn**
+/build

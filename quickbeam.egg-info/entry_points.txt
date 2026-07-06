@@ -1,8 +1,2 @@
 [console_scripts]
 quickbeam = quickbeam.cli:app
-
-[quickbeam.sources]
-eventspg = quickbeam.ingest.scrapers.events:EventsSource
-osm = quickbeam.ingest.scrapers.osm:OsmSource
-placespg = quickbeam.ingest.scrapers.places:PlacesSource
-robinhood = quickbeam.ingest.scrapers.robinhood:RobinhoodSource

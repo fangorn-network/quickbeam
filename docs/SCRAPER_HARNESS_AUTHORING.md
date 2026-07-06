@@ -5,6 +5,10 @@ staged-volume emission, incremental checkpointing, a `--watch` daemon, and
 `--publish` to fangorn. This guide shows how in ~40 lines. Background + rationale:
 [SCRAPER_HARNESS.md](SCRAPER_HARNESS.md).
 
+> **Just want to publish?** [`PUBLISHING_SDK_GUIDE.md`](./PUBLISHING_SDK_GUIDE.md) is the
+> task-oriented walkthrough (install → write a Source → `Publisher` → on-chain) with a
+> runnable example project. This page is the reference for the `Source` contract itself.
+
 ## The idea
 
 The harness (`quickbeam.ingest.scrapers.harness`) owns everything generic. You supply
@@ -106,21 +110,60 @@ def build_graph(self, records):
 Keep raw data in `records` and shaping *config* on the instance. This keeps the
 contract stable and `build_graph` trivially testable (set the attr, call it).
 
-## Register it
+## Register it (optional — for the CLI)
 
-Add one entry point so `discover_sources()` finds it — the CLI verb is the entry-point
-name (it can differ from `Source.name`):
+quickbeam core ships **no** sources; yours lives in your own package. To also get a
+`quickbeam data mysrc` CLI command, add one entry point in that package — the CLI verb
+is the entry-point name (it can differ from `Source.name`):
 
 ```toml
-# pyproject.toml  (in-tree; a third-party package uses the same group)
+# your package's pyproject.toml
 [project.entry-points."quickbeam.sources"]
-mysrc = "quickbeam.ingest.scrapers.mysrc:MySource"
+mysrc = "my_pkg.mysrc:MySource"
 ```
 
-For in-tree sources also add the same line to `_BUILTIN` in
-`quickbeam/ingest/scrapers/__init__.py` so it works before a reinstall. A third-party
-pip package needs **only** the entry point — `quickbeam data mysrc` then works with the
-full watch/publish/checkpoint loop, zero changes to this repo.
+`discover_sources()` picks it up once your package is installed — `quickbeam data mysrc`
+then works with the full watch/publish/checkpoint loop, zero changes to quickbeam. This
+is entirely optional: you can also just hand your `Source` to `quickbeam.Publisher` from
+Python without registering anything (next section).
+
+## Publish from Python (the SDK path)
+
+Registering an entry point wires your source into the `quickbeam data <verb>` CLI. But a
+`Source` is also usable directly from Python — no entry point, no reinstall — via
+`quickbeam.Publisher`, which owns the whole onboard → ingest → publish loop:
+
+```python
+import quickbeam as qb
+from my_scraper import MySource            # your Source — quickbeam core ships none
+
+pub = qb.Publisher(MySource(), repo="./my-data",
+                   prefix="me.mysrc", bundle_name="widgets")
+pub.run(api_url="https://example.com/api") # onboard (first time) → ingest → commit + push
+```
+
+`run(**kwargs)` forwards `kwargs` to your source's flags (the argparse dests — `api_url=`,
+`place=`, `with_transfers=`, `accumulate=`, `dry_run=` …). Or drive the legs yourself:
+
+```python
+pub.ingest(api_url="…", dry_run=True)      # stage volumes (dry_run previews, writes nothing)
+pub.onboard()                              # schemagen (infer schemas + bundle) + `fangorn repo init`
+pub.publish(message="daily snapshot")      # `fangorn commit --bundle` (auto-registers schemas) + push
+```
+
+- **onboard** infers schemas from the staged volumes and `fangorn repo init`s the repo
+  against the inferred bundle schema (the schema id is deterministic, so this works before
+  the schema is registered on-chain). It's idempotent — it skips `repo init` when
+  `<repo>/.fangorn` already exists.
+- **publish** commits the bundle; `fangorn commit --bundle` auto-registers any missing
+  schemas from `<output_dir>/schemas`, so there is no separate registration step.
+- **One repo carries one bundle schema**, so publish two sources (e.g. OSM and Robinhood)
+  to **separate** repos — two `Publisher`s with distinct `repo=` dirs.
+
+Prereq: `fangorn init` once for credentials. Pass `fangorn_bin="dotenvx run -f … -- node …"`
+to `Publisher` to target the git-native dev build. A complete standalone example project
+(imports quickbeam, publishes OSM + Robinhood + a custom Hacker News source) lives at
+`../quickbeam-publisher/`.
 
 ## Test it
 
