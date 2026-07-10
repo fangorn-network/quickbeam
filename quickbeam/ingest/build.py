@@ -51,7 +51,19 @@ def parse_args():
                         help="Max neighbor labels collected per relation group in a projection.")
     parser.add_argument("--node-cap", type=int, default=2000,
                         help="Max nodes a single root's graph walk will visit (cost bound).")
-    parser.add_argument("--subgraph-url", default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc")
+
+    # Filter hierarchy (bundle mode only — a view's fusion is inherently
+    # cross-source, so it doesn't take per-event owner/name filters). Mirrors `watch`.
+    g = parser.add_argument_group("filter hierarchy (all optional, combinable; bundle mode only)")
+    g.add_argument("--owner", action="append", default=[], dest="owners",
+                   metavar="ADDRESS",
+                   help="Only process events from this publisher. Repeatable.")
+    g.add_argument("--dataset", nargs="+", default=[], dest="datasets",
+                   metavar="NAME",
+                   help="Only process events whose dataset name matches. "
+                        "Pass multiple names to accept any of them.")
+
+    parser.add_argument("--subgraph-url", default="https://gateway.thegraph.com/api/subgraphs/id/2yVbpC7TT1VPq9vLn8a49zCjESNAEjoPg8wZhriQDDcY")
     parser.add_argument("--graph-api-key", default="")
     parser.add_argument("--ipfs-gateway", default="https://gateway.pinata.cloud/ipfs")
     parser.add_argument("--ipfs-gateway-key", default=None)
@@ -169,6 +181,14 @@ async def main():
     _prof_desc = ", ".join(f"{p['name']}→{p['root_type']}" for p in profiles)
     print(f"\n[Builder] {_mode} mode: '{b_name.strip()}' — projections: {_prof_desc}")
 
+    owner_filter = {o.lower() for o in args.owners}  if args.owners  else None
+    name_filter  = {d.lower() for d in args.datasets} if args.datasets else None
+    if args.bundle:
+        print(f"[Builder] owners  : {', '.join(args.owners)  or 'any'}")
+        print(f"[Builder] datasets: {', '.join(args.datasets) or 'any'}")
+    elif args.owners or args.datasets:
+        print("[Builder] --owner/--dataset ignored in view mode (fusion is cross-source).")
+
     if args.reset and qdrant.collection_exists(args.collection):
         print(f"[Builder] Resetting collection '{args.collection}'...")
         qdrant.delete_collection(args.collection)
@@ -216,6 +236,8 @@ async def main():
         _data_gen = build_bundle_joined_data(
             args, b_id.strip(), profiles,
             completed_manifest_cids=completed_manifest_cids,
+            owner_filter=owner_filter,
+            name_filter=name_filter,
         )
 
     async for mcid, records in _data_gen:

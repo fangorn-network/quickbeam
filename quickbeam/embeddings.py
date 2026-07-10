@@ -1,13 +1,5 @@
-"""Back-compat facade for the ingestion engine, now living in `quickbeam.ingest`.
-
-This module used to be a ~2000-line monolith. It was split into the `quickbeam.ingest`
-subpackage (sources / graph / embed / umap / commits / build). Everything is re-exported
-here so existing imports — `from quickbeam.embeddings import matryoshka`, `... import
-build_bundle_joined_data`, etc. — keep working unchanged. New code should import from the
-specific `quickbeam.ingest.*` module instead.
-
-`quickbeam.embeddings.matryoshka` in particular is documented as the canonical
-document/query vector transform the pull-client reuses; that path is preserved here.
+"""
+Back-compat facade for the ingestion engine
 """
 from quickbeam.ingest.identity import _str_to_uuid, _track_id, matryoshka
 from quickbeam.ingest.checkpoint import (

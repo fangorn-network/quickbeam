@@ -71,7 +71,7 @@ def parse_args():
     parser.add_argument("--primary", "-p", metavar="NAME", default=None)
     parser.add_argument(
         "--subgraph-url",
-        default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc",
+        default="https://gateway.thegraph.com/api/subgraphs/id/2yVbpC7TT1VPq9vLn8a49zCjESNAEjoPg8wZhriQDDcY",
     )
     parser.add_argument("--graph-api-key",   default="")
     parser.add_argument("--ipfs-gateway",    default="https://gateway.pinata.cloud/ipfs")

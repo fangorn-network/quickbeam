@@ -18,10 +18,18 @@ def _load_checkpoint(path):
             # last_tip: schemaId -> last-built tip (commit) CID, for commit-diff
             # delete propagation across cycles (slice 2).
             ck.setdefault("last_tip", {})
+            # last_block: schemaId -> highest blockNumber seen, for incremental
+            # polling. Was a single global scalar pre-fix, which leaked a stale
+            # cursor across schemas: watching a new (or rebuilt) subgraph would
+            # inherit an unrelated schema's block height and filter out every one
+            # of its events via blockNumber_gt. A legacy scalar can't be attributed
+            # to any one schema, so it's dropped here rather than misapplied.
+            if not isinstance(ck.get("last_block"), dict):
+                ck["last_block"] = {}
             return ck
     except Exception:
         return {"manifests": {}, "processed_track_ids": [],
-                "completed_manifest_cids": [], "last_tip": {}}
+                "completed_manifest_cids": [], "last_tip": {}, "last_block": {}}
 
 
 def _save_checkpoint(ck, path):

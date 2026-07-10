@@ -1,0 +1,11 @@
+import json, time
+d = json.load(open('/home/driemworks/fangorn/robinhood-bot/signals/signals.json'))
+now = int(time.time())
+print("valid json, entries:", len(d))
+req = set(['side', 'confidence', 'reason', 'generated_at', 'expires_at'])
+print("schema keys ok:", all(set(v.keys()) == req for v in d.values()))
+print("all flat:", all(v['side'] == 'flat' for v in d.values()))
+print("all expire in future:", all(v['expires_at'] > now for v in d.values()))
+print("ttl values:", sorted(set(v['expires_at'] - v['generated_at'] for v in d.values())))
+print("\nSample NVDA entry:")
+print(json.dumps(d['NVDA'], indent=2))

@@ -93,7 +93,7 @@ pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-su
 ```sh
 docker run -d -p 6333:6333 -p 6334:6334 \
   -v "$(pwd)/python/qdrant_storage:/qdrant/storage:z" \
-  --name qdrant-core \
+  --name qdrant-demo \
   qdrant/qdrant
 ```
 

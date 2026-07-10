@@ -25,8 +25,20 @@ from quickbeam.ingest.identity import _track_id
 # ReleaseGroup, Release, Recording, Work, Area, Place, Event, Instrument.
 # ---------------------------------------------------------------------------
 
-# These are a collection of default or frequently used root profiles
-# Root profiles can be defined externally and passed as a cli arg
+# These are a collection of default or frequently used root profiles.
+#
+# Define your own without touching this file: write a JSON map of
+# {name: profile} and pass --profiles-file foo.json --root-profile <name>.
+# Your entries merge OVER these built-ins (same name = override). See
+# profiles.example.json. A profile's keys:
+#   root_type       node `type` that becomes one document       (required)
+#   max_depth       graph-walk depth folding neighbours in      (default --max-depth)
+#   include         list of neighbour types to fold; omit=all   (default all)
+#   content_fields  node fields folded as free text, not label  (default label only)
+#   label_cap       max folded labels per neighbour group       (default --label-cap)
+#   node_cap        max nodes visited per root                  (default --node-cap)
+# The root node's OWN fields always pass through; include/content_fields only
+# govern which neighbour text gets folded in.
 ROOT_PROFILES: dict[str, dict] = {
     "track": {
         "root_type": "Recording", "max_depth": 2,

@@ -1,7 +1,7 @@
 {
-  "generated_at": 1783285843,
+  "generated_at": 1783622956,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
-  "collection": "robinhood",
+  "collection": "fangorn",
   "domains": [
     {
       "name": "robinhood",
@@ -21,6 +21,18 @@
         "receivedBy",
         "sentBy"
       ]
+    },
+    {
+      "name": "lotr",
+      "description": "",
+      "count": 17,
+      "dim": 256,
+      "bytes": 10885,
+      "shard_count": 1,
+      "entity_types": [
+        "File"
+      ],
+      "manifest": "lotr/manifest.json"
     }
   ]
 }

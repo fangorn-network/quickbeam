@@ -109,7 +109,7 @@ def parse_args():
 
     # ── Shared with build ─────────────────────────────────────────────────────
     p.add_argument("--subgraph-url",
-                   default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc")
+                   default="https://gateway.thegraph.com/api/subgraphs/id/2yVbpC7TT1VPq9vLn8a49zCjESNAEjoPg8wZhriQDDcY")
     p.add_argument("--graph-api-key", default="")
     p.add_argument("--ipfs-gateway", default="https://gateway.pinata.cloud/ipfs")
     p.add_argument("--ipfs-gateway-key", default=None)
@@ -149,12 +149,16 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
     checkpoint = _load_checkpoint(args.checkpoint_file)
     completed_manifest_cids = set(checkpoint["completed_manifest_cids"])
     processed_track_ids     = set(checkpoint["processed_track_ids"])
-    # last_block: highest blockNumber seen so far, used as block_gt on the
-    # next query so we only fetch truly new events.
-    last_block = checkpoint.get("last_block", 0)
 
     _, schema_id = (args.view or args.bundle).split("=", 1)
     schema_id = schema_id.strip()
+
+    # last_block: highest blockNumber seen so far *for this schema*, used as
+    # block_gt on the next query so we only fetch truly new events. Keyed per
+    # schema_id — otherwise pointing --bundle/--view at a different (or rebuilt)
+    # schema would inherit a stale, unrelated cursor and silently filter out
+    # every one of its events.
+    last_block = checkpoint.get("last_block", {}).get(schema_id, 0)
     new_count   = 0
     max_block   = last_block
 
@@ -242,7 +246,7 @@ async def _poll_once(args, qdrant, embed_engine, role_map_ref, profiles,
 
     if max_block > last_block:
         checkpoint = _load_checkpoint(args.checkpoint_file)
-        checkpoint["last_block"] = max_block
+        checkpoint.setdefault("last_block", {})[schema_id] = max_block
         _save_checkpoint(checkpoint, args.checkpoint_file)
 
     return new_count, max_block

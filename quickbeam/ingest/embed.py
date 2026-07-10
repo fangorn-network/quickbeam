@@ -18,7 +18,7 @@ MODEL_DIM_MAP = {
     "sentence-transformers/all-MiniLM-L6-v2": 384
 }
 
-
+# TODO: This should be more modular. We do not always want 'text embeddings'.
 # ---------------------------------------------------------------------------
 # EMBED ENGINE (GPU-OOM resilient)
 # ---------------------------------------------------------------------------
@@ -146,6 +146,9 @@ def ensure_indexes(qdrant, collection):
         ("fields.source",         models.KeywordIndexParams(type="keyword")),
         ("fields.isPast",         models.BoolIndexParams(type="bool")),
         ("fields.hostBusinessId", models.KeywordIndexParams(type="keyword")),
+        # this is schizo
+        ("fields.content",  models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        ("fields.filename", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
     ]
     for field, schema in specs:
         try:
