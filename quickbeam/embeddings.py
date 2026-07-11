@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 import certifi
 import os
 import io
@@ -1246,7 +1247,75 @@ async def main():
                           target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
     ensure_indexes(qdrant, args.collection)
     print("\n[Builder] All tasks complete.")
+=======
+"""Back-compat facade for the ingestion engine, now living in `quickbeam.ingest`.
+
+This module used to be a ~2000-line monolith. It was split into the `quickbeam.ingest`
+subpackage (sources / graph / embed / umap / commits / build). Everything is re-exported
+here so existing imports — `from quickbeam.embeddings import matryoshka`, `... import
+build_bundle_joined_data`, etc. — keep working unchanged. New code should import from the
+specific `quickbeam.ingest.*` module instead.
+
+`quickbeam.embeddings.matryoshka` in particular is documented as the canonical
+document/query vector transform the pull-client reuses; that path is preserved here.
+"""
+from quickbeam.ingest.identity import _str_to_uuid, _track_id, matryoshka
+from quickbeam.ingest.checkpoint import (
+    _load_checkpoint, _save_checkpoint, _save_role_map,
+)
+from quickbeam.ingest.embed import (
+    MODEL_DIM_MAP, _build_text_embedding, _is_gpu_oom, ResilientEmbedder,
+    _init_embed_engine, ensure_indexes, compose_document_text, _embed_and_upload,
+)
+from quickbeam.ingest.sources.subgraph import (
+    _query_subgraph_async, _fetch_all_events_async, _fetch_all_events_global,
+)
+from quickbeam.ingest.sources.ipfs import (
+    _b58encode, _cid_to_path, _fetch_json, fetch_all_ipfs,
+)
+from quickbeam.ingest.umap import write_umap_coords, _shape_map_track
+from quickbeam.ingest.commits import (
+    _unwrap_commit, _blob_point_ids, collect_tombstone_ids,
+    tombstone_commit_delta, resolve_tip_commit,
+)
+from quickbeam.ingest.graph.projection import (
+    ROOT_PROFILES, _load_profiles, _node_key, _node_label, _node_content,
+    _group_key, _walk_graph, _project, _index_nodes, _build_adj, _project_records,
+)
+from quickbeam.ingest.graph.bundle import build_bundle_joined_data
+from quickbeam.ingest.graph.view import (
+    build_view_joined_data, _DSU, _alias_index, _resolve_endpoint, _fuse_nodes,
+)
+from quickbeam.ingest.build import parse_args, main
+
+__all__ = [
+    # identity + vector transform
+    "_str_to_uuid", "_track_id", "matryoshka",
+    # checkpoint
+    "_load_checkpoint", "_save_checkpoint", "_save_role_map",
+    # embed
+    "MODEL_DIM_MAP", "_build_text_embedding", "_is_gpu_oom", "ResilientEmbedder",
+    "_init_embed_engine", "ensure_indexes", "compose_document_text", "_embed_and_upload",
+    # sources
+    "_query_subgraph_async", "_fetch_all_events_async", "_fetch_all_events_global",
+    "_b58encode", "_cid_to_path", "_fetch_json", "fetch_all_ipfs",
+    # umap
+    "write_umap_coords", "_shape_map_track",
+    # commits
+    "_unwrap_commit", "_blob_point_ids", "collect_tombstone_ids",
+    "tombstone_commit_delta", "resolve_tip_commit",
+    # graph projection
+    "ROOT_PROFILES", "_load_profiles", "_node_key", "_node_label", "_node_content",
+    "_group_key", "_walk_graph", "_project", "_index_nodes", "_build_adj", "_project_records",
+    # graph joins
+    "build_bundle_joined_data", "build_view_joined_data",
+    "_DSU", "_alias_index", "_resolve_endpoint", "_fuse_nodes",
+    # build CLI
+    "parse_args", "main",
+]
+>>>>>>> 58e671e4cbeecec6404291ef589920d8a8ec03ff
 
 
 if __name__ == "__main__":
+    import asyncio
     asyncio.run(main())

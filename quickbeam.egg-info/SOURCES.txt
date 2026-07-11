@@ -24,21 +24,44 @@ quickbeam.egg-info/dependency_links.txt
 quickbeam.egg-info/entry_points.txt
 quickbeam.egg-info/requires.txt
 quickbeam.egg-info/top_level.txt
+quickbeam/ingest/__init__.py
+quickbeam/ingest/build.py
+quickbeam/ingest/checkpoint.py
+quickbeam/ingest/commits.py
+quickbeam/ingest/embed.py
+quickbeam/ingest/identity.py
+quickbeam/ingest/umap.py
+quickbeam/ingest/graph/__init__.py
+quickbeam/ingest/graph/bundle.py
+quickbeam/ingest/graph/projection.py
+quickbeam/ingest/graph/view.py
+quickbeam/ingest/scrapers/__init__.py
+quickbeam/ingest/scrapers/harness.py
+quickbeam/ingest/scrapers/source.py
+quickbeam/ingest/sources/__init__.py
+quickbeam/ingest/sources/ipfs.py
+quickbeam/ingest/sources/subgraph.py
 quickbeam/pipelines/__init__.py
 quickbeam/pipelines/events.py
+<<<<<<< HEAD
 quickbeam/pipelines/events_pg.py
+=======
+>>>>>>> 58e671e4cbeecec6404291ef589920d8a8ec03ff
 quickbeam/pipelines/fangorn_schema.py
 quickbeam/pipelines/gem.py
 quickbeam/pipelines/lastfm.py
 quickbeam/pipelines/linkgen.py
 quickbeam/pipelines/mb.py
 quickbeam/pipelines/mb_pg.py
-quickbeam/pipelines/osm.py
 quickbeam/pipelines/places.py
+<<<<<<< HEAD
 quickbeam/pipelines/places_pg.py
 quickbeam/pipelines/prebake.py
 quickbeam/pipelines/robinhood.py
 quickbeam/pipelines/test_robinhood.py
+=======
+quickbeam/pipelines/prebake.py
+>>>>>>> 58e671e4cbeecec6404291ef589920d8a8ec03ff
 tests/test_cdn_edges.py
 tests/test_mcp.py
 tests/test_roles.py

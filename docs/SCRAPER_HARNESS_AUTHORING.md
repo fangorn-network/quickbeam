@@ -1,0 +1,192 @@
+# Writing a scraper `Source`
+
+Implement a data source once; get the whole ingest runtime for free — the CLI,
+staged-volume emission, incremental checkpointing, a `--watch` daemon, and
+`--publish` to fangorn. This guide shows how in ~40 lines. Background + rationale:
+[SCRAPER_HARNESS.md](SCRAPER_HARNESS.md).
+
+> **Just want to publish?** [`PUBLISHING_SDK_GUIDE.md`](./PUBLISHING_SDK_GUIDE.md) is the
+> task-oriented walkthrough (install → write a Source → `Publisher` → on-chain) with a
+> runnable example project. This page is the reference for the `Source` contract itself.
+
+## The idea
+
+The harness (`quickbeam.ingest.scrapers.harness`) owns everything generic. You supply
+a `Source` — three methods and a few attributes — and it slots into
+`quickbeam data <your-verb>` with the full loop. The whole interface between your
+scraper and the rest of the system is two data shapes:
+
+```
+node  = {"name": <stable id>, "fields": {... , "text": <the blurb that gets embedded>}}
+edge  = {"rel": <relation>, "from": <node name>, "to": <node name>,
+         "fromType": <entity>, "toType": <entity>}
+```
+
+`build_graph` returns `({entity_type: [node, ...]}, [edge, ...])`. That's it.
+
+## The contract
+
+```python
+# quickbeam/ingest/scrapers/mysrc.py
+import argparse
+from .harness import run_source
+from .source import SourceBase
+
+
+class MySource(SourceBase):
+    name = "mysrc"                      # log/checkpoint-key prefix (need not equal the CLI verb)
+    stems = {"Widget": "widgets"}       # entity_type → volume stem (default: entity.lower())
+    snapshot_stems = {"widgets"}        # stems replaced wholesale each run (vs. ledgered under --accumulate)
+    role_map = {"title": "title", "tags": ["kind"], "text": ["text"]}   # --dry-run preview
+    presentation = {"accent": "#888", "icons": {"Widget": "widgets"}}   # display metadata
+
+    def add_source_args(self, p: argparse.ArgumentParser) -> None:
+        # Your source-only flags. The shared ones (--output-dir/--volume/--watch/
+        # --poll-interval/--accumulate/--checkpoint-file + the publish group) are already added.
+        p.add_argument("--api-url", default="https://example.com/api")
+
+    def read(self, cursor: int, args: argparse.Namespace) -> list[dict]:
+        # All network/DB IO here. `cursor` is the persisted checkpoint (0 if none);
+        # combine it with your own floor flags to decide what to (re-)emit.
+        return fetch_widgets(args.api_url, since=cursor)
+
+    def build_graph(self, records: list[dict]) -> tuple[dict, list]:
+        # Pure. records → (nodes_by_type, edges). This is the unit-testable core.
+        nodes = {"Widget": [{"name": f"widget:{r['id']}",
+                             "fields": {"title": r["name"], "kind": r["kind"],
+                                        "text": f"{r['name']} — a {r['kind']} widget"}}
+                            for r in records]}
+        return nodes, []
+
+    def next_cursor(self, records: list[dict], prev: int) -> int:
+        # The checkpoint to persist after this cycle. Return `prev` if nothing advances it.
+        return max([prev, *(r["block"] for r in records)]) if records else prev
+
+
+def run() -> None:
+    run_source(MySource())
+```
+
+## Required vs. optional
+
+**Required:** `name`, `snapshot_stems`, `role_map`, `presentation`, `stems`, and the four
+methods (`add_source_args`, `read`, `build_graph`, `next_cursor`). Subclassing
+`SourceBase` gives every attribute a default so you only set what differs.
+
+**Optional attributes** (harness reads via `getattr`):
+
+| attribute | default | when to set |
+|---|---|---|
+| `default_volume` | `1` | your source coexists at a fixed volume (events → `2`) |
+| `edges_stem` | `"edges"` | you want a prefixed edges file (osm → `"osm_edges"`) |
+
+## Two source shapes
+
+**Live-tail** (robinhood): `read` uses `cursor` as an incremental floor; `next_cursor`
+advances it (e.g. the max block seen). `--watch` polls; `--checkpoint-file` persists the
+cursor; `--accumulate` grows a ledger of the non-snapshot stems.
+
+**Batch** (events, osm, places): a static source with no tail. Return `prev` from
+`next_cursor` and it "just works" — the cursor never advances, `--watch` harmlessly
+re-runs the batch, and every stem is a snapshot (`snapshot_stems = set(stems.values())`).
+No special-casing needed.
+
+## `build_graph` may close over side inputs
+
+`build_graph`'s signature is `(records) → (nodes, edges)`, but it may read *config for
+the shaping* that `read` stashes on `self` — e.g. events' business index for the
+`hostedAt` merge link, or osm/places' `near`-radius:
+
+```python
+def read(self, cursor, args):
+    self._near_radius = args.near_radius_m       # stashed config, not a raw record
+    return fetch(...)
+
+def build_graph(self, records):
+    radius = getattr(self, "_near_radius", 0.0)  # read back with a default
+    ...
+```
+
+Keep raw data in `records` and shaping *config* on the instance. This keeps the
+contract stable and `build_graph` trivially testable (set the attr, call it).
+
+## Register it (optional — for the CLI)
+
+quickbeam core ships **no** sources; yours lives in your own package. To also get a
+`quickbeam data mysrc` CLI command, add one entry point in that package — the CLI verb
+is the entry-point name (it can differ from `Source.name`):
+
+```toml
+# your package's pyproject.toml
+[project.entry-points."quickbeam.sources"]
+mysrc = "my_pkg.mysrc:MySource"
+```
+
+`discover_sources()` picks it up once your package is installed — `quickbeam data mysrc`
+then works with the full watch/publish/checkpoint loop, zero changes to quickbeam. This
+is entirely optional: you can also just hand your `Source` to `quickbeam.Publisher` from
+Python without registering anything (next section).
+
+## Publish from Python (the SDK path)
+
+Registering an entry point wires your source into the `quickbeam data <verb>` CLI. But a
+`Source` is also usable directly from Python — no entry point, no reinstall — via
+`quickbeam.Publisher`, which owns the whole onboard → ingest → publish loop:
+
+```python
+import quickbeam as qb
+from my_scraper import MySource            # your Source — quickbeam core ships none
+
+pub = qb.Publisher(MySource(), repo="./my-data",
+                   prefix="me.mysrc", bundle_name="widgets")
+pub.run(api_url="https://example.com/api") # onboard (first time) → ingest → commit + push
+```
+
+`run(**kwargs)` forwards `kwargs` to your source's flags (the argparse dests — `api_url=`,
+`place=`, `with_transfers=`, `accumulate=`, `dry_run=` …). Or drive the legs yourself:
+
+```python
+pub.ingest(api_url="…", dry_run=True)      # stage volumes (dry_run previews, writes nothing)
+pub.onboard()                              # schemagen (infer schemas + bundle) + `fangorn repo init`
+pub.publish(message="daily snapshot")      # `fangorn commit --bundle` (auto-registers schemas) + push
+```
+
+- **onboard** infers schemas from the staged volumes and `fangorn repo init`s the repo
+  against the inferred bundle schema (the schema id is deterministic, so this works before
+  the schema is registered on-chain). It's idempotent — it skips `repo init` when
+  `<repo>/.fangorn` already exists.
+- **publish** commits the bundle; `fangorn commit --bundle` auto-registers any missing
+  schemas from `<output_dir>/schemas`, so there is no separate registration step.
+- **One repo carries one bundle schema**, so publish two sources (e.g. OSM and Robinhood)
+  to **separate** repos — two `Publisher`s with distinct `repo=` dirs.
+
+Prereq: `fangorn init` once for credentials. Pass `fangorn_bin="dotenvx run -f … -- node …"`
+to `Publisher` to target the git-native dev build. A complete standalone example project
+(imports quickbeam, publishes OSM + Robinhood + a custom Hacker News source) lives at
+`../quickbeam-publisher/`.
+
+## Test it
+
+Because `build_graph` is pure, a test is: hand-build `records`, call it, assert on
+nodes/edges. See `scrapers/test_events.py` / `test_osm.py` / `test_places.py` for the
+pattern (normalize/shape assertions + a graph-builder assertion + a `next_cursor`
+no-op check). No network, no DB.
+
+```python
+def test_build_graph():
+    src = MySource()
+    nodes, edges = src.build_graph([{"id": 1, "name": "A", "kind": "gadget"}])
+    assert nodes["Widget"][0]["name"] == "widget:1"
+```
+
+## When NOT to use the harness
+
+The harness holds the full node/edge set in memory (`emit_volumes`) and assumes one raw
+record stream feeds `build_graph`. Two things it deliberately does **not** fit:
+
+- A **streaming relational exporter** built for scale, where nodes and edges come from
+  separate passes and never fit in memory (`pipelines/mb_pg.py` — server-side Postgres
+  cursors straight to per-entity files). Keep it standalone.
+- A **raw extractor / crawler** that fetches upstream data into Postgres or `.jsonl` but
+  does no graph shaping (`pipelines/places.py`, `events.py`, `lastfm.py`). That's the
+  *extract* stage that runs **before** a Source's `read`. A Source is a *shaper*.

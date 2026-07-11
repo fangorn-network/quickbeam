@@ -183,28 +183,12 @@ def places_fetch(ctx: typer.Context):
     main()
 
 
-@data_app.command(**_PASSTHROUGH)
-def placespg(ctx: typer.Context):
-    """Convert Postgres places_raw (Google Places) into a Fangorn graph."""
-    _fwd("quickbeam data placespg", ctx.args)
-    from quickbeam.pipelines.places_pg import run
-    run()
-
-
 @data_app.command("events-fetch", **_PASSTHROUGH)
 def events_fetch(ctx: typer.Context):
     """Scrape Eventbrite organizers / Tribe calendars into Postgres events_raw."""
     _fwd("quickbeam data events-fetch", ctx.args)
     from quickbeam.pipelines.events import main
     main()
-
-
-@data_app.command(**_PASSTHROUGH)
-def eventspg(ctx: typer.Context):
-    """Convert events_raw (Eventbrite/Tribe) into a Fangorn graph, merged with places."""
-    _fwd("quickbeam data eventspg", ctx.args)
-    from quickbeam.pipelines.events_pg import run
-    run()
 
 
 @data_app.command(**_PASSTHROUGH)

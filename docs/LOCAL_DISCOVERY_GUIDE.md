@@ -371,7 +371,7 @@ quickbeam build --bundle fangorn.places.localcore.v1=0x<bundleId> \
 quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
 ```
 
-The root profiles (in `embeddings.py`'s `ROOT_PROFILES`):
+The root profiles (in `quickbeam/ingest/graph/projection.py`'s `ROOT_PROFILES`):
 - **`business`** — walks each Business out to depth 2, folding in its reviews,
   categories, locality, reviewers, and events.
 - **`review`** — one document per Review (folding its Business + Reviewer), so
