@@ -1,27 +1,18 @@
 # quickbeam
 
-This repo contains infrastructure for building and serving vector search over on-chain data sources registered with [Fangorn](https://github.com/fangorn-network/fangorn). The core script pulls manifests from The Graph, resolves payloads from IPFS, joins across schemas, and then builds embeddings via fastembed/ONNX.
-
-> **Two meanings of "bundle".** This doc uses the word in two unrelated ways:
-> - **Schema bundle** (`--bundle`) — a registered subgraph schema whose v3 manifests carry typed node chunks plus an edge chunk. The builder walks those edges to join records.
-> - **Snapshot bundle** (`--bundle-cid`, `/bundle/*`) — an exported NDJSON copy of the populated Qdrant collection, used to seed new instances without a GPU.
+This repo contains infrastructure for building and serving vector search over data published with [Fangorn](https://github.com/fangorn-network/fangorn). Fangorn's current model has no schema registry, bundles, or linksets — a publisher writes tagged **vertices** and typed **edges** into a **namespace** (a key prefix) under their own on-chain owner root, backed by a [storacha/pail](https://github.com/storacha/pail) content-addressed tree. quickbeam reads an **owner + namespace** via `fangorn read` (shelling out to the `fangorn` CLI, since the read primitive is TypeScript-only), projects the resulting vertex/edge graph into documents, and builds embeddings via fastembed/ONNX.
 
 ---
 
 ## How it works
 
-- **`quickbeam build`**: offline (local, trusted) embeddings builder. Pulls from subgraph, resolves IPFS, joins schemas, embeds, writes to Qdrant.
-- **`quickbeam watch`**: live daemon that polls for new dataset tips and embeds them automatically as they arrive. Keeps the GPU model loaded between cycles. A dataset tip is now a **git-native commit** (a small IPFS object wrapping the manifest, with a parent link and an embedding contract); the watcher resolves the commit, **inherits `model`/`dim`/`distance` from it** (sizes the collection to the data, not a CLI default), and **diffs the new tip against the last-built commit** so it embeds only what changed and **tombstones entities the commit removed**. Legacy raw-manifest tips still work unchanged. See [`docs/NEW_QUICKSTART.md`](docs/NEW_QUICKSTART.md).
+- **`quickbeam build`**: offline (local, trusted) embeddings builder. Reads one or more `--source OWNER:NAMESPACE` via `fangorn read`, projects the graph into documents, embeds, writes to Qdrant.
+- **`quickbeam watch`**: live daemon that polls each source's on-chain root (`fangorn head` — cheap) and re-reads + re-embeds only when it changes. Keeps the GPU model loaded between cycles. Since there's no cursor/diff API on the read side, a changed cycle diffs the newly-read vertex CID set against the last snapshot to find what's new (embed) vs. what dropped out (tombstone).
 - **`quickbeam serve`**: read-only API server. Connects to Qdrant and serves search, browse, and catalog endpoints. It does not ingest on startup, but instead expects the collection to already be populated, either by the builder or by seeding from a snapshot. Can optionally run the watcher alongside it (`serve --watch`) so one process both ingests and serves, and can gate the search routes behind [x402 payments](#x402-payment-gating).
 - **`quickbeam mcp`**: a [Model Context Protocol](#mcp-server) layer for agents. A self-contained **local pull-client of the [Semantic CDN](#semantic-cdn)** — it pulls a dataset's shards and searches them locally (the query never leaves the process), exposing semantic search *and* typed-edge graph traversal over raw records, with on-chain provenance on every result, and can optionally charge the calling agent per tool call via [x402](#x402-payment-gating).
 - **`quickbeam cdn` + `quickbeam pull`**: the [Semantic CDN](#semantic-cdn) — instead of running queries on the server (where the node sees every query = intent), the operator *bakes* the embedded graph into immutable, content-addressed shard files (a "domain") and *serves* them as static, resumable downloads. A user *pulls* a domain into their own local Qdrant and queries it offline. Knowledge moves to the user; the network never sees a query. See [docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md).
 
-The builder produces the same record shape — `{ track_id, fields, meta }` — through one of two interchangeable join phases:
-
-- **Flat schemas (`--schema`/`--primary`)** — schemas are fetched independently, deduped (newest manifest wins per entry name), then joined on the primary schema's entry name (`trackId`).
-- **Schema bundle (`--bundle`)** — a single bundle schema publishes v3 manifests carrying typed node chunks (`{id, type, fields}`) and an edge chunk (`{rel, from, to}`). The builder walks outgoing edges from each root-type node and flattens neighbor fields into the root record — no track-id guessing.
-
-Everything downstream (role inference, embedding text, Qdrant payload) is identical for both join modes.
+For each source, the builder projects vertices into `{ track_id, fields, meta }` records: a vertex's own content CID is its `track_id` (already globally unique and stable), and **root profiles** (`--root-profile`) decide which vertex tags become their own document and which neighbor vertices (reached by walking the source's edges) get folded in as grouped label lists. With no `--root-profile` given, one profile per distinct vertex tag actually present is auto-derived. Multiple `--source` values can be read into the same collection, but each stays independently tagged (`meta.owner`/`meta.namespace`) — there's no cross-source identity fusion yet.
 
 ---
 
@@ -39,8 +30,8 @@ pip install -e ".[cpu]"   # CPU-only fallback
 This installs the `quickbeam` CLI entry point. Run `quickbeam --help` to see all commands.
 
 ```
-quickbeam build    Build embeddings from subgraph / IPFS data into Qdrant
-quickbeam watch    Live daemon: poll subgraph for new events and embed automatically
+quickbeam build    Build embeddings from one or more owner+namespace Fangorn sources into Qdrant
+quickbeam watch    Live daemon: poll owner+namespace source(s) for on-chain changes and embed automatically
 quickbeam serve    Start the Fangorn search API server (optionally with --watch + x402)
 quickbeam mcp      Run the MCP server exposing search as agent tools (x402-aware)
 quickbeam cdn      Semantic CDN: bake the embedded graph into static, pullable domain shards
@@ -61,21 +52,17 @@ pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-su
 
 ## Quickstart
 
-> **New: the git-native flow.** Datasets are now versioned **repos** you `commit` and
-> `push` (git for data), and `watch`/`build` embed off the commit diff. For the
-> end-to-end runbook in that model — including delete propagation and inherited
-> embedding contracts — see **[`docs/NEW_QUICKSTART.md`](docs/NEW_QUICKSTART.md)**. The
-> classic subgraph-event runbook below still works.
+### 0. Prerequisite: publish something to read
+
+quickbeam reads via `fangorn read <namespace> --owner <address>`, which needs the `fangorn` CLI built and a wallet with something published under a namespace. See the Fangorn SDK's own quickstart for `fangorn repo init`/`fangorn upload`, or use `quickbeam data robinhood --publish` (below) as a worked example.
 
 ### 1. Run Qdrant
 
-quickbeam build --bundle "fangorn.mb.creativecore.v4=0xba5436c0aac6cf01d35f5da35ca2a8011d3da7dda14b5e52548b73075ec08f54" --root-type Recording --reset
-
 ```sh
-docker run -d -p 6333:6333 -p 6334:6334 \
-  -v "$(pwd)/python/qdrant_storage:/qdrant/storage:z" \
-  --name qdrant-core \
-  qdrant/qdrant
+  docker run -d -p 6333:6333 -p 6334:6334 \
+    -v "$(pwd)/python/qdrant_storage:/qdrant/storage:z" \
+    --name qdrant-core \
+    qdrant/qdrant
 ```
 
 ### 2. Build embeddings
@@ -91,44 +78,20 @@ $LD_LIBRARY_PATH
 python -c "import onnxruntime as ort; print('Available Providers:', ort.get_available_providers())"
 ```
 
-#### From flat schemas
-
 ```sh
 quickbeam build \
-  -s test.sond3r.track.invariants.3=0xc4103f... \
-  -s test.sond3r.track.taxonomy.2=0x382fda... \
-  --primary test.sond3r.track.invariants.3 \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
+  --source 0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood \
+  --root-profile asset --root-profile transfer \
   --dim 256 \
   --umap \
   --reset
 ```
 
-#### From a schema bundle
-
-```sh
-quickbeam build \
-  --bundle fangorn.mb.creativecore.v1=0xac92db425c174e4301cd41e81e16d99fd2c5f4e2f13b739004996e95875e990d \
-  --root-type Track \
-  --graph-api-key <> \
-  --ipfs-gateway https://green-reasonable-heron-957.mypinata.cloud/ipfs \
-  --dim 256 \
-  --umap \
-  --reset 
-```
-
-`--bundle` and `--schema`/`--primary` are mutually exclusive. When `--bundle` is set the builder takes the edge-walk path.
+`--source` is repeatable — pass it multiple times to read several owner+namespace pairs into the same collection (they land as independently-tagged records; there's no cross-source fusion yet). `--fangorn-bin` controls how the `fangorn` CLI is invoked (default: a global `fangorn` install reading `~/.fangorn/config.json`); pass a full command for a local dev build, e.g. `--fangorn-bin "dotenvx run -f ~/fangorn/fangorn/.env -- node ~/fangorn/fangorn/lib/cli/cli.js"`.
 
 #### Resuming a build
 
-`quickbeam build` is fully resumable. Progress is saved to `--checkpoint-file` (default `./db/ingest_checkpoint.json`) at the granularity of individual bundle manifests. On re-run without `--reset`, already-completed manifests are skipped before any IPFS data is fetched — RAM usage stays flat regardless of how many records have already been embedded.
-
-The checkpoint tracks:
-- `completed_manifest_cids` — manifests that have been fully embedded (skipped on re-run).
-- `processed_track_ids` — records within the currently in-flight manifest, used only for crash-recovery mid-manifest. Cleared when the manifest completes.
-- `last_tip` — per-schema, the last-built **commit** CID. The watcher diffs the new tip
-  against it to embed only the delta and tombstone removed entities (git-native flow).
+`quickbeam build` tracks embedded records by their vertex CID (already a stable, globally unique id) in `--checkpoint-file` (default `./db/ingest_checkpoint.json`). Re-running without `--reset` skips records already embedded — safe because point ids are deterministic (`uuid5` of the vertex CID), so even a re-embed of an already-processed record just overwrites the same point.
 
 #### UMAP only (reproject existing collection)
 
@@ -136,58 +99,26 @@ The checkpoint tracks:
 quickbeam build --umap-only
 ```
 
-### 3. Watch for new events (optional)
+### 3. Watch for changes (optional)
 
-After an initial build, run `quickbeam watch` to keep the collection up to date as new manifests are published on-chain.
+After an initial build, run `quickbeam watch` to keep the collection up to date as new data is published on-chain.
 
 ```sh
 quickbeam watch \
-  --bundle "fangorn.mb.bundle.v1=0xabc123..." \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
-  --ipfs-gateway-key <pinata-jwt> \
-  --poll-interval 120
+  --source 0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood \
+  --root-profile asset --root-profile transfer \
+  --poll-interval 60
 ```
 
-The watcher uses the same checkpoint file as the builder. On startup it reads `last_block` from the checkpoint and only queries subgraph events with `blockNumber_gt: last_block`, so it never re-scans the full history. The GPU model is loaded once and kept alive across poll cycles.
-
-**Git-native tips (commit diff).** When a tip is a commit, the watcher: (1) at startup, resolves the tip commit for the watched schema and **inherits its embedding contract** (`model`/`dim`/`distance`) to size the collection — the CLI `--embedding-model`/`--dim`/distance flags are only a fallback when the commit carries no contract; (2) each cycle, diffs the new tip against `last_tip` and **deletes the points of any entities the commit dropped** (delete propagation) before embedding the additions. Raw-manifest tips (pre-commit publishes) are handled exactly as before.
-
-#### Filter hierarchy
-
-All filters are optional and combinable. Narrower filters reduce both subgraph load and embedding work.
-
-```sh
-# Watch all publishers, all dataset names:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc...
-
-# Only a specific publisher:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --owner 0xdeadbeef
-
-# Only certain dataset names (any publisher):
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --dataset Track Recording
-
-# Most specific — one publisher's named datasets:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --owner 0xdeadbeef --dataset Track
-```
-
-`--owner` and `--dataset` are both repeatable. `--dataset` filters on the `name` field of the `ManifestPublished` event — the name the publisher assigned when registering the dataset.
+Each cycle, the watcher runs `fangorn head <owner>` for every `--source` — a cheap on-chain root check — and only re-reads + re-embeds a source whose head actually changed. On a change, it re-reads the whole namespace (there's no cursor/pagination API yet) and diffs the returned vertex CID set against the last snapshot (stored in `--checkpoint-file`) to find what's new (embed) and what dropped out (tombstone from Qdrant). The GPU model is loaded once and kept alive across poll cycles.
 
 ### 4. Start the server
 
 ```sh
-quickbeam serve \
-  -s test.sond3r.track.invariants.3=0xc4103f... \
-  -s test.sond3r.track.taxonomy.2=0x382fda... \
-  --primary test.sond3r.track.invariants.3 \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs
+quickbeam serve --collection fangorn
 ```
 
-The server starts immediately and serves whatever is already in Qdrant. Use `POST /reingest` to pull new subgraph data without restarting.
+The server starts immediately and serves whatever is already in Qdrant.
 
 #### Serve + watch in one process
 
@@ -197,10 +128,9 @@ Pass `--watch` to run the live embedding daemon alongside the server, so one dep
 quickbeam serve \
   --collection fangorn \
   --watch \
-    --bundle "fangorn.mb.bundle.v1=0xabc123..." \
-    --graph-api-key <key> \
-    --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
-    --poll-interval 120
+    --source 0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood \
+    --root-profile asset --root-profile transfer \
+    --poll-interval 60
 ```
 
 Note this loads the embedding model twice (once in each process), so plan VRAM accordingly — or run the two commands as separate services against the same Qdrant.
@@ -339,7 +269,8 @@ shard against its sha256 and loads it into the local collection with determinist
 ids, so an interrupted or repeated pull is safe.
 
 Alongside the semantic axis (record shards), a domain can carry a **relational axis** — its
-linkset of typed edges (`{rel, from, to, fromType, toType}`, see [linkgen](quickbeam/pipelines/linkgen.py)).
+typed edges (`{rel, from, to, fromType, toType}`, the shape `quickbeam watch` derives live from
+each source's `fangorn read` edges).
 Edges live at `cdn/<name>/edges.json`, served at `/domains/{name}/edges`, so a pull-client (the
 [MCP server](#mcp-server)) can walk the knowledge graph offline. Edge endpoints are the same
 node ids as records' `track_id`, so the two axes join by id. Two ways to populate it:
@@ -456,7 +387,7 @@ quickbeam mcp --transport stdio --cdn-url http://localhost:8090
 - **`get(dataset, id)`** — one record by its exact id (which is also its graph node endpoint, e.g. `rh:asset:NVDA`). Free.
 - **`neighbors(dataset, id, rel=None, direction="both", limit=25)`** — walk the linkset edges from a node ("what is connected to NVDA, and how"). Neighbors inside the dataset resolve to full `fields`; those outside it come back as `{ id, entityType }` endpoints.
 
-> **Relational-axis delivery.** `neighbors` sources edges from the CDN's `/domains/{name}/edges` endpoint, which [`quickbeam watch` keeps fresh live](#semantic-cdn) (or [`cdn edges`](#semantic-cdn) one-shot). If a domain has no CDN linkset yet, it falls back to a local one via `--edges <file-or-dir>` (a JSON list of `{rel, from, to, fromType, toType}`, the shape linkgen/robinhood stage), and reports `relational_axis: "not delivered"` if neither is present.
+> **Relational-axis delivery.** `neighbors` sources edges from the CDN's `/domains/{name}/edges` endpoint, which [`quickbeam watch` keeps fresh live](#semantic-cdn) (or [`cdn edges`](#semantic-cdn) one-shot). If a domain has no CDN edges yet, it falls back to a local one via `--edges <file-or-dir>` (a JSON list of `{rel, from, to, fromType, toType}`, the shape `robinhood.py`/`watch` stage), and reports `relational_axis: "not delivered"` if neither is present.
 
 ### Provenance
 
@@ -494,7 +425,7 @@ The gated tools are the compute-bearing ones (`search`, `neighbors`); discovery 
 
 ## Data pipelines
 
-The `quickbeam data` subcommands generate seed data for testing. `quickbeam data fetch` outputs flat `{ name, fields }` JSONL consumed by the ingest server's flat-schema path. `quickbeam data mb` outputs v3 bundle chunk files (node chunks + edge chunk) consumed by `quickbeam build --bundle`.
+The `quickbeam data` subcommands generate seed data for testing. `quickbeam data fetch` outputs flat `{ name, fields }` JSONL consumed by the ingest server's flat-schema path. `quickbeam data mb`/`placespg`/`eventspg`/`osm` shape node/edge volume files in the same `{name, fields}` + `{rel, from, to}` shape `quickbeam data robinhood --publish` turns into a `fangorn upload` batch (see [Robinhood pipeline](#end-to-end-workflow-example-robinhood-chain--fangorn--qdrant)) — only `robinhood`'s publish step has been ported to the owner+namespace model so far.
 
 ### Last.fm + MusicBrainz
 
@@ -534,7 +465,7 @@ Outputs three v3 bundle chunk files — ready to upload to IPFS and register as 
 | `volume_<N>_taxonomies.json` | `[{ id: "taxonomy:<trackId>", type: "TrackTaxonomy", fields: { trackId, genres, moods, themes, contexts } }, ...]` |
 | `volume_<N>_edges.json` | `[{ rel: "hasTaxonomy", from: "<trackId>", to: "taxonomy:<trackId>" }, ...]` |
 
-These three files are the raw v3 bundle chunks — Track + TrackTaxonomy node files plus an edge file. Use `src/publish_mb_bundle.ts` (see **End-to-end workflow** below) to register schemas and publish them to Fangorn, then run `quickbeam build --bundle` to embed.
+These are node/edge volume files in the same shape `quickbeam data robinhood` stages. Publishing this MusicBrainz shape to Fangorn (the old `src/publish_mb_bundle.ts` path) hasn't been ported to the owner+namespace model yet — see the [Robinhood pipeline](#end-to-end-workflow-example-robinhood-chain--fangorn--qdrant) for the current working `fangorn repo init` + `fangorn upload` + `quickbeam build --source` path.
 
 ### OpenStreetMap changesets
 
@@ -549,70 +480,39 @@ Outputs `stage_volumes/osm_changesets.json`.
 
 ---
 
-## End-to-end workflow (MusicBrainz → Fangorn → Qdrant)
+## End-to-end workflow example (Robinhood-Chain → Fangorn → Qdrant)
 
-### Step 1 — Generate the bundle chunk files
+The `quickbeam data mb` MusicBrainz pipeline's publish step (`publish_mb_bundle.ts`, schema/bundle registration) targeted the old schema-registry model and has not been ported to the owner+namespace model yet — `mb`'s node/edge shaping still works, but there's no current publish path for it. `quickbeam data robinhood` is the fully working, current example of ingest → publish → embed:
 
-```sh
-quickbeam data mb --volume 1 --target-count 50000 --output-dir ./data
-# produces: data/volume_1_tracks.json
-#           data/volume_1_taxonomies.json
-#           data/volume_1_edges.json
-```
-
-### Step 2 — Register schemas and publish to Fangorn
-
-> **Publishing is moving to the git-native flow.** The `publish_*.ts` scripts below still
-> work, but they use the older raw-manifest publish path — no commit history, no
-> structural sharing, no embed contract. The target is `fangorn commit --bundle/--view`
-> + `fangorn push` (the same primitives record-set repos already use today), with the
-> dataset-shaping/sharding half of these scripts folding into `quickbeam data publish`.
-> See [`docs/NEW_QUICKSTART.md`](docs/NEW_QUICKSTART.md) for the flow and what's live vs.
-> planned.
-
-`src/publish_mb_bundle.ts` must be placed in the fangorn-sdk `src/` directory alongside `setup-embeddings-testdata.ts` (it imports `TestBed` and the SDK type system from there).
+### Step 1 — Ingest + shape
 
 ```sh
-# from the fangorn-sdk root:
-cp /path/to/quickbeam/embeddings/src/publish_mb_bundle.ts src/
-
-pnpm dotenvx run -f .env -- tsx src/publish_mb_bundle.ts \
-  --tracks      /path/to/data/volume_1_tracks.json \
-  --taxonomies  /path/to/data/volume_1_taxonomies.json \
-  --edges       /path/to/data/volume_1_edges.json \
-  --dataset     ds.mb.v1
+quickbeam data robinhood --with-transfers --max-transfers 500 --output-dir ./stage_volumes
+# produces: stage_volumes/volume_1_assets.json, volume_1_transfers.json, volume_1_edges.json, ...
 ```
 
-On first run this registers three schemas (all idempotent — safe to re-run):
+### Step 2 — Publish to Fangorn (owner + namespace)
 
-| Schema | Name | Description |
-|---|---|---|
-| Track | `fangorn.mb.track.v1` | Invariant metadata per recording |
-| TrackTaxonomy | `fangorn.mb.track.taxonomy.v1` | Genre / mood tags |
-| Bundle | `fangorn.mb.bundle.v1` | Track `—hasTaxonomy→` TrackTaxonomy |
-
-Large volumes are published in batches (`--batch-size`, default 2000). Progress is saved to `tmp/mb-publish-ledger.json` — re-run the same command to resume after a failure.
-
-When done the script prints the bundle name and ID:
-
+```sh
+quickbeam data robinhood --with-transfers --max-transfers 500 \
+  --output-dir ./stage_volumes --publish --namespace robinhood \
+  --fangorn-bin "dotenvx run -f ~/fangorn/fangorn/.env -- node ~/fangorn/fangorn/lib/cli/cli.js"
 ```
-  bundle name : fangorn.mb.bundle.v1
-  bundle id   : 0xabc123...
-```
+
+This shapes the staged nodes/edges into `{"vertices":[{"id","tag","payload"}],"edges":[{"rel","from","to"}]}` and shells out to `fangorn repo init <namespace>` (idempotent) + `fangorn upload <namespace> <batch.json>` (one on-chain commit for the whole batch) under the wallet the `fangorn` CLI is configured for.
 
 ### Step 3 — Build embeddings
 
 ```sh
 quickbeam build \
-  --bundle "fangorn.mb.bundle.v1=0xabc123..." \
-  --root-type Track \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
-  --ipfs-gateway-key <pinata-jwt> \
+  --source <owner-address>:robinhood \
+  --root-profile asset --root-profile transfer \
   --dim 256 \
   --umap \
   --reset
 ```
+
+See [`docs/ROBINHOOD.md`](docs/ROBINHOOD.md) for the full live pipeline including `quickbeam watch`, CDN serving, and the MCP server.
 
 ---
 
@@ -624,25 +524,23 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 
 | Flag | Default | Description |
 |---|---|---|
-| `--schema` / `-s` | | `NAME=0x...` schema ID pair. Repeatable. Flat-schema join mode. |
-| `--bundle` | | `NAME=0x...` bundle schema. Edge-walk join mode (replaces `--schema`/`--primary`). |
-| `--primary` / `-p` | first schema | Schema whose entry names are the join key (flat-schema mode) |
-| `--root-type` | `Track` | Bundle node type emitted as one record per node (bundle mode) |
-| `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
-| `--graph-api-key` | `""` | The Graph gateway API key |
-| `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway |
+| `--source` | | `OWNER:NAMESPACE` to read via `fangorn read`. Repeatable — multiple sources land in the same collection, independently tagged (no fusion). |
+| `--fangorn-bin` | `fangorn` | How to invoke the fangorn CLI (may be a full command, shell-split). |
+| `--root-profile` | | Named projection(s) to emit, repeatable. A name matching a built-in/`--profiles-file` profile uses its root type/include/depth; any other name is a literal vertex tag with no neighbor filter. Omit entirely to auto-derive one profile per distinct vertex tag present. |
+| `--profiles-file` | | JSON file of custom/override root profiles, merged over the built-ins. |
+| `--max-depth` | `1` | Default graph-walk depth for profiles that don't set one |
+| `--label-cap` | `50` | Max folded neighbor labels per relation group |
+| `--node-cap` | `2000` | Max nodes a single root's graph walk will visit |
 | `--qdrant-host` | `localhost` | Qdrant host |
 | `--qdrant-port` | `6333` | Qdrant HTTP port |
 | `--qdrant-grpc-port` | `6334` | Qdrant gRPC port |
-| `--collection` | `quickbeam` | Qdrant collection name |
-| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Resume state file |
+| `--collection` | `fangorn` | Qdrant collection name |
+| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Resume state file (tracks embedded vertex CIDs + last head per source) |
 | `--embedding-model` | `nomic-ai/nomic-embed-text-v1.5` | fastembed model name |
 | `--dim` | `256` | Matryoshka output dimensions: 256, 512, or 768 |
 | `--embed-batch` | `16` | GPU embed batch size — lower for small VRAM |
 | `--searchable-fields` | `auto` | Comma-separated field allowlist, or `auto` |
-| `--page-size` | `100` | Subgraph pagination page size |
-| `--ipfs-timeout` | `20` | IPFS request timeout in seconds |
-| `--concurrency` | `16` | Max concurrent IPFS fetches |
+| `--concurrency` | `16` | Parallel `fangorn read` calls across sources |
 | `--umap` | `false` | Compute and store UMAP px/py after ingest |
 | `--umap-only` | `false` | Skip ingest; only (re)compute UMAP on existing collection |
 | `--umap-neighbors` | `15` | UMAP n_neighbors parameter |
@@ -653,28 +551,25 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 
 | Flag | Default | Description |
 |---|---|---|
-| `--bundle` | required | `NAME=0x...` bundle schema to watch |
-| `--root-type` | `Track` | Bundle root node type |
-| `--owner` | | Filter to this publisher address. Repeatable. |
-| `--dataset` | | Filter to these dataset names. Accepts multiple values. |
-| `--poll-interval` | `60` | Seconds between subgraph polls |
-| `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
-| `--graph-api-key` | `""` | The Graph gateway API key |
-| `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway |
-| `--ipfs-gateway-key` | | Bearer token for authenticated IPFS gateways |
+| `--source` | required | `OWNER:NAMESPACE` to watch. Repeatable. |
+| `--fangorn-bin` | `fangorn` | How to invoke the fangorn CLI (may be a full command, shell-split). |
+| `--root-profile` | | Named projection(s) to emit, repeatable. See `build`. |
+| `--profiles-file` | | JSON file of custom/override root profiles. |
+| `--max-depth` | `1` | Default graph-walk depth |
+| `--label-cap` | `50` | Max folded labels per group |
+| `--node-cap` | `2000` | Max nodes visited per root |
+| `--poll-interval` | `60` | Seconds between `fangorn head` checks |
 | `--qdrant-host` | `localhost` | Qdrant host |
 | `--qdrant-port` | `6333` | Qdrant HTTP port |
 | `--qdrant-grpc-port` | `6334` | Qdrant gRPC port |
 | `--collection` | `fangorn` | Qdrant collection name |
-| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Shared with `build` — tracks `last_block` and completed manifests |
+| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Shared with `build` — tracks each source's last head + vertex CID snapshot |
 | `--embedding-model` | `nomic-ai/nomic-embed-text-v1.5` | fastembed model name |
 | `--dim` | `256` | Matryoshka output dimensions |
 | `--embed-batch` | `16` | GPU embed batch size |
 | `--role-map-file` | `./db/role_map.json` | Role map path — loaded if present, inferred on first cycle otherwise |
 | `--searchable-fields` | `auto` | Field allowlist or `auto` |
-| `--page-size` | `100` | Subgraph pagination page size |
-| `--ipfs-timeout` | `20` | IPFS request timeout in seconds |
-| `--concurrency` | `16` | Max concurrent IPFS fetches |
+| `--cdn-dir` / `--cdn-domain` / `--cdn-config` | | Optional live CDN delta delivery — see [Semantic CDN](#semantic-cdn) |
 
 ### `quickbeam serve`
 
@@ -860,12 +755,12 @@ Join diagnostics — matched/unmatched track IDs across primary and secondary sc
 - Multiple secondary entries per key are merged left-to-right; last writer wins within that schema
 - Entries in secondary schemas with no matching primary entry are silently dropped
 
-### Schema bundle
+### Owner + namespace sources (`quickbeam build`/`watch`)
 
-- One record is emitted per `--root-type` node; the root node's stable, publisher-assigned `id` is the join key
-- Only outgoing edges from the root node are walked (one hop); each neighbor's fields are flattened in
-- On key conflicts, the neighbor wins — same enrichment semantics as the flat secondary merge
-- Edges into the root, and nodes not reachable from any root, contribute no fields
-- Manifests that are not valid v3 bundles (missing `version: 3` or an `edgeChunk`) are skipped
+- Each `--source OWNER:NAMESPACE` is read whole via `fangorn read` — a flat set of tagged vertices `{cid, schemaId, payload}` plus typed edges `{sourceCid, relation, targetCid}`; a vertex's own `cid` is used directly as its `track_id`
+- A **root profile** (`--root-profile`, or one auto-derived per distinct vertex tag if none is given) picks which vertex tags become their own document; for each matching vertex, the (undirected) edge graph is walked up to `max_depth` hops and matching neighbor vertices' content is folded into grouped, deduped, capped label lists (`profile.include` restricts which neighbor tags count; omit it to fold everything within range)
+- On key conflicts between the root's own fields and a folded group name, the folded group wins
+- Vertices reached by no profile's root tag contribute no top-level document, but can still be folded in as a neighbor of one that does
+- Multiple `--source` values project independently into the same collection (tagged `meta.owner`/`meta.namespace`) — there is no cross-source identity fusion yet
 
-In both modes the semantic role map (`title`, `subtitle`, `tags`, `spatial`, etc.) is inferred automatically from field names and value shapes across the merged dataset. This is what makes the same server and app work for music tracks, OSM changesets, or any other Fangorn schema without per-domain configuration.
+In both modes the semantic role map (`title`, `subtitle`, `tags`, `spatial`, etc.) is inferred automatically from field names and value shapes across the merged dataset. This is what makes the same server and app work for music tracks, OSM changesets, or any other Fangorn data without per-domain configuration.

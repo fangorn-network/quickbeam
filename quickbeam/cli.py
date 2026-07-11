@@ -31,7 +31,7 @@ def _fwd(name: str, extra: list[str]) -> None:
 
 @app.command(**_PASSTHROUGH)
 def build(ctx: typer.Context):
-    """Build embeddings from subgraph / IPFS data into Qdrant."""
+    """Build embeddings from one or more owner+namespace Fangorn sources into Qdrant."""
     import asyncio
     _fwd("quickbeam build", ctx.args)
     from quickbeam.embeddings import main
@@ -46,7 +46,7 @@ def serve(ctx: typer.Context):
     Everything BEFORE `--watch` configures the server; everything AFTER it is
     forwarded to `quickbeam watch`. Example:
 
-      quickbeam serve --x402-pay-to 0xRECV --watch --bundle fangorn=0xID --poll-interval 120
+      quickbeam serve --x402-pay-to 0xRECV --watch --source 0xOWNER:namespace --poll-interval 120
     """
     import sys, subprocess, atexit, signal
 
@@ -89,7 +89,7 @@ def mcp(ctx: typer.Context):
 
 @app.command(**_PASSTHROUGH)
 def watch(ctx: typer.Context):
-    """Live daemon: poll subgraph for new events and embed them automatically."""
+    """Live daemon: poll owner+namespace source(s) for on-chain changes and embed them automatically."""
     import asyncio
     _fwd("quickbeam watch", ctx.args)
     from quickbeam.watcher import main
@@ -175,14 +175,6 @@ def mbpg(ctx: typer.Context):
     run()
 
 
-@data_app.command(**_PASSTHROUGH)
-def schemagen(ctx: typer.Context):
-    """Generate Fangorn schemas + a bundle shape from an extracted node/edge graph."""
-    _fwd("quickbeam data schemagen", ctx.args)
-    from quickbeam.pipelines.fangorn_schema import run
-    run()
-
-
 @data_app.command("places-fetch", **_PASSTHROUGH)
 def places_fetch(ctx: typer.Context):
     """Scrape Google Places (new API) for an area into Postgres places_raw."""
@@ -229,22 +221,6 @@ def osm(ctx: typer.Context):
     _fwd("quickbeam data osm", ctx.args)
     from quickbeam.pipelines.osm import main
     main()
-
-
-@data_app.command(**_PASSTHROUGH)
-def linkgen(ctx: typer.Context):
-    """Generate a sameAs linkset that fuses two datasources by coordinate + name match."""
-    _fwd("quickbeam data linkgen", ctx.args)
-    from quickbeam.pipelines.linkgen import run
-    run()
-
-
-@data_app.command(**_PASSTHROUGH)
-def keylink(ctx: typer.Context):
-    """Emit a typed-edge linkset from a foreign-key field (e.g. event hostedAt business)."""
-    _fwd("quickbeam data keylink", ctx.args)
-    from quickbeam.pipelines.linkgen import run_keylink
-    run_keylink()
 
 
 @data_app.command(**_PASSTHROUGH)

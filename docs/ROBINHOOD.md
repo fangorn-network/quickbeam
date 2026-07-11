@@ -1,5 +1,13 @@
 # Robinhood-Chain Ingestion for Fangorn / quickbeam
 
+> **Owner + namespace model.** Fangorn no longer has a schema registry, bundles, or
+> linksets — publishing writes tagged vertices/edges into a namespace under the
+> publisher's own on-chain root, and reading goes through `fangorn read`/`head`
+> (shelled out to by quickbeam). The Quickstart below is current; deeper sections
+> further down that still say `fangorn commit --bundle`/`push`, `--repo`, or `schemagen`
+> describe the pre-rewrite model and are pending a fuller pass — the command shapes
+> in the Quickstart and in the main [README](../README.md) are the source of truth.
+
 ## Quickstart — grow a live transfer ledger
 
 Bring the four processes up **in order**. The critical flag is **`--accumulate`** on
@@ -17,15 +25,19 @@ pages and pull genuine on-chain volume. This, times `--accumulate`, is what turn
 few-hundred-point sampler into a deep ledger.
 
 ```bash
-# 1. Ingest daemon — chain → fangorn commit/push, as a GROWING LEDGER.
+# setup env vars
+export STAGE=~/fangorn/embeddings/stage_volumes
+
+# 1. Ingest daemon — chain → fangorn repo init/upload, as a GROWING LEDGER.
 #    --checkpoint-file makes each cycle read only new flow instead of re-scanning.
 #    Look for "mode=ledger (accumulate)" and per-cycle "Transfer : N (+k new)".
 quickbeam data robinhood --with-transfers --watch --poll-interval 120 \
-  --output-dir $STAGE --volume 1 --publish --repo <your-fangorn-repo> \
+  --output-dir $STAGE --volume 1 --publish --namespace robinhood \
   --accumulate --checkpoint-file db/robinhood_ingest_block.json \
   --max-transfers 500
 
-# 2. Watcher — on-chain tip → embed → Qdrant → CDN delta.
+# 2. Watcher — fangorn head/read → embed → Qdrant → CDN delta.
+#    export ROBINHOOD_OWNER=0x... (the publisher wallet) first — see watch_robinhood.sh.
 ./watch_robinhood.sh
 
 # 3. CDN — serve the baked domain + delta shards.
@@ -54,15 +66,15 @@ the daemon.
 
   Running processes (background tasks of this session — if you restart the machine, bring them
   back in this order):
-  1. quickbeam data robinhood --with-transfers --watch --publish --repo ./stage_volumes --poll 30
+  1. quickbeam data robinhood --with-transfers --watch --publish --namespace robinhood --poll 30
   chain → fangorn
   1. ./watch_robinhood.sh
-  tip → embeddings → CDN
+  namespace → embeddings → CDN
   1. quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
   2. quickbeam mcp --cdn-url http://localhost:8090 --transport http --port 8765
 
 **Status:** Reads the **live** Robinhood Chain (mainnet, id 4663) end-to-end.
-- **Git-native pipeline (the only path):** `data robinhood [--watch --publish]` → `schemagen` → `fangorn commit --bundle`/`push` → `watch --bundle`. The ingest daemon keeps reading the RPC and pushing fresh snapshots to Fangorn, `watch` embeds the on-chain tip → Qdrant → CDN delta. Every read is against the live chain — there is no fixture / mock mode. ✅
+- **Owner+namespace pipeline (the only path):** `data robinhood [--watch --publish]` → `fangorn repo init` + `upload` → `watch --source`. The ingest daemon keeps reading the RPC and publishing fresh snapshots to the wallet's `robinhood` namespace, `watch` embeds new/changed vertices → Qdrant → CDN delta. Every read is against the live chain — there is no fixture / mock mode. ✅
 
 **Pitch shift:** from a *local business directory tool* (`sond3r`) to a
 **High-Performance, Low-Latency Financial Knowledge CDN** for on-chain AI trading

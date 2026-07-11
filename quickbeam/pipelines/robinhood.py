@@ -5,34 +5,30 @@ WHERE THIS SITS IN THE PIPELINE
 -------------------------------
 quickbeam has a clean separation of concerns and this module respects it:
 
-  ingest        `quickbeam data robinhood`   events → staged node/edge volumes
-  publish       `fangorn commit --bundle`     volumes → on-chain commit (IPFS + tip)
-  embed + ship  `quickbeam watch --bundle`    tip → embeddings → Qdrant → CDN delta
-  serve         `quickbeam cdn serve`         static shard delivery to edge agents
+  ingest        `quickbeam data robinhood`      events → staged node/edge volumes
+  publish       `fangorn repo init` + `upload`  volumes → owner+namespace commit
+  embed + ship  `quickbeam watch --source`      namespace → embeddings → Qdrant → CDN delta
+  serve         `quickbeam cdn serve`           static shard delivery to edge agents
 
 So `data robinhood` ONLY shapes + stages data — exactly like `data placespg` /
 `data eventspg`. It never embeds and never touches the CDN; that is `watch`'s job.
 
-ONE PATH — GIT-NATIVE PROVENANCE
---------------------------------
+ONE PATH — OWNER+NAMESPACE PROVENANCE
+--------------------------------------
 The pure shaper (`shape_event` / `verbalize`, dependency-free, unit-tested) feeds
 the single, canonical delivery path:
 
-  Emit volume files → `schemagen` → `fangorn commit --bundle` → `push` → `watch
-  --bundle robinhood=0x<id> --root-profile asset`. Publishing via fangorn is what
-  WRITES this data on-chain; that emits the DataSource-registry events a subgraph
-  indexer picks up, and `watch` reads that subgraph. Every update is a parented
-  commit with a Merkle root, so a trading agent can cryptographically verify the
-  origin of the knowledge it consumes (defeats data-poisoning). Reuses `watch` /
-  `cdn` unchanged.
+  Emit volume files → `fangorn repo init <namespace>` (idempotent) → `fangorn
+  upload <namespace> <batch.json>` → `quickbeam watch --source <owner>:<namespace>
+  --root-profile asset`. Publishing via fangorn is what WRITES this data on-chain
+  under the configured wallet's namespace, and `fangorn read`/`head` (which
+  `watch` polls) is how it's read back. Reuses `watch` / `cdn` unchanged.
 
 READING ROBINHOOD DATA (the upstream source)
 --------------------------------------------
-We READ Robinhood Chain data and INGEST it via fangorn — we do NOT read a "Robinhood
-subgraph" (there isn't one). The subgraph in the pipeline is *Fangorn's own*: it
-indexes the DataSource-registry events emitted when `fangorn commit --bundle`/`push`
-publishes this data on-chain. So WE POPULATE that subgraph by publishing, and `watch
---bundle` reads it — the subgraph is downstream of us, not an upstream Robinhood feed.
+We READ Robinhood Chain data and INGEST it via fangorn — there is no "Robinhood
+subgraph" and, in the current owner+namespace model, no subgraph at all: `fangorn
+read`/`head` resolve the on-chain Pail root directly.
 
 The upstream Robinhood source is Robinhood Chain mainnet (id 4663): the
 tokenized-stock universe + live prices come from its Blockscout explorer API (the
@@ -475,6 +471,27 @@ def _load_node_list(path: str) -> list[dict]:
         return []
 
 
+_STEM_TO_ENTITY = {v: k for k, v in _STEM.items()}
+
+
+def _load_staged_volume(output_dir: str, volume: int) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Read back the volume_<N>_*.json files emit_volumes wrote, inverting the
+    stem→entity mapping. Returns ({entityType: [{"name","fields"}]}, [edge...]) —
+    the shape _publish_to_fangorn turns into a `fangorn upload` batch."""
+    nodes_by_entity: dict[str, list[dict]] = {}
+    if not os.path.isdir(output_dir):
+        return nodes_by_entity, []
+    prefix = f"volume_{volume}_"
+    for fname in sorted(os.listdir(output_dir)):
+        if not (fname.startswith(prefix) and fname.endswith(".json")) or fname == f"{prefix}edges.json":
+            continue
+        stem = fname[len(prefix):-len(".json")]
+        entity = _STEM_TO_ENTITY.get(stem, stem.capitalize())
+        nodes_by_entity[entity] = _load_node_list(os.path.join(output_dir, fname))
+    edges = _load_node_list(os.path.join(output_dir, f"{prefix}edges.json"))
+    return nodes_by_entity, edges
+
+
 def _merge_keep_order(existing: list[dict], new: list[dict], key) -> tuple[list[dict], int]:
     """Append rows from `new` whose key isn't already present, preserving the
     existing order (so fangorn's content-addressed chunking reuses unchanged
@@ -858,19 +875,17 @@ def _parse_args():
 
     pub = p.add_argument_group("publish to fangorn (optional — the ingest→publish leg)")
     pub.add_argument("--publish", action="store_true",
-                     help="After writing volumes, run `fangorn commit --bundle` + "
-                          "`fangorn push` to publish the snapshot on-chain. The repo "
-                          "must be `fangorn repo init`'d against the bundle schema first.")
-    pub.add_argument("--repo", default=".",
-                     help="Fangorn repo dir to run commit/push in (its cwd).")
+                     help="After writing volumes, run `fangorn repo init` (idempotent) + "
+                          "`fangorn upload` to publish the snapshot into the configured "
+                          "wallet's namespace.")
+    pub.add_argument("--namespace", default="robinhood",
+                     help="Fangorn namespace to publish into (default: robinhood).")
     pub.add_argument("--fangorn-bin", default="fangorn",
                      help="The fangorn CLI invocation — a full command, not just a path "
                           "(shell-split). Default `fangorn` (a global install reading "
-                          "~/.fangorn/config.json). For the git-native dev build use its "
-                          "wrapper, e.g. \"dotenvx run -f ~/fangorn/fangorn/.env -- node "
-                          "~/fangorn/fangorn/dist/src/cli/cli.js\".")
-    pub.add_argument("--commit-message", default=None,
-                     help="Commit message (default: a timestamped snapshot message).")
+                          "~/.fangorn/config.json). For the dev build use its wrapper, "
+                          "e.g. \"dotenvx run -f ~/fangorn/fangorn/.env -- node "
+                          "~/fangorn/fangorn/lib/cli/cli.js\".")
     return p.parse_args()
 
 
@@ -923,6 +938,7 @@ def _save_ingest_checkpoint(path: str | None, block: int) -> None:
         return
     d = _read_json_obj(path)      # merge into whatever is there — never clobber foreign keys
     d[_INGEST_BLOCK_KEY] = int(block)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)  # e.g. db/ may not exist yet
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(d, f)
@@ -950,19 +966,28 @@ def _ingest_once(args) -> int:
     print(f"[robinhood] ingesting {len(events)} event(s) → {args.output_dir} "
           f"(volume {args.volume})")
     emit_volumes(events, args.output_dir, args.volume, accumulate=args.accumulate)
+
+    # Publish BEFORE advancing the checkpoint. Ordering matters two ways: (1) a
+    # checkpoint-write failure must not abort the cycle before we ever publish (a
+    # missing ./db threw here and silently starved Fangorn), and (2) the transfer
+    # floor must only move past blocks we actually committed, or a failed publish
+    # would drop those transfers from the next read and they'd never reach Fangorn.
+    published = True
+    if args.publish:
+        published = _publish_to_fangorn(args)
+    else:
+        print(f"[robinhood] next: `fangorn repo init {args.namespace}` → `fangorn upload "
+              f"{args.namespace} <batch.json>` → `quickbeam watch --source "
+              f"<owner>:{args.namespace} …`  (or add --publish to publish now)")
+
     # Advance the checkpoint to the highest transfer block actually staged this cycle
     # (asset snapshots are stamped at chain head, so exclude them or the floor would
-    # jump to head and drop transfers that land in lower blocks next cycle). After
-    # emit_volumes so --dry-run stays side-effect-free.
+    # jump to head and drop transfers that land in lower blocks next cycle). Only after
+    # a successful publish, so an unpublished cycle is retried rather than skipped.
     tx_blocks = [int(e.get("blockNumber", 0) or 0)
                  for e in events if e.get("type") == "transfer"]
-    if tx_blocks and max(tx_blocks) > checkpoint:
+    if published and tx_blocks and max(tx_blocks) > checkpoint:
         _save_ingest_checkpoint(args.checkpoint_file, max(tx_blocks))
-    if args.publish:
-        _publish_to_fangorn(args)
-    else:
-        print("[robinhood] next: `quickbeam data schemagen` → `fangorn commit "
-              "--bundle` → `quickbeam watch --bundle …`  (or add --publish to commit now)")
     return len(events)
 
 
@@ -989,49 +1014,64 @@ def _watch_ingest(args) -> None:
 
 
 def _publish_to_fangorn(args) -> bool:
-    """Publish the just-written volumes on-chain: `fangorn commit --bundle` + `fangorn
-    push`, run in the repo dir. This is the ingest→publish leg — the on-chain write
-    that emits the DataSource events a subgraph indexes and `watch --bundle` reads."""
-    import datetime
+    """Publish the just-written volumes into the configured wallet's Fangorn
+    namespace: `fangorn repo init` (idempotent — a no-op if already initialized)
+    + `fangorn upload` with every staged node/edge as one batch commit. This is
+    the ingest→publish leg — the on-chain write `fangorn read`/`head` (which
+    `watch --source` polls) resolve back."""
     import shlex
     import subprocess
-    # Preflight: commit --bundle only works inside an initialized repo. Fail clearly
-    # once instead of a confusing non-zero exit every cycle.
-    if not os.path.isdir(os.path.join(args.repo, ".fangorn")):
-        print(f"[robinhood] --publish: {args.repo!r} is not a fangorn repo (no .fangorn/). "
-              f"Bootstrap once: cd there and `fangorn repo init <name> -s <bundleSchema>`. "
-              f"Skipping publish.", file=sys.stderr)
+    import tempfile
+
+    nodes_by_entity, edges = _load_staged_volume(args.output_dir, args.volume)
+    vertices = [
+        {"id": n["name"], "tag": entity, "payload": n["fields"]}
+        for entity, node_list in nodes_by_entity.items()
+        for n in node_list
+    ]
+    edge_records = [{"rel": e["rel"], "from": e["from"], "to": e["to"]} for e in edges]
+    if not vertices:
+        print("[robinhood] --publish: nothing staged to publish.", file=sys.stderr)
         return False
-    msg = args.commit_message or (
-        "robinhood snapshot "
-        + datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+
     # --fangorn-bin may be a full command, not just an executable — e.g. the dev
-    # invocation `dotenvx run -f /abs/.env -- node /abs/dist/src/cli/cli.js`. Split it
+    # invocation `dotenvx run -f /abs/.env -- node /abs/lib/cli/cli.js`. Split it
     # so the subcommand/args append cleanly. (.env is loaded by that wrapper, not us;
     # a globally-installed `fangorn` reads ~/.fangorn/config.json instead.)
     prefix = shlex.split(args.fangorn_bin)
-    steps = [
-        ("commit", [*prefix, "commit", "--bundle",
-                    os.path.abspath(args.output_dir), "--volume", str(args.volume),
-                    "-m", msg]),
-        ("push", [*prefix, "push"]),
-    ]
-    for label, cmd in steps:
-        print(f"[robinhood] fangorn {label} (cwd={args.repo}): {' '.join(cmd)}")
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump({"vertices": vertices, "edges": edge_records}, f)
+        batch_path = f.name
+
+    try:
+        steps = [
+            ("repo init", [*prefix, "repo", "init", args.namespace]),
+            ("upload", [*prefix, "upload", args.namespace, batch_path]),
+        ]
+        for label, cmd in steps:
+            print(f"[robinhood] fangorn {label}: {' '.join(cmd)}")
+            try:
+                r = subprocess.run(cmd)
+            except FileNotFoundError:
+                print(f"[robinhood] fangorn CLI not found (--fangorn-bin {args.fangorn_bin!r}, "
+                      f"resolved to {prefix[0]!r}). Install the Fangorn SDK or pass its "
+                      f"full invocation, e.g. --fangorn-bin \"dotenvx run -f "
+                      f"~/fangorn/fangorn/.env -- node ~/fangorn/fangorn/lib/cli/cli.js\". "
+                      f"Skipping publish.", file=sys.stderr)
+                return False
+            if r.returncode != 0:
+                print(f"[robinhood] fangorn {label} failed (exit {r.returncode})",
+                      file=sys.stderr)
+                return False
+    finally:
         try:
-            r = subprocess.run(cmd, cwd=args.repo)
-        except FileNotFoundError:
-            print(f"[robinhood] fangorn CLI not found (--fangorn-bin {args.fangorn_bin!r}, "
-                  f"resolved to {prefix[0]!r}). Install the git-native fangorn or pass its "
-                  f"full invocation, e.g. --fangorn-bin \"dotenvx run -f "
-                  f"~/fangorn/fangorn/.env -- node ~/fangorn/fangorn/dist/src/cli/cli.js\". "
-                  f"Skipping publish.", file=sys.stderr)
-            return False
-        if r.returncode != 0:
-            print(f"[robinhood] fangorn {label} failed (exit {r.returncode})",
-                  file=sys.stderr)
-            return False
-    print("[robinhood] published snapshot to fangorn ✓")
+            os.unlink(batch_path)
+        except OSError:
+            pass
+
+    print(f"[robinhood] published {len(vertices)} vertice(s), {len(edge_records)} edge(s) "
+          f"to namespace {args.namespace!r} ✓")
     return True
 
 

@@ -1,13 +1,12 @@
 import certifi
 import os
 import io
-import re
 import sys
 import argparse
 import asyncio
-import aiohttp
-import hashlib
 import json
+import shlex
+import subprocess
 import uuid
 
 import numpy as np
@@ -28,47 +27,48 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 # ---------------------------------------------------------------------------
 def parse_args():
     parser = argparse.ArgumentParser(description="Fangorn Qdrant Ingestion CLI Builder")
-    parser.add_argument("--schema", "-s", action="append", dest="schemas", default=[])
-    parser.add_argument("--primary", "-p", default=None)
-    parser.add_argument("--bundle", default=None,
-                        help="Bundle schema as name=schemaId. Uses edge-walk join instead of --primary track-id join.")
-    parser.add_argument("--view", default=None,
-                        help="Composed View as name=schemaId. Fuses the view's source datasources "
-                             "into one graph (joins on Entity URI + aliases) before projecting.")
+    parser.add_argument(
+        "--source", action="append", dest="sources", default=[],
+        help="OWNER:NAMESPACE to read and embed, repeatable, e.g. "
+             "--source 0x147c24c5...:robinhood. Each source is read independently "
+             "via `fangorn read` and tagged with its own owner/namespace in meta — "
+             "there is no cross-source identity fusion yet, so multiple sources "
+             "land in the same collection as distinct, unmerged records.",
+    )
+    parser.add_argument(
+        "--fangorn-bin", default="fangorn",
+        help="How to invoke the fangorn CLI. May be a full command, not just an "
+             "executable — e.g. 'dotenvx run -f /abs/.env -- node /abs/lib/cli/cli.js'.",
+    )
     parser.add_argument(
         "--root-profile",
         action="append",
         default=[],
         help="Named projection(s) to emit, repeatable: e.g. --root-profile track "
-             "--root-profile place. Each profile walks the graph from a root type "
-             "and emits a distinct document (see ROOT_PROFILES). If omitted, falls "
-             "back to a single --root-type one-hop projection (legacy behavior).",
+             "--root-profile place. A name matching a built-in (see ROOT_PROFILES) "
+             "or --profiles-file profile uses its root_type/include/depth; any "
+             "other name is treated as a literal vertex tag with no neighbor-type "
+             "filter. If omitted entirely, one profile is auto-derived per distinct "
+             "vertex tag actually present in the source, folding in whatever's "
+             "within one hop.",
     )
-    parser.add_argument("--root-type", default="Track",
-                        help="Legacy single-projection root node type (used only when "
-                             "no --root-profile is given).")
     parser.add_argument("--profiles-file", default=None,
                         help="Optional JSON file of custom/override root profiles, "
                              "merged over the built-in ROOT_PROFILES.")
-    parser.add_argument("--max-depth", type=int, default=2,
+    parser.add_argument("--max-depth", type=int, default=1,
                         help="Default traversal depth for profiles that don't set one.")
     parser.add_argument("--label-cap", type=int, default=50,
                         help="Max neighbor labels collected per relation group in a projection.")
     parser.add_argument("--node-cap", type=int, default=2000,
                         help="Max nodes a single root's graph walk will visit (cost bound).")
-    parser.add_argument("--subgraph-url", default="https://gateway.thegraph.com/api/subgraphs/id/8SgbhtiitpAhEfyTgeAHxHH5DQ2gTygUuXgc3b7MCFyc")
-    parser.add_argument("--graph-api-key", default="")
-    parser.add_argument("--ipfs-gateway", default="https://gateway.pinata.cloud/ipfs")
-    parser.add_argument("--ipfs-gateway-key", default=None)
     parser.add_argument("--qdrant-host", default="localhost")
     parser.add_argument("--qdrant-port", type=int, default=6333)
     parser.add_argument("--qdrant-grpc-port", type=int, default=6334)
     parser.add_argument("--checkpoint-file", default="./db/ingest_checkpoint.json")
     parser.add_argument("--collection", default="fangorn")
     parser.add_argument("--searchable-fields", default="auto")
-    parser.add_argument("--page-size", type=int, default=100)
-    parser.add_argument("--ipfs-timeout", type=int, default=20)
-    parser.add_argument("--concurrency", type=int, default=16)
+    parser.add_argument("--concurrency", type=int, default=16,
+                        help="Parallel `fangorn read` calls across sources.")
     parser.add_argument("--reset", action="store_true", default=False)
     parser.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5")
     parser.add_argument("--dim", type=int, default=256, help="Matryoshka output dim: 256, 512, or 768")
@@ -107,11 +107,6 @@ def parse_args():
                              "needed only if you must bake coords into the Qdrant snapshot).")
     parser.add_argument("--umap-map-file", default="./db/catalog_map.json.gz",
                         help="Output path for the --umap-target file artifact (gzipped JSON).")
-    parser.add_argument("--max-manifests", type=int, default=0,
-                        help="Build at most N bundle manifests (shards) this run, then stop. "
-                             "0 = no limit. Progress is checkpointed, so a later run resumes "
-                             "with the next un-built shards. Use this to build a small number of "
-                             "shards on a memory-limited machine.")
     return parser.parse_args()
 
 MODEL_DIM_MAP = {
@@ -127,18 +122,13 @@ def _load_checkpoint(path):
     try:
         with open(path) as f:
             ck = json.load(f)
-            # Legacy format: top-level keys were manifest cids
-            if "manifests" not in ck:
-                ck = {"manifests": ck, "processed_track_ids": []}
-            ck.setdefault("completed_manifest_cids", [])
             ck.setdefault("processed_track_ids", [])
-            # last_tip: schemaId -> last-built tip (commit) CID, for commit-diff
-            # delete propagation across cycles (slice 2).
-            ck.setdefault("last_tip", {})
+            # sources: "owner:namespace" -> {"head": "0x..."} — last on-chain root
+            # seen for that source, so the watcher can skip a poll cycle cheaply.
+            ck.setdefault("sources", {})
             return ck
     except Exception:
-        return {"manifests": {}, "processed_track_ids": [],
-                "completed_manifest_cids": [], "last_tip": {}}
+        return {"processed_track_ids": [], "sources": {}}
 
 
 def _save_checkpoint(ck, path):
@@ -151,8 +141,8 @@ def _save_checkpoint(ck, path):
 
 def _str_to_uuid(s: str) -> str:
     """Deterministic UUID v5 from a track id. Using a stable id (rather than a
-    random one) makes re-upserting a manifest idempotent — a crash that re-runs
-    an already-embedded manifest overwrites the same points instead of creating
+    random one) makes re-upserting a source idempotent — a crash that re-runs
+    an already-embedded source overwrites the same points instead of creating
     duplicates. Matches server.py's _str_to_uuid so builder + bundle-import agree.
     """
     return str(uuid.uuid5(uuid.NAMESPACE_DNS, s))
@@ -514,7 +504,7 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist, tmp_dir=None, rec
     # ── STAGE 3a: MAP ARTIFACT (target=file). One read pass over payloads aligned
     #    to the projection, streamed to a gzipped catalog-map JSON the server can
     #    serve directly from /catalog/map. No Qdrant writes — the only path that
-    #    scales to millions of points. Genre centroids are aggregated incrementally
+    #    scales to millions. Genre centroids are aggregated incrementally
     #    (running mean) so memory stays flat.
     if st["stage"] == "artifact":
         import gzip
@@ -646,7 +636,6 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist, tmp_dir=None, rec
     ex = concurrent.futures.ThreadPoolExecutor(max_workers=W) if parallel else None
     inflight = _collections.deque()   # (end_row, future) in submission order
     MAXQ = W * 2
-    last_ops = None   # most recent batch — re-applied as a wait=True barrier when async
 
     def _drain_one():
         nonlocal flushed
@@ -657,6 +646,7 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist, tmp_dir=None, rec
         st["writeback_row"] = flushed
         _save_state(st)
 
+    last_ops = None   # most recent batch — re-applied as a wait=True barrier when async
     try:
         while True:
             pts, offset = _retry(
@@ -726,172 +716,82 @@ def write_umap_coords(qdrant, collection, neighbors, min_dist, tmp_dir=None, rec
     print(f"[umap] done — px/py on {done} points. Snapshot now to bake it in.")
 
 # ---------------------------------------------------------------------------
-# SUBGRAPH QUERIES
-# block_gt variants add `blockNumber_gt` to the where clause for incremental
-# polling in the watcher (avoids re-scanning the full event history each cycle).
-# ---------------------------------------------------------------------------
-_PUBLISHES_Q = "query Publishes($schemaId: Bytes!, $first: Int!, $skip: Int!) { manifestPublisheds(where: { schemaId: $schemaId }, first: $first, skip: $skip, orderBy: blockNumber, orderDirection: asc) { id owner schemaId nameHash name manifestCid blockNumber blockTimestamp transactionHash } }"
-_PUBLISHES_Q_FROM = "query Publishes($schemaId: Bytes!, $first: Int!, $skip: Int!, $blockGt: BigInt!) { manifestPublisheds(where: { schemaId: $schemaId, blockNumber_gt: $blockGt }, first: $first, skip: $skip, orderBy: blockNumber, orderDirection: asc) { id owner schemaId nameHash name manifestCid blockNumber blockTimestamp transactionHash } }"
-_UPDATES_Q = "query Updates($schemaId: Bytes!, $first: Int!, $skip: Int!) { manifestUpdateds(where: { schemaId: $schemaId }, first: $first, skip: $skip, orderBy: version, orderDirection: desc) { id owner schemaId nameHash manifestCid version blockNumber blockTimestamp transactionHash } }"
-_UPDATES_Q_FROM = "query Updates($schemaId: Bytes!, $first: Int!, $skip: Int!, $blockGt: BigInt!) { manifestUpdateds(where: { schemaId: $schemaId, blockNumber_gt: $blockGt }, first: $first, skip: $skip, orderBy: version, orderDirection: desc) { id owner schemaId nameHash manifestCid version blockNumber blockTimestamp transactionHash } }"
-
-# Unfiltered variants — used by the Composed View path (Phase 1). A view names
-# its sources by *resourceId* (a hash of owner+schemaId+name), which the subgraph
-# does not index, so we page the full ManifestPublished/Updated history and
-# recompute each event's resourceId locally (see _identity.resource_id) to keep
-# the ones a view asked for.
+# FANGORN READ — subprocess bridge to `fangorn read`/`fangorn head`
 #
-# These page with a KEYSET cursor (`id_gt`), not `skip`: The Graph hard-caps `skip`
-# at 5000, and the global history routinely exceeds that (a single sharded publish
-# emits thousands of ManifestPublished records). Ordering by `id` asc and advancing
-# `id_gt` to the last row's id has no such limit. Consumers select the latest
-# manifest per resourceId by comparing blockNumber explicitly, so query order is
-# irrelevant here.
-_PUBLISHES_ALL_Q = "query Publishes($first: Int!, $lastId: String!) { manifestPublisheds(first: $first, where: { id_gt: $lastId }, orderBy: id, orderDirection: asc) { id owner schemaId nameHash name manifestCid blockNumber blockTimestamp transactionHash } }"
-_UPDATES_ALL_Q = "query Updates($first: Int!, $lastId: String!) { manifestUpdateds(first: $first, where: { id_gt: $lastId }, orderBy: id, orderDirection: asc) { id owner schemaId nameHash manifestCid version blockNumber blockTimestamp transactionHash } }"
-
-async def _query_subgraph_async(url, api_key, query, variables):
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    async with aiohttp.ClientSession() as session:
-        for attempt in range(5):
-            try:
-                async with session.post(url, json={"query": query, "variables": variables}, headers=headers, timeout=30) as resp:
-                    if resp.status in {429, 500, 502, 503, 504}: raise Exception()
-                    resp.raise_for_status()
-                    data = await resp.json()
-                    if "errors" in data: raise RuntimeError(data["errors"])
-                    return data["data"]
-            except Exception:
-                if attempt == 4: raise
-                await asyncio.sleep(1 + attempt)
-
-
-async def _fetch_all_events_async(url, api_key, schema_id, page_size, block_gt=None):
-    publishes, updates = [], []
-    pairs = [
-        (publishes, _PUBLISHES_Q_FROM if block_gt is not None else _PUBLISHES_Q, "manifestPublisheds"),
-        (updates,   _UPDATES_Q_FROM   if block_gt is not None else _UPDATES_Q,   "manifestUpdateds"),
-    ]
-    for target, query, key in pairs:
-        skip = 0
-        pbar = tqdm(desc=f"  ↳ Fetching {key}", unit=" events", leave=False)
-        while True:
-            variables = {"schemaId": schema_id, "first": page_size, "skip": skip}
-            if block_gt is not None:
-                variables["blockGt"] = block_gt
-            data = await _query_subgraph_async(url, api_key, query, variables)
-            batch = data.get(key, [])
-            target.extend(batch)
-            pbar.update(len(batch))
-            if len(batch) < page_size:
-                break
-            skip += page_size
-        pbar.close()
-    return publishes, updates
-
-
-async def _fetch_all_events_global(url, api_key, page_size):
-    """Page the *entire* ManifestPublished/Updated history (no schemaId filter).
-    Used only by the Composed View path, where sources are resourceIds we must
-    match against every datasource rather than a single known schema."""
-    publishes, updates = [], []
-    pairs = [
-        (publishes, _PUBLISHES_ALL_Q, "manifestPublisheds"),
-        (updates,   _UPDATES_ALL_Q,   "manifestUpdateds"),
-    ]
-    for target, query, key in pairs:
-        last_id = ""  # keyset cursor: "" is lexicographically smallest → first page
-        pbar = tqdm(desc=f"  ↳ Scanning {key}", unit=" events", leave=False)
-        while True:
-            data = await _query_subgraph_async(url, api_key, query, {"first": page_size, "lastId": last_id})
-            batch = data.get(key, [])
-            target.extend(batch)
-            pbar.update(len(batch))
-            if len(batch) < page_size:
-                break
-            last_id = batch[-1]["id"]  # advance past the last row; no skip cap
-        pbar.close()
-    return publishes, updates
-
+# The Fangorn SDK's owner+namespace read primitive (FangornEngine.listNamespace)
+# is TypeScript-only; quickbeam shells out to the `fangorn` CLI the same way it
+# already does for writes (see pipelines/robinhood.py's publish step).
 # ---------------------------------------------------------------------------
-# IPFS HELPERS
-# ---------------------------------------------------------------------------
-_B58_ALPHABET = b'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+def parse_sources(raw_sources: list[str]) -> list[tuple[str, str]]:
+    """Parse --source OWNER:NAMESPACE pairs."""
+    out = []
+    for s in raw_sources:
+        owner, sep, namespace = s.partition(":")
+        if not sep or not owner.strip() or not namespace.strip():
+            raise SystemExit(f"Invalid --source {s!r}, expected OWNER:NAMESPACE")
+        out.append((owner.strip(), namespace.strip()))
+    return out
 
-def _b58encode(v: bytes) -> str:
-    leading = len(v) - len(v.lstrip(b'\x00'))
-    n = int.from_bytes(v, 'big')
-    res = []
-    while n:
-        n, r = divmod(n, 58)
-        res.append(_B58_ALPHABET[r])
-    return ('1' * leading) + bytes(reversed(res)).decode('ascii')
 
-def _cid_to_path(cid: str) -> str:
-    # Chunk dataCids are stored as full `ipfs://<dirCid>/<file>` URIs (UnixFS dir +
-    # path); strip the scheme so the gateway URL is `<gw>/ipfs/<dirCid>/<file>` and
-    # not the malformed `<gw>/ipfs/ipfs://<dirCid>/<file>` (→ 400).
-    if cid.startswith("ipfs://"):
-        cid = cid[len("ipfs://"):]
-    if cid.startswith(('0x', '0X')):
-        raw = bytes.fromhex(cid[2:])
-        if len(raw) == 34 and raw[0] == 0x12 and raw[1] == 0x20:
-            return _b58encode(raw)
-    return cid
+def read_source(fangorn_bin: str, owner: str, namespace: str) -> dict:
+    """Shell out to `fangorn read <namespace> --owner <owner>` and parse the JSON
+    {owner, namespace, head, vertices, edges} it prints to stdout."""
+    prefix = shlex.split(fangorn_bin)
+    cmd = [*prefix, "read", namespace, "--owner", owner]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"fangorn CLI not found (--fangorn-bin {fangorn_bin!r}, resolved to "
+            f"{prefix[0]!r}). Install it or pass its full invocation, e.g. "
+            f"--fangorn-bin \"dotenvx run -f ~/fangorn/fangorn/.env -- node "
+            f"~/fangorn/fangorn/lib/cli/cli.js\".")
+    if result.returncode != 0:
+        raise RuntimeError(f"fangorn read {owner}:{namespace} failed: {result.stderr.strip()}")
+    return json.loads(result.stdout)
 
-async def _fetch_json(session, sem, url, timeout, pbar):
-    async with sem:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
-                if resp.status == 200:
-                    res = json.loads(await resp.text())
-                    pbar.update(1)
-                    return res
-                print(f"\n[IPFS] {resp.status} {url}", flush=True)
-        except Exception as e:
-            print(f"\n[IPFS] error fetching {url}: {e}", flush=True)
-        pbar.update(1)
-        return None
 
-async def fetch_all_ipfs(cids, gateway, timeout, concurrency, desc="Downloading IPFS", headers=None):
-    if not cids: return {}
-    sem = asyncio.Semaphore(concurrency)
-    pbar = tqdm(total=len(cids), desc=f"  ↳ {desc}", unit=" file")
-    async with aiohttp.ClientSession(headers=headers or {}) as session:
-        tasks = [
-            asyncio.create_task(_fetch_json(session, sem, f"{gateway.rstrip('/')}/{_cid_to_path(cid)}", timeout, pbar))
-            for cid in cids
-        ]
-        results = await asyncio.gather(*tasks)
-    pbar.close()
-    return dict(zip(cids, results))
+def read_head(fangorn_bin: str, owner: str) -> str:
+    """Shell out to `fangorn head <owner>` — the cheap on-chain root check used
+    by the watcher to skip a poll cycle with no on-chain change."""
+    prefix = shlex.split(fangorn_bin)
+    cmd = [*prefix, "head", owner]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError(f"fangorn CLI not found (--fangorn-bin {fangorn_bin!r})")
+    if result.returncode != 0:
+        raise RuntimeError(f"fangorn head {owner} failed: {result.stderr.strip()}")
+    return result.stdout.strip()
 
-def _track_id(fields: dict, prefer: str | None = None) -> str:
-    if prefer:
-        return str(prefer).strip().removeprefix("track:")
-    for key in ["trackId", "track_id", "id", "contentId"]:
-        if fields.get(key): return str(fields[key]).strip().removeprefix("track:")
-    artist = str(fields.get("artist") or "").strip()
-    title  = str(fields.get("title")  or "").strip()
-    if artist and title: return hashlib.sha256(f"{artist}:{title}".encode()).hexdigest()[:24]
-    return str(uuid.uuid4())[:12]
+
+def subscribe_cmd(fangorn_bin: str, owner: str, namespace: str) -> list[str]:
+    """Argv for `fangorn subscribe <namespace> --owner <owner>` — a light-client
+    stream that emits one `NamespaceChange` JSON per line on stdout as commits land
+    (status/logs go to stderr; the CLI persists its own resume cursor under
+    ./.fangorn). Each line is a self-contained on-chain diff:
+        {namespace, owner, commitCid, oldRoot, newRoot, blockNumber,
+         addedVertices:[{cid,schemaId,payload}], addedEdges:[{sourceCid,relation,targetCid}],
+         removedVertexCids:[cid], removedEdges:[...]}
+    This is the push-based replacement for `read_head` polling: the chain tells us
+    exactly what changed instead of us re-reading the whole namespace on a timer."""
+    return [*shlex.split(fangorn_bin), "subscribe", namespace, "--owner", owner]
 
 # ---------------------------------------------------------------------------
 # ROOT PROFILES — graph-as-source-of-truth projections
 #
-# A bundle is a graph (typed nodes + typed edges). A *profile* projects that one
-# graph from a chosen root type into a distinct document: walking the graph up to
-# `max_depth` hops and folding the neighbor entities it cares about (`include`)
-# into grouped label lists. The SAME graph yields a Track view, an Artist view, a
-# Place view, etc. — each becomes its own embedding. Add a profile here (or via
-# --profiles-file) and a new semantic view exists with no change to the graph.
-#
-# Node types are the entityTypes produced by the mb_pg registry: Artist,
-# ReleaseGroup, Release, Recording, Work, Area, Place, Event, Instrument.
+# A namespace is a flat graph (tagged vertices + typed edges, from `fangorn
+# read`). A *profile* projects that graph from a chosen root tag into a
+# distinct document: walking the graph up to `max_depth` hops and folding the
+# neighbor vertices it cares about (`include`) into grouped label lists. The
+# SAME namespace can yield a Track view, an Artist view, etc. — each becomes
+# its own embedding. Add a profile here (or via --profiles-file) and a new
+# semantic view exists with no change to how the data was written.
 # ---------------------------------------------------------------------------
 
-# These are a collection of default or frequently used root profiles
-# Root profiles can be defined externally and passed as a cli arg
+# A collection of default/frequently-used root profiles. Root profiles can also
+# be defined externally (--profiles-file) or implied by --root-profile naming a
+# tag that isn't in this registry (treated as a literal vertex tag, no filter).
 ROOT_PROFILES: dict[str, dict] = {
     "track": {
         "root_type": "Recording", "max_depth": 2,
@@ -956,57 +856,48 @@ ROOT_PROFILES: dict[str, dict] = {
     # Transfer hangs directly off its Asset. Each Transfer also embeds as its own
     # record via the `transfer` profile, so a query can hit the event directly.
     "asset": {
-        "root_type": "Asset", "max_depth": 1,
-        "include": ["Transfer"],
+        "root_type": "asset", "max_depth": 1,
+        "include": ["transfer"],
         # fold each Transfer's verbalized blurb, not its label (the company name)
         "content_fields": ["text"],
     },
     # one document per Transfer, folding in its Asset's blurb (business profile +
     # live stats) so a semantic query matches the flow through what the company IS.
     "transfer": {
-        "root_type": "Transfer", "max_depth": 1,
-        "include": ["Asset"],
+        "root_type": "transfer", "max_depth": 1,
+        "include": ["asset"],
         "content_fields": ["text"],
     },
 }
 
 
-def _load_profiles(args) -> list[dict]:
-    """Resolve --root-profile names (or fall back to a single --root-type) into a
-    list of fully-specified profile dicts. Each carries a `name` and `root_type`.
-    """
+def load_profiles(args, discovered_tags: set[str] | None = None) -> list[dict]:
+    """Resolve --root-profile names (or auto-derive from what's actually in the
+    source) into a list of fully-specified profile dicts. Each carries a `name`
+    and `root_type` (a vertex tag)."""
     registry = dict(ROOT_PROFILES)
     if args.profiles_file and os.path.exists(args.profiles_file):
         with open(args.profiles_file) as f:
             for name, prof in (json.load(f) or {}).items():
                 registry[name.lower()] = {**registry.get(name.lower(), {}), **prof}
 
-    # TODO: I think I can remove this
-    if not args.root_profile:
-        # Legacy: one projection, one-hop neighbor *field* fold (preserves the old
-        # Recording-gets-byArtist behavior the catalog map relies on).
-        return [{"name": args.root_type.lower(), "root_type": args.root_type,
-                 "fold": True, "max_depth": 1, "include": None}]
+    if args.root_profile:
+        profiles = []
+        for raw in args.root_profile:
+            key = raw.strip().lower()
+            prof = {"name": key, **registry[key]} if key in registry else \
+                   {"name": key, "root_type": raw.strip()}
+            prof.setdefault("max_depth", args.max_depth)
+            prof.setdefault("include", None)
+            profiles.append(prof)
+        return profiles
 
-    profiles = []
-    for raw in args.root_profile:
-        key = raw.strip().lower()
-        if key not in registry:
-            raise SystemExit(
-                f"Unknown --root-profile '{raw}'. Known: {', '.join(sorted(registry))} "
-                f"(or define it in --profiles-file).")
-        prof = {"name": key, **registry[key]}
-        prof.setdefault("max_depth", args.max_depth)
-        prof.setdefault("include", None)
-        profiles.append(prof)
-    return profiles
-
-
-def _node_key(node: dict) -> str:
-    """Global join key for a node: its Entity URI when present else the raw local id. 
-    Keying the adjacency and projections on this resolves edges on the globally-unique identity rather than a
-    publisher-local id for cross-publisher linking."""
-    return node.get("entityUri") or node.get("id")
+    # Zero-config default: one profile per distinct vertex tag actually present
+    # in this source, folding in whatever's within one hop (no curated `include`
+    # filter — we don't know the shape of arbitrary data ahead of time).
+    tags = sorted(discovered_tags or [])
+    return [{"name": t.lower(), "root_type": t, "max_depth": args.max_depth, "include": None}
+            for t in tags]
 
 
 def _node_label(node: dict) -> str:
@@ -1037,9 +928,9 @@ def _node_content(node: dict, extra_keys=()) -> str:
             return v.strip()
     return _node_label(node)
 
-# normalize group keys
+
 def _group_key(type_name: str) -> str:
-    """Node type → camelCase plural field name. Artist→artists, Work→works,
+    """Node type/tag → camelCase plural field name. Artist→artists, Work→works,
     Place→places, ReleaseGroup→releaseGroups."""
     t = (type_name[:1].lower() + type_name[1:]) if type_name else type_name
     if t.endswith("y"):
@@ -1048,7 +939,7 @@ def _group_key(type_name: str) -> str:
         return t + "es"
     return t + "s"
 
-# walk the graph and rebuild the bundles
+
 def _walk_graph(root_id, adj, max_depth, node_cap):
     """BFS from root over an (undirected) adjacency map, returning [(node_id, depth)]
     for every reachable node within `max_depth` (excluding the root). Bounded by
@@ -1072,21 +963,11 @@ def _walk_graph(root_id, adj, max_depth, node_cap):
     return collected
 
 
-def _project(root, nodes_by_id, adj, out, profile, defaults):
-    # TODO: remove legacy support?
-    """Project a root node into a profile document. `fold` profiles reproduce the
-    legacy one-hop field merge; otherwise we walk the graph and fold included
-    neighbors into grouped, deduped, capped label lists."""
+def project_vertex(root: dict, nodes_by_id: dict, adj: dict, profile: dict, defaults: dict) -> dict:
+    """Project one root vertex into a profile document: walk the graph and fold
+    included neighbor vertices into grouped, deduped, capped label lists."""
     rt = profile.get("root_type") or root.get("type")
     fields = dict(root.get("fields", {}))
-
-    if profile.get("fold"):
-        for tid in out.get(_node_key(root), ()):
-            nb = nodes_by_id.get(tid)
-            if nb:
-                fields.update(nb.get("fields", {}))
-        fields["entityType"] = rt
-        return fields
 
     depth = int(profile.get("max_depth", defaults["max_depth"]))
     label_cap = int(profile.get("label_cap", defaults["label_cap"]))
@@ -1096,7 +977,7 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
 
     groups: dict = {}
     content_fields = profile.get("content_fields") or ()
-    for nid, _depth in _walk_graph(_node_key(root), adj, depth, node_cap):
+    for nid, _depth in _walk_graph(root["id"], adj, depth, node_cap):
         nb = nodes_by_id.get(nid)
         if not nb:
             continue
@@ -1113,611 +994,43 @@ def _project(root, nodes_by_id, adj, out, profile, defaults):
     return fields
 
 
-# ---------------------------------------------------------------------------
-# BUNDLE JOIN — async generator, one manifest at a time
-#
-# Yields (manifest_cid, [records]) for each pending bundle manifest.
-# Processing one manifest at a time keeps memory bounded regardless of
-# collection size; chunk data is freed before the next manifest is fetched.
-#
-# Parameters
-#   completed_manifest_cids : set of already-finished manifest CIDs to skip
-#   owner_filter            : set of lowercase owner addresses (None = any)
-#   name_filter             : set of lowercase dataset names  (None = any)
-#   block_gt                : if set, only query events with blockNumber > this
-# ---------------------------------------------------------------------------
-async def _unwrap_commit(args, tip_obj, gw_headers):
-    """Resolve an on-chain tip to its tree manifest.
-
-    Post-slice-1 the `manifestCid` slot holds a *commit* CID, not a manifest CID
-    (the "defer the redeploy" trick). A commit is a small JSON object whose `tree`
-    field points at the actual manifest and whose `embed` field carries the
-    embedding contract the indexer should inherit (FRAMEWORK Gap A). Older
-    publishes still put a raw manifest CID in the slot, so:
-
-      - commit tip  → fetch `commit.tree`, return (manifest, commit)
-      - raw manifest → return (obj, None)  [back-compat]
-
-    Returns (manifest_or_None, commit_or_None).
-    """
-    from quickbeam.objects import is_commit
-    if not is_commit(tip_obj):
-        return tip_obj, None
-    tree = (await fetch_all_ipfs(
-        [tip_obj["tree"]], args.ipfs_gateway, args.ipfs_timeout,
-        args.concurrency, desc="Commit tree", headers=gw_headers)).get(tip_obj["tree"])
-    return tree, tip_obj
-
-
-def _blob_point_ids(records):
-    """Deterministic Qdrant point ids for the entities in one blob's records.
-
-    Mirrors the id derivation at embed time (`_str_to_uuid(_track_id(...))` with
-    the node/record id preferred), so the ids computed here for a *removed* blob
-    are exactly the points that blob's entities were upserted under."""
-    ids = []
-    for r in records or []:
-        if not isinstance(r, dict):
-            continue
-        ids.append(_str_to_uuid(_track_id(r, prefer=r.get("id"))))
-    return ids
-
-
-def collect_tombstone_ids(removed_uris, blobs_by_uri):
-    """Map removed blob uris → point ids to delete. The fan-out/de-dup lives in the
-    dep-free `objects.collect_removed_point_ids` (unit-tested there); here we just
-    supply the real, embed-time id derivation."""
-    from quickbeam.objects import collect_removed_point_ids
-    return collect_removed_point_ids(
-        removed_uris, blobs_by_uri,
-        lambda r: _str_to_uuid(_track_id(r, prefer=r.get("id"))))
-
-
-async def tombstone_commit_delta(args, qdrant, tip_commit, last_commit_cid, gw_headers):
-    """Propagate deletes: remove from the index every entity a new commit dropped
-    relative to the last-built commit (slice 2). Diffs the two trees, fetches only
-    the *removed* blobs (from the parent) to learn which entities they held, and
-    deletes those points. Returns the removed track_ids (so the caller can also
-    tombstone the delivered CDN domain — the shards are immutable, so the delete
-    must ride the manifest instead).
-
-    A content-addressed no-op (only uris changed) diffs to zero removed blobs, so
-    this costs nothing when nothing was actually deleted."""
-    from quickbeam.objects import is_commit, plan_delta, collect_removed_point_ids
-
-    if not last_commit_cid or not is_commit(tip_commit):
-        return []
-
-    async def _fetch(cids):
-        return await fetch_all_ipfs(cids, args.ipfs_gateway, args.ipfs_timeout,
-                                    args.concurrency, desc="Delta", headers=gw_headers)
-
-    last_commit = (await _fetch([last_commit_cid])).get(last_commit_cid)
-    if not is_commit(last_commit):
-        return []
-    trees = await _fetch([tip_commit["tree"], last_commit["tree"]])
-    child, parent = trees.get(tip_commit["tree"]), trees.get(last_commit["tree"])
-    if not child or not parent:
-        return []
-
-    plan = plan_delta(child, parent)
-    if not plan.removed_uris:
-        return []
-
-    removed_blobs = await _fetch(plan.removed_uris)
-    # A removed EDGE blob's records are {rel, from, to} triples, not entities —
-    # they were never upserted as points, and mapping them through _track_id
-    # would mint random ids (junk deletes + junk CDN tombstones). Skip them.
-    removed_blobs = {
-        uri: [r for r in (records or [])
-              if isinstance(r, dict) and not ("rel" in r and "from" in r and "to" in r)]
-        for uri, records in removed_blobs.items()
+def project_source(owner: str, namespace: str, contents: dict, profiles: list[dict], args) -> list[dict]:
+    """Project one source's {vertices, edges} (from `fangorn read`) into
+    root-profile documents. Each vertex's own content-addressed CID is used
+    directly as its track_id — already a globally unique, stable identifier, so
+    no field-sniffing heuristic is needed to derive one."""
+    nodes_by_id = {
+        v["cid"]: {"id": v["cid"], "type": v["schemaId"], "fields": v["payload"]}
+        for v in contents.get("vertices", [])
     }
-    # Same fan-out/de-dup as the point ids, keyed on the record's track_id; the
-    # point id is a deterministic uuid5 of it (see _blob_point_ids).
-    track_ids = collect_removed_point_ids(
-        plan.removed_uris, removed_blobs,
-        lambda r: _track_id(r, prefer=r.get("id")))
-    if track_ids:
-        qdrant.delete(collection_name=args.collection,
-                      points_selector=models.PointIdsList(
-                          points=[_str_to_uuid(t) for t in track_ids]),
-                      wait=True)
-        print(f"[Builder] tombstoned {len(track_ids)} point(s) from "
-              f"{len(plan.removed_uris)} removed blob(s)")
-    return track_ids
+    adj: dict = {}
+    for e in contents.get("edges", []):
+        adj.setdefault(e["sourceCid"], []).append(e["targetCid"])
+        adj.setdefault(e["targetCid"], []).append(e["sourceCid"])
 
-
-async def resolve_tip_commit(args, schema_id, gw_headers, owner_filter=None, name_filter=None):
-    """Resolve the current on-chain tip for a schema → (tip_cid, commit, manifest).
-
-    ``commit`` is None for a legacy raw-manifest tip. Used by the watcher to (a)
-    inherit the embedding contract from the tip commit at startup (Gap A) and (b)
-    diff the new tip against the last-built one for delete propagation."""
-    publishes, updates = await _fetch_all_events_async(
-        args.subgraph_url, args.graph_api_key, schema_id, args.page_size)
-    events = publishes + updates
-    if owner_filter:
-        events = [e for e in events if e.get("owner", "").lower() in owner_filter]
-    if name_filter:
-        events = [e for e in events if e.get("name", "").lower() in name_filter]
-    if not events:
-        return None, None, None
-    ev = max(events, key=lambda e: int(e.get("blockNumber", 0)))
-    tip_cid = ev["manifestCid"]
-    obj = (await fetch_all_ipfs(
-        [tip_cid], args.ipfs_gateway, args.ipfs_timeout,
-        args.concurrency, desc="Tip", headers=gw_headers)).get(tip_cid)
-    manifest, commit = await _unwrap_commit(args, obj, gw_headers) if obj else (None, None)
-    return tip_cid, commit, manifest
-
-
-async def build_bundle_joined_data(
-    args,
-    schema_id,
-    profiles,
-    completed_manifest_cids=None,
-    owner_filter=None,
-    name_filter=None,
-    block_gt=None,
-    edges_sink=None,
-):
-    completed = completed_manifest_cids or set()
-    defaults = {"max_depth": args.max_depth, "label_cap": args.label_cap,
-                "node_cap": args.node_cap}
-
-    print(f"\n[Builder] Querying Subgraph for bundle ManifestPublished events...")
-    publishes, updates = await _fetch_all_events_async(
-        args.subgraph_url, args.graph_api_key, schema_id, args.page_size,
-        block_gt=block_gt
-    )
-
-    cids_meta = {}
-    for p in publishes: cids_meta[p["manifestCid"]] = p
-    for u in updates:   cids_meta[u["manifestCid"]] = u
-
-    if not cids_meta:
-        return
-
-    # Apply filter hierarchy: owner → dataset name
-    if owner_filter:
-        cids_meta = {c: m for c, m in cids_meta.items()
-                     if m.get("owner", "").lower() in owner_filter}
-    if name_filter:
-        cids_meta = {c: m for c, m in cids_meta.items()
-                     if m.get("name", "").lower() in name_filter}
-
-    pending_cids = [c for c in cids_meta if c not in completed]
-    if not pending_cids:
-        print("[Builder] No pending manifests after filters.")
-        return
-
-    print(f"[Builder] {len(pending_cids)} pending manifests (skipped {len(cids_meta) - len(pending_cids)} completed).")
-
-    gw_headers = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
-
-    # Fetch only the manifest envelopes (small JSON), not chunks yet.
-    manifests = await fetch_all_ipfs(
-        pending_cids, args.ipfs_gateway, args.ipfs_timeout,
-        args.concurrency, desc="Bundle Manifests", headers=gw_headers
-    )
-
-    for mcid in pending_cids:
-        m = manifests.get(mcid)
-        # The on-chain tip may be a git-native commit (slice 1) wrapping the tree,
-        # or a raw manifest (older publishes). Unwrap commits to their tree first.
-        m, commit = await _unwrap_commit(args, m, gw_headers) if m else (None, None)
-        # v3 bundle manifests are tagged either by `kind: "bundle"` (current
-        # publisher format) or a legacy `version: 3`. Both carry nodeChunks +
-        # edgeChunk; accept either tag.
-        if not m or not (m.get("kind") == "bundle" or m.get("version") == 3):
-            print(f"[Builder] Skipping invalid manifest {_cid_to_path(mcid)!r}: {str(m)[:120]!r}")
-            continue
-        if commit:
-            print(f"[Builder] tip {_cid_to_path(mcid)[:16]}... is commit "
-                  f"(parents={len(commit.get('parents', []))}, tree={_cid_to_path(commit['tree'])[:12]}...)")
-
-        node_cids = [c["dataCid"] for c in m.get("nodeChunks", [])]
-        # Edges are chunked into many leaves (`edgeChunks`); older manifests had a
-        # single `edgeChunk`. Accept both.
-        edge_refs = m.get("edgeChunks") or ([m["edgeChunk"]] if m.get("edgeChunk") else [])
-        edge_cids = [c["dataCid"] for c in edge_refs if c.get("dataCid")]
-        if not edge_cids:
-            print(f"[Builder] Skipping manifest {_cid_to_path(mcid)!r} — no edge chunks")
-            continue
-
-        # Fetch only this manifest's chunks, then free them before moving on.
-        # This bounds RAM to one manifest's data at a time.
-        print(f"[Builder] Fetching {len(node_cids) + len(edge_cids)} chunks for {_cid_to_path(mcid)[:16]}...")
-        chunks = await fetch_all_ipfs(
-            node_cids + edge_cids, args.ipfs_gateway, args.ipfs_timeout,
-            args.concurrency, desc="  Chunks", headers=gw_headers
-        )
-
-        meta = cids_meta[mcid]
-        # Index nodes by their global Entity URI (SDK slice 0.3), falling back to
-        # the raw local id for pre-0.3 data. `id_to_key` translates edge endpoints
-        # — still emitted as local ids — onto the same global key, so the
-        # adjacency joins on identity rather than a publisher-local id.
-        nodes_by_id: dict = {}
-        id_to_key: dict = {}
-        for ncid in node_cids:
-            for node in (chunks.get(ncid) or []):
-                key = _node_key(node)
-                nodes_by_id[key] = node
-                if node.get("id") is not None:
-                    id_to_key[node["id"]] = key
-        edges = []
-        for ecid in edge_cids:
-            edges.extend(chunks.get(ecid) or [])
-
-        # Surface this manifest's typed edges to the caller (the watcher ships them
-        # to the CDN's relational axis). Endpoints are kept as the publisher-local
-        # ids, which is exactly what a record's `track_id` uses — so the delivered
-        # edges join the delivered records by id in the pull-client's `neighbors`.
-        if edges_sink is not None:
-            for e in edges:
-                if e.get("from") and e.get("to") and e.get("rel"):
-                    edges_sink.append({k: e[k] for k in
-                                       ("rel", "from", "to", "fromType", "toType")
-                                       if e.get(k) is not None})
-
-        # Build adjacency once per manifest, reused across every profile.
-        #   `out` — outgoing edges only (legacy one-hop field fold).
-        #   `adj` — undirected, for multi-hop profile walks (a Place must reach the
-        #           artists/events on either side of its edges).
-        need_fold = any(p.get("fold") for p in profiles)
-        need_walk = any(not p.get("fold") for p in profiles)
-        out: dict = {}
-        adj: dict = {}
-        for e in edges:
-            frm = id_to_key.get(e["from"], e["from"])
-            to  = id_to_key.get(e["to"], e["to"])
-            if need_fold:
-                out.setdefault(frm, []).append(to)
-            if need_walk:
-                adj.setdefault(frm, []).append(to)
-                adj.setdefault(to, []).append(frm)
-
-        records = []
-        for prof in profiles:
-            rt = prof.get("root_type")
-            n_roots = 0
-            for node in nodes_by_id.values():
-                if node.get("type") != rt:
-                    continue
-                fields = _project(node, nodes_by_id, adj, out, prof, defaults)
-                records.append({
-                    "track_id":    _track_id(fields, prefer=node.get("id")),
-                    "entity_type": rt,
-                    "fields":      fields,
-                    "meta":        meta,
-                })
-                n_roots += 1
-            if n_roots == 0:
-                print(f"[Builder] Manifest {_cid_to_path(mcid)[:16]}... profile "
-                      f"{prof['name']!r}: no {rt!r} root nodes.")
-
-        del chunks, nodes_by_id, id_to_key, edges, out, adj
-        import gc; gc.collect()
-
-        if records:
-            yield mcid, records
-        else:
-            print(f"[Builder] Manifest {_cid_to_path(mcid)!r} produced no records — skipping.")
-
-
-# ---------------------------------------------------------------------------
-# COMPOSED VIEW JOIN — multi-source fusion (Phase 1)
-#
-# A bundle is one publisher's graph. A *view* fuses several publishers' graphs
-# into one, joining on global identity (Entity URI + namespaced aliases from
-# Phase 0) — deterministically, no ML. Where the bundle path streams one manifest
-# at a time, fusion is inherently cross-source, so the view path holds all
-# sources' nodes at once and yields a single fused record set.
-# ---------------------------------------------------------------------------
-class _DSU:
-    """Tiny union-find. Roots are the lexicographically-smallest member so a fused
-    cluster's canonical key is stable across runs (deterministic point ids)."""
-    def __init__(self):
-        self._p = {}
-
-    def find(self, x):
-        p = self._p
-        p.setdefault(x, x)
-        root = x
-        while p[root] != root:
-            root = p[root]
-        while p[x] != root:  # path compression
-            p[x], x = root, p[x]
-        return root
-
-    def union(self, a, b):
-        ra, rb = self.find(a), self.find(b)
-        if ra == rb:
-            return
-        if rb < ra:
-            ra, rb = rb, ra
-        self._p[rb] = ra
-
-
-_NS_LOCAL_ID = re.compile(r"^[a-z][a-z0-9]*:.+$")  # `tribe:10020845`, `gplace:ChIJ…`
-
-
-def _alias_index(nodes_by_id):
-    """alias string -> a node key that carries it (first wins). Lets a linkset
-    endpoint expressed as an alias (`isrc:…`) resolve to an actual fused node.
-
-    A node's own local id is ALSO indexed when it's already namespaced
-    (`<ns>:<value>`, e.g. an event's `tribe:10020845`) — that makes every node
-    addressable as a linkset endpoint without minting an alias on the node itself.
-    Crucially this feeds *endpoint resolution only*, not `_fuse_nodes`' union-find,
-    so a node stays pointable (`hostedAt` edge target/source) without becoming a
-    fusion join key — the distinction that keeps foreign-key edges from over-merging."""
-    idx = {}
-    for key, node in nodes_by_id.items():
-        for al in (node.get("aliases") or []):
-            idx.setdefault(al, key)
-        lid = node.get("id")
-        if isinstance(lid, str) and _NS_LOCAL_ID.match(lid):
-            idx.setdefault(lid, key)
-    return idx
-
-
-def _resolve_endpoint(endpoint, nodes_by_id, alias_idx):
-    """Map a linkset endpoint (an Entity URI or a `namespace:value` alias) to a
-    fused node key, or None when it points outside this view's loaded data."""
-    if not isinstance(endpoint, str) or not endpoint:
-        return None
-    if endpoint in nodes_by_id:          # Entity URI naming a loaded node
-        return endpoint
-    return alias_idx.get(endpoint)       # namespaced alias → the node carrying it
-
-
-def _fuse_nodes(nodes_by_id, extra_unions=()):
-    """Union-find over the shared global key: two nodes collapse to one cluster
-    when they share an alias (e.g. the same `isrc:`). Identical Entity URIs have
-    already collapsed via dict keying. `extra_unions` is a list of (keyA, keyB)
-    pairs from asserted `sameAs` linkset edges (Phase 2) — merged into the SAME
-    clusters as shared ids. Returns (dsu, merged_by_canonical_key), where each
-    merged node unions its members' fields (first-writer-wins) and aliases, and
-    is re-keyed to the cluster's canonical Entity URI."""
-    dsu = _DSU()
-    alias_owner = {}
-    for key, node in nodes_by_id.items():
-        dsu.find(key)  # register every node, even alias-less ones
-        for al in (node.get("aliases") or []):
-            prev = alias_owner.get(al)
-            if prev is not None:
-                dsu.union(prev, key)
-            else:
-                alias_owner[al] = key
-
-    for a, b in extra_unions:  # asserted sameAs equivalences
-        dsu.union(a, b)
-
-    merged = {}
-    for key, node in nodes_by_id.items():
-        c = dsu.find(key)
-        m = merged.get(c)
-        if m is None:
-            merged[c] = {
-                "id": node.get("id"),
-                "type": node.get("type"),
-                "entityUri": c,
-                "aliases": list(node.get("aliases") or []),
-                "fields": dict(node.get("fields") or {}),
-            }
-        else:
-            for fk, fv in (node.get("fields") or {}).items():
-                m["fields"].setdefault(fk, fv)
-            for al in (node.get("aliases") or []):
-                if al not in m["aliases"]:
-                    m["aliases"].append(al)
-            if not m.get("type"):
-                m["type"] = node.get("type")
-    return dsu, merged
-
-
-async def build_view_joined_data(args, view_schema_id, profiles, completed_manifest_cids=None):
-    """Fuse a Composed View's source datasources into one graph and project it.
-
-    Yields exactly one (view_manifest_cid, records) pair — the view is treated as
-    a single unit of work for checkpointing, keyed on its own manifest CID.
-    """
-    from quickbeam._identity import resource_id, norm_hex
-    completed = completed_manifest_cids or set()
     defaults = {"max_depth": args.max_depth, "label_cap": args.label_cap, "node_cap": args.node_cap}
-    gw_headers = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
-
-    # ── 1. Resolve the view artifact → its latest manifest → source set ──
-    print(f"\n[View] Resolving view schema {view_schema_id}...")
-    publishes, updates = await _fetch_all_events_async(
-        args.subgraph_url, args.graph_api_key, view_schema_id, args.page_size)
-    view_events = publishes + updates
-    if not view_events:
-        print(f"[View] No manifests for view schema {view_schema_id}.")
-        return
-    view_ev = max(view_events, key=lambda e: int(e.get("blockNumber", 0)))
-    view_mcid = view_ev["manifestCid"]
-    if view_mcid in completed:
-        print(f"[View] {_cid_to_path(view_mcid)[:16]}... already embedded.")
-        return
-    vman = (await fetch_all_ipfs([view_mcid], args.ipfs_gateway, args.ipfs_timeout,
-                                 args.concurrency, desc="View Manifest", headers=gw_headers)).get(view_mcid)
-    # A view tip may itself be a commit (its parents are the fused source tips,
-    # slice 4); unwrap to the view manifest for back-compat with slice-1 pushes.
-    vman, _view_commit = await _unwrap_commit(args, vman, gw_headers) if vman else (None, None)
-    if not vman or vman.get("kind") != "view":
-        print(f"[View] {_cid_to_path(view_mcid)!r} is not a view manifest: {str(vman)[:120]!r}")
-        return
-    sources = {norm_hex(s) for s in vman.get("sources", [])}
-    if not sources:
-        print("[View] view declares no sources.")
-        return
-    link_ids = {norm_hex(l) for l in vman.get("linksets", [])}
-    # Phase 4 trust gate; for now honor a minConfidence floor if the view carries one.
-    min_conf = (vman.get("trust") or {}).get("minConfidence")
-    print(f"[View] fusing {len(sources)} source(s) + {len(link_ids)} linkset(s)"
-          + (f"; minConfidence={min_conf}" if min_conf is not None else ""))
-
-    # ── 2. Discover each source/linkset's latest manifest → resourceId match ──
-    # A source is named by resourceId = keccak(owner, schemaId, datasetName), which
-    # the subgraph does not index. If the view recorded the backing schemaIds
-    # (ViewManifest.sourceSchemas), query those schemas directly — cheap. Fall back
-    # to the whole-history scan only for sources NOT covered (e.g. foreign sources
-    # whose schemaId the view didn't record), so a fully-hinted view never scans.
-    wanted = sources | link_ids
-    best = {}  # resourceId -> (blockNumber, manifestCid)
-
-    def _absorb(events):
-        for ev in events:
-            try:
-                rid = norm_hex(resource_id(ev["owner"], ev["schemaId"], ev["nameHash"], is_hash=True))
-            except Exception:
-                continue
-            if rid not in wanted:
-                continue
-            bn = int(ev.get("blockNumber", 0))
-            cur = best.get(rid)
-            if cur is None or bn > cur[0]:
-                best[rid] = (bn, ev["manifestCid"])
-
-    schema_ids = {norm_hex(s) for s in (vman.get("sourceSchemas") or [])}
-    for sid in schema_ids:
-        p, u = await _fetch_all_events_async(args.subgraph_url, args.graph_api_key, sid, args.page_size)
-        _absorb(p + u)
-    if schema_ids:
-        print(f"  ↳ view schema hint: resolved {len(set(best) & wanted)}/{len(wanted)} source(s) via {len(schema_ids)} per-schema query(ies)")
-
-    # Global fallback: only if the hint left something unresolved (or was absent).
-    if wanted - set(best):
-        if schema_ids:
-            print(f"  ↳ {len(wanted - set(best))} source(s) not covered by the schema hint — scanning full history")
-        g_pub, g_upd = await _fetch_all_events_global(args.subgraph_url, args.graph_api_key, args.page_size)
-        _absorb(g_pub + g_upd)
-
-    if not (set(best) & sources):
-        print("[View] none of the view's sources resolved to a manifest.")
-        return
-    missing = wanted - set(best)
-    if missing:
-        print(f"[View] {len(missing)} declared source/linkset(s) had no manifest and were skipped.")
-
-    # ── 3. Fetch every source manifest's chunks → one global node index + edges ──
-    nodes_by_id = {}
-    edges_global = []  # (from_key, to_key), already resolved onto global keys
-    for rid in (s for s in sources if s in best):
-        _bn, mcid = best[rid]
-        m = (await fetch_all_ipfs([mcid], args.ipfs_gateway, args.ipfs_timeout,
-                                  args.concurrency, desc=f"  Src {rid[:10]}", headers=gw_headers)).get(mcid)
-        if not m or not (m.get("kind") == "bundle" or m.get("version") == 3):
-            print(f"[View] source {rid[:10]} manifest {_cid_to_path(mcid)!r} not a bundle — skipped.")
-            continue
-        node_cids = [c["dataCid"] for c in m.get("nodeChunks", [])]
-        edge_refs = m.get("edgeChunks") or ([m["edgeChunk"]] if m.get("edgeChunk") else [])
-        edge_cids = [c["dataCid"] for c in edge_refs if c.get("dataCid")]
-        chunks = await fetch_all_ipfs(node_cids + edge_cids, args.ipfs_gateway, args.ipfs_timeout,
-                                      args.concurrency, desc="  Chunks", headers=gw_headers)
-        # Resolve local id -> global key PER SOURCE: two publishers can reuse the
-        # same local node id, so they must not collide before the union-find joins
-        # on global identity.
-        id_to_key = {}
-        for ncid in node_cids:
-            for node in (chunks.get(ncid) or []):
-                key = _node_key(node)
-                nodes_by_id[key] = node
-                if node.get("id") is not None:
-                    id_to_key[node["id"]] = key
-        for ecid in edge_cids:
-            for e in (chunks.get(ecid) or []):
-                edges_global.append((id_to_key.get(e["from"], e["from"]),
-                                     id_to_key.get(e["to"], e["to"])))
-
-    if not nodes_by_id:
-        print("[View] sources resolved but produced no nodes.")
-        return
-
-    # ── 3b. Ingest the view's linksets (Phase 2): asserted cross-edges over global
-    #        identity. `sameAs` becomes a union; any other rel becomes a graph edge.
-    #        Endpoints resolve to a fused node by Entity URI or by namespaced alias;
-    #        a link to an entity outside this view's loaded data is dropped. ──
-    alias_idx = _alias_index(nodes_by_id)
-    same_as = []   # (keyA, keyB) equivalences fed into the union-find
-    n_links = n_skipped = 0
-    for rid in (l for l in link_ids if l in best):
-        _bn, mcid = best[rid]
-        m = (await fetch_all_ipfs([mcid], args.ipfs_gateway, args.ipfs_timeout,
-                                  args.concurrency, desc=f"  Link {rid[:10]}", headers=gw_headers)).get(mcid)
-        if not m or m.get("kind") != "linkset":
-            print(f"[View] linkset {rid[:10]} manifest {_cid_to_path(mcid)!r} not a linkset — skipped.")
-            continue
-        link_cids = [c["dataCid"] for c in m.get("linkChunks", []) if c.get("dataCid")]
-        lchunks = await fetch_all_ipfs(link_cids, args.ipfs_gateway, args.ipfs_timeout,
-                                       args.concurrency, desc="  Links", headers=gw_headers)
-        for lcid in link_cids:
-            for link in (lchunks.get(lcid) or []):
-                if min_conf is not None and link.get("confidence") is not None \
-                        and link["confidence"] < min_conf:
-                    n_skipped += 1
-                    continue
-                a = _resolve_endpoint(link.get("from"), nodes_by_id, alias_idx)
-                b = _resolve_endpoint(link.get("to"), nodes_by_id, alias_idx)
-                if a is None or b is None:
-                    n_skipped += 1
-                    continue
-                if link.get("rel") == "sameAs":
-                    same_as.append((a, b))
-                else:
-                    edges_global.append((a, b))
-                n_links += 1
-    if link_ids:
-        print(f"[View] applied {n_links} link(s) ({len(same_as)} sameAs); skipped {n_skipped}.")
-
-    # ── 4. Union-find: collapse cross-source nodes sharing a global key OR an
-    #        asserted sameAs ──
-    dsu, merged = _fuse_nodes(nodes_by_id, extra_unions=same_as)
-    print(f"[View] fused {len(nodes_by_id)} nodes → {len(merged)} entities.")
-
-    # ── 5. Adjacency over canonical cluster keys ──
-    need_fold = any(p.get("fold") for p in profiles)
-    need_walk = any(not p.get("fold") for p in profiles)
-    out, adj = {}, {}
-    for frm, to in edges_global:
-        f, t = dsu.find(frm), dsu.find(to)
-        if need_fold:
-            out.setdefault(f, []).append(t)
-        if need_walk:
-            adj.setdefault(f, []).append(t)
-            adj.setdefault(t, []).append(f)
-
-    # ── 6. Project per profile over the fused graph ──
-    meta = {"manifestCid": view_mcid, "owner": view_ev.get("owner"), "name": view_ev.get("name")}
+    meta = {"owner": owner, "namespace": namespace}
     records = []
     for prof in profiles:
-        rt = prof.get("root_type")
+        rt = prof["root_type"]
         n_roots = 0
-        for node in merged.values():
-            if node.get("type") != rt:
+        for node in nodes_by_id.values():
+            if node["type"] != rt:
                 continue
-            fields = _project(node, merged, adj, out, prof, defaults)
+            fields = project_vertex(node, nodes_by_id, adj, prof, defaults)
             records.append({
-                "track_id":    _track_id(fields, prefer=node.get("entityUri")),
+                "track_id":    node["id"],
                 "entity_type": rt,
                 "fields":      fields,
                 "meta":        meta,
             })
             n_roots += 1
         if n_roots == 0:
-            print(f"[View] profile {prof['name']!r}: no {rt!r} root nodes in the fused graph.")
-
-    if records:
-        yield view_mcid, records
-    else:
-        print("[View] fused graph produced no records.")
+            print(f"[Builder] profile {prof['name']!r}: no {rt!r} vertices in {owner}:{namespace}")
+    return records
 
 # ---------------------------------------------------------------------------
-# EMBED + UPLOAD(shared by build and watch)
+# EMBED + UPLOAD (shared by build and watch)
 #
 # Embeds records in SAVE_BATCH_SIZE chunks and uploads to Qdrant.
 # Writes partial progress to checkpoint after each batch for crash recovery.
@@ -1798,7 +1111,7 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                         "entityType": p.get("entity_type") or p["fields"].get("entityType"),
                         "owner":      p["meta"].get("owner"),
                         "fields":     p["fields"],
-                        "meta":       {"manifestCid": p["meta"].get("manifestCid")},
+                        "meta":       {"namespace": p["meta"].get("namespace")},
                     }
                 )
                 for vec, p in zip(vectors, chunk)
@@ -1807,13 +1120,9 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
         )
 
         # Mutate the in-memory checkpoint only — persistence is the caller's job,
-        # on its own cadence (see main()'s batched flush). Deterministic point
-        # ids above make re-running an unflushed manifest idempotent.
+        # on its own cadence. Deterministic point ids above make re-running an
+        # unflushed source idempotent.
         checkpoint["processed_track_ids"].extend(p["track_id"] for p in chunk)
-        checkpoint["manifests"].update({
-            p["meta"]["manifestCid"]: p["meta"].get("blockTimestamp")
-            for p in chunk
-        })
 
         del texts, vectors
         import gc; gc.collect()
@@ -1855,250 +1164,78 @@ async def main():
     truncate  = dim < model_dim
 
     checkpoint = _load_checkpoint(args.checkpoint_file)
-    completed_manifest_cids = set(checkpoint["completed_manifest_cids"])
-    # processed_track_ids: only non-empty when a previous run crashed mid-manifest
     processed_track_ids = set(checkpoint["processed_track_ids"])
 
-    # ── BUNDLE / VIEW PATH ───────────────────────────────────────────────────
-    # Both walk a typed graph and project it; they differ only in the data
-    # generator — a single source (bundle) vs. several fused sources (view).
-    if args.bundle or args.view:
-        if args.view:
-            b_name, b_id = args.view.split("=", 1)
-            _mode = "View"
-        else:
-            b_name, b_id = args.bundle.split("=", 1)
-            _mode = "Bundle"
-        profiles = _load_profiles(args)
+    sources = parse_sources(args.sources)
+    if not sources:
+        print("[Builder] No --source provided. Nothing to do.")
+        return
+
+    if args.reset and qdrant.collection_exists(args.collection):
+        print(f"[Builder] Resetting collection '{args.collection}'...")
+        qdrant.delete_collection(args.collection)
+        processed_track_ids.clear()
+        checkpoint["processed_track_ids"] = []
+        checkpoint["sources"] = {}
+
+    role_map: dict = {}
+    if os.path.exists(args.role_map_file):
+        with open(args.role_map_file) as f:
+            role_map = json.load(f)
+
+    embed_engine = None
+    any_new = False
+
+    for owner, namespace in sources:
+        print(f"\n[Builder] Reading {owner}:{namespace} via `fangorn read`...")
+        contents = read_source(args.fangorn_bin, owner, namespace)
+        discovered_tags = {v["schemaId"] for v in contents.get("vertices", [])}
+        profiles = load_profiles(args, discovered_tags)
         _prof_desc = ", ".join(f"{p['name']}→{p['root_type']}" for p in profiles)
-        print(f"\n[Builder] {_mode} mode: '{b_name.strip()}' — projections: {_prof_desc}")
+        print(f"[Builder] {owner}:{namespace} — {len(contents.get('vertices', []))} vertices, "
+              f"{len(contents.get('edges', []))} edges — projections: {_prof_desc}")
 
-        if args.reset and qdrant.collection_exists(args.collection):
-            print(f"[Builder] Resetting collection '{args.collection}'...")
-            qdrant.delete_collection(args.collection)
-            completed_manifest_cids.clear()
-            processed_track_ids.clear()
-            checkpoint["completed_manifest_cids"] = []
-            checkpoint["processed_track_ids"] = []
+        records = project_source(owner, namespace, contents, profiles, args)
+        new_records = [r for r in records if r["track_id"] not in processed_track_ids]
+        if not new_records:
+            print(f"[Builder] {owner}:{namespace} — nothing new.")
+            checkpoint.setdefault("sources", {})[f"{owner}:{namespace}"] = {"head": contents.get("head")}
+            continue
 
-        role_map: dict = {}
-        if os.path.exists(args.role_map_file):
-            with open(args.role_map_file) as f:
-                role_map = json.load(f)
+        if embed_engine is None:
+            if not qdrant.collection_exists(args.collection):
+                qdrant.create_collection(
+                    args.collection,
+                    vectors_config=models.VectorParams(
+                        size=dim, distance=models.Distance.COSINE, on_disk=True)
+                )
+            ensure_indexes(qdrant, args.collection)
+            embed_engine = _init_embed_engine(args)
+            print(f"[Builder] model dim={model_dim}, output dim={dim} (truncate={truncate})")
 
-        # Persist the checkpoint every CHECKPOINT_EVERY completed manifests rather
-        # than after each one. Serializing the full (growing) completed-cid list +
-        # manifests dict on every manifest is O(N) per write → O(N²) over a run of
-        # ~10k manifests. Batching cuts that to O(N²/CHECKPOINT_EVERY). Safe because
-        # point ids are deterministic: a crash that re-runs the manifests since the
-        # last flush re-upserts them idempotently (no duplicates), only re-spending
-        # the embed compute for at most CHECKPOINT_EVERY manifests.
-        CHECKPOINT_EVERY = 50
+        # (Re)infer when there's no map, OR when the loaded map doesn't apply to
+        # these records — a stale ./db/role_map.json from a different corpus would
+        # otherwise make every record embed the same empty "Title: . Tags:" text,
+        # collapsing all vectors to one point (identical, undiscriminating scores).
+        record_fields = [r["fields"] for r in new_records]
+        if not role_map or not role_map_applies(role_map, record_fields):
+            if role_map:
+                print("[Builder] loaded role map does not match these records "
+                      "(stale/foreign) — re-inferring")
+            role_map = infer_roles(record_fields)
+            _save_role_map(role_map, args.role_map_file)
+            print(f"[Builder] Role map inferred and saved to {args.role_map_file}")
 
-        def _mark_complete(mcid: str) -> None:
-            completed_manifest_cids.add(mcid)
-            checkpoint["completed_manifest_cids"] = list(completed_manifest_cids)
-            checkpoint["processed_track_ids"] = []
-            processed_track_ids.clear()
+        await _embed_and_upload(args, qdrant, embed_engine, new_records, role_map, dim, truncate, checkpoint)
 
-        def _flush() -> None:
-            _save_checkpoint(checkpoint, args.checkpoint_file)
-
-        # Lazy-init: don't load the model into GPU VRAM until we know there's
-        # actual new work to do (avoids OOM when everything is already checkpointed).
-        embed_engine = None
-        any_new = False
-        manifest_num = 0
-        since_flush  = 0
-
-        if args.view:
-            _data_gen = build_view_joined_data(
-                args, b_id.strip(), profiles,
-                completed_manifest_cids=completed_manifest_cids,
-            )
-        else:
-            _data_gen = build_bundle_joined_data(
-                args, b_id.strip(), profiles,
-                completed_manifest_cids=completed_manifest_cids,
-            )
-
-        async for mcid, records in _data_gen:
-            new_records = [r for r in records if r["track_id"] not in processed_track_ids]
-            if not new_records:
-                # All records in this manifest were already embedded — mark complete.
-                _mark_complete(mcid)
-                since_flush += 1
-                if since_flush >= CHECKPOINT_EVERY:
-                    _flush()
-                    since_flush = 0
-                continue
-
-            # First manifest with real work: set up collection + model.
-            if embed_engine is None:
-                if not qdrant.collection_exists(args.collection):
-                    qdrant.create_collection(
-                        args.collection,
-                        vectors_config=models.VectorParams(
-                            size=dim, distance=models.Distance.COSINE, on_disk=True)
-                    )
-                ensure_indexes(qdrant, args.collection)
-                embed_engine = _init_embed_engine(args)
-                print(f"[Builder] model dim={model_dim}, output dim={dim} (truncate={truncate})")
-
-            # (Re)infer when there's no map, OR when the loaded map doesn't apply to
-            # these records — a stale ./db/role_map.json from a different corpus would
-            # otherwise make every record embed the same empty "Title: . Tags:" text,
-            # collapsing all vectors to one point (identical, undiscriminating scores).
-            record_fields = [r["fields"] for r in new_records]
-            if not role_map or not role_map_applies(role_map, record_fields):
-                if role_map:
-                    print("[Builder] loaded role map does not match these records "
-                          "(stale/foreign) — re-inferring")
-                role_map = infer_roles(record_fields)
-                _save_role_map(role_map, args.role_map_file)
-                print(f"[Builder] Role map inferred and saved to {args.role_map_file}")
-
-            manifest_num += 1
-            print(f"[Builder] Manifest {manifest_num}: {_cid_to_path(mcid)[:16]}... — {len(new_records)} records")
-            await _embed_and_upload(args, qdrant, embed_engine, new_records, role_map, dim, truncate, checkpoint)
-
-            _mark_complete(mcid)
-            any_new = True
-            since_flush += 1
-            if since_flush >= CHECKPOINT_EVERY:
-                _flush()
-                since_flush = 0
-
-            if args.max_manifests and manifest_num >= args.max_manifests:
-                print(f"[Builder] Reached --max-manifests={args.max_manifests}; "
-                      f"stopping. Re-run to build the next shards (resumes from checkpoint).")
-                break
-
-        # Final flush — persist whatever completed since the last batched write.
-        if since_flush:
-            _flush()
-
-        if not any_new:
-            print("\n[Builder] No new bundle manifests to embed.")
-
-    # ── LEGACY PATH (--schema / --primary) ───────────────────────────────────
-    else:
-        schemas = {}
-        for pair in args.schemas:
-            name, s_id = pair.split("=", 1)
-            schemas[name.strip()] = s_id.strip()
-        primary_key = args.primary or (next(iter(schemas)) if schemas else None)
-
-        if not schemas:
-            print("[Builder] No --schema provided and no --bundle. Nothing to do.")
-            return
-        if primary_key is None:
-            print("[Builder] No --primary provided. Nothing to do.")
-            return
-
-        if args.reset and qdrant.collection_exists(args.collection):
-            print(f"[Builder] Resetting collection '{args.collection}'...")
-            qdrant.delete_collection(args.collection)
-
-        if not qdrant.collection_exists(args.collection):
-            qdrant.create_collection(
-                args.collection,
-                vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE, on_disk=True)
-            )
-        ensure_indexes(qdrant, args.collection)
-        embed_engine = _init_embed_engine(args)
-        print(f"[Builder] model dim={model_dim}, output dim={dim} (truncate={truncate})")
-
-        manifest_checkpoints = checkpoint.get("manifests", {})
-        primary_records = []
-        secondary_by_track: dict = {}
-
-        for s_name, s_id in schemas.items():
-            print(f"\n[Builder] [1/4] Querying Subgraph events for schema: {s_name}")
-            publishes, updates = await _fetch_all_events_async(
-                args.subgraph_url, args.graph_api_key, s_id, args.page_size
-            )
-
-            cids_meta: dict = {}
-            for p in publishes: cids_meta[p["manifestCid"]] = p
-            for u in updates:   cids_meta[u["manifestCid"]] = u
-
-            print(f"[Builder] [2/4] Syncing manifests from IPFS Gateway...")
-            _gw_h = {"Authorization": f"Bearer {args.ipfs_gateway_key}"} if args.ipfs_gateway_key else {}
-            manifests = await fetch_all_ipfs(
-                list(cids_meta.keys()), args.ipfs_gateway, args.ipfs_timeout,
-                args.concurrency, desc="Manifest Files", headers=_gw_h
-            )
-
-            data_cids_to_meta: dict = {}
-            for c, json_data in manifests.items():
-                if not json_data: continue
-                for entry in json_data.get("entries", []):
-                    dcid = entry.get("fields", {}).get("dataCid")
-                    if dcid: data_cids_to_meta[dcid] = cids_meta[c]
-
-            print(f"[Builder] [3/4] Pulling structural data payloads from IPFS...")
-            payloads = await fetch_all_ipfs(
-                list(data_cids_to_meta.keys()), args.ipfs_gateway, args.ipfs_timeout,
-                args.concurrency, desc="Payload Data", headers=_gw_h
-            )
-
-            for dcid, data in payloads.items():
-                if not data: continue
-                records = data if isinstance(data, list) else [data]
-                for r in records:
-                    fields = r.get("fields", r) if isinstance(r, dict) else {}
-                    t_id = _track_id(fields)
-                    meta = data_cids_to_meta[dcid]
-                    if s_name == primary_key:
-                        primary_records.append({"track_id": t_id, "fields": fields, "meta": meta})
-                    else:
-                        secondary_by_track.setdefault(t_id, []).append(fields)
-
-            for c, m in cids_meta.items():
-                manifest_checkpoints[c] = m["blockTimestamp"]
-
-        if not primary_records:
-            print("\n[Builder] No new entries found.")
-            if args.umap:
-                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
-                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
-                          writeback_workers=args.umap_writeback_workers,
-                          writeback_wait=args.umap_writeback_wait,
-                          target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
-            return
-
-        print(f"\n[Builder] Merging primary and secondary schemas on track ID keys...")
-        joined_data = []
-        skipped_count = 0
-        for item in primary_records:
-            t_id, fields, meta = item["track_id"], dict(item["fields"]), item["meta"]
-            if t_id in processed_track_ids:
-                skipped_count += 1
-                continue
-            if t_id in secondary_by_track:
-                for sec_fields in secondary_by_track[t_id]: fields.update(sec_fields)
-            joined_data.append({"track_id": t_id, "fields": fields, "meta": meta})
-        print(f"[Builder] Skipped {skipped_count} already-checkpointed track IDs.")
-
-        if not joined_data:
-            print("\n[Builder] No new joined records to embed.")
-            if args.umap:
-                write_umap_coords(qdrant, args.collection, args.umap_neighbors, args.umap_min_dist, tmp_dir=args.umap_tmp_dir, reconnect=_make_qdrant,
-                          writeback_batch=args.umap_writeback_batch, writeback_sleep=args.umap_writeback_sleep,
-                          writeback_workers=args.umap_writeback_workers,
-                          writeback_wait=args.umap_writeback_wait,
-                          target=args.umap_target, map_file=args.umap_map_file, role_map=role_map)
-            return
-
-        role_map = infer_roles([j["fields"] for j in joined_data])
-        _save_role_map(role_map, args.role_map_file)
-        print(f"[Builder] Wrote global role map to {args.role_map_file}")
-
-        checkpoint["manifests"] = manifest_checkpoints
-        await _embed_and_upload(args, qdrant, embed_engine, joined_data, role_map, dim, truncate, checkpoint)
-        # _embed_and_upload mutates the checkpoint in memory; persist it once here.
+        processed_track_ids.update(r["track_id"] for r in new_records)
+        checkpoint["processed_track_ids"] = list(processed_track_ids)
+        checkpoint.setdefault("sources", {})[f"{owner}:{namespace}"] = {"head": contents.get("head")}
         _save_checkpoint(checkpoint, args.checkpoint_file)
+        any_new = True
+
+    if not any_new:
+        print("\n[Builder] No new records to embed.")
 
     # ── POST-PROCESSING ───────────────────────────────────────────────────────
     if args.umap:
