@@ -1,8 +1,8 @@
 """Offline ingestion engine for quickbeam (the `build` CLI + `watch` daemon).
 
 Modules are grouped by concern:
-  sources/   external data acquisition (The Graph subgraph + IPFS)
-  graph/     the typed-graph model and the join/fusion projections
+  sources/   external data acquisition (owner:namespace via the `fangorn` CLI)
+  graph/     the typed-graph model and the root-profile projections
   embed, umap, commits, checkpoint, identity  leaf primitives
   build      the `quickbeam build` CLI driver
 

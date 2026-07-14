@@ -63,7 +63,7 @@ the daemon.
   1. quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
   2. quickbeam mcp --cdn-url http://localhost:8090 --transport http --port 8765
 
-**Status:** Reads the **live** Robinhood Chain (mainnet, id 4663) end-to-end.
+**Status:** Reads the **liv   e** Robinhood Chain (mainnet, id 4663) end-to-end.
 - **Git-native pipeline (the only path):** `data robinhood [--watch --publish]` → `schemagen` → `fangorn commit --bundle`/`push` → `watch --bundle`. The ingest daemon keeps reading the RPC and pushing fresh snapshots to Fangorn, `watch` embeds the on-chain tip → Qdrant → CDN delta. Every read is against the live chain — there is no fixture / mock mode. ✅
 
 **Pitch shift:** from a *local business directory tool* (`sond3r`) to a

@@ -1,0 +1,5 @@
+[console_scripts]
+robinhood-ingest = quickbeam_robinhood.source:run
+
+[quickbeam.sources]
+robinhood = quickbeam_robinhood.source:RobinhoodSource

@@ -15,7 +15,8 @@ watch/publish/checkpoint loop for free (and the same class is usable via
 from typing import Callable
 
 from .harness import (build_parser, compose_searchable_text, emit_volumes,
-                      fangorn_commit_push, fangorn_repo_init, ingest_once, run_source)
+                      fangorn_commit_push, fangorn_repo_init, ingest_once,
+                      run_source)
 from .source import Source, SourceBase
 
 __all__ = [
@@ -26,8 +27,8 @@ __all__ = [
     "build_parser",
     "emit_volumes",
     "compose_searchable_text",
-    "fangorn_commit_push",
     "fangorn_repo_init",
+    "fangorn_commit_push",
     "discover_sources",
 ]
 

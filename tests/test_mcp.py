@@ -203,6 +203,18 @@ async def test_search_returns_raw_records_and_provenance():
     assert prov["published"].startswith("20")     # ISO8601 from blockTimestamp
 
 
+def test_provenance_prefers_source_cid_over_legacy_manifest():
+    # The pipeline now threads the on-chain vertex CID through as meta.sourceCid; the
+    # legacy meta.manifestCid remains a fallback so old payloads still resolve.
+    prov = mcp_server._provenance({"meta": {
+        "sourceCid": "cidNEW", "manifestCid": "cidOLD",
+        "blockTimestamp": TS, "version": 2, "owner": "0xowner"}})
+    assert prov["source_cid"] == "cidNEW"                 # new key wins
+    assert prov["version"] == 2 and prov["publisher"] == "0xowner"
+    assert mcp_server._provenance(
+        {"meta": {"manifestCid": "cidOLD"}})["source_cid"] == "cidOLD"
+
+
 @pytest.mark.anyio
 async def test_search_ranks_by_similarity():
     out = await mcp_server.search(dataset="robinhood", query="meme stock", limit=5)

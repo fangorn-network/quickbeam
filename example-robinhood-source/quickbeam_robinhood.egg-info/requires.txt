@@ -1,0 +1,4 @@
+quickbeam
+
+[dev]
+pytest

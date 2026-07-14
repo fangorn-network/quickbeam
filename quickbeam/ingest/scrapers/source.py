@@ -14,7 +14,7 @@ of the contract.
 
 THE DATA CONTRACT
 -----------------
-`build_graph` returns the exact shape `schemagen` → `fangorn commit --bundle` consumes:
+`build_graph` returns the exact shape the publish leg turns into a `fangorn upload` batch:
 
     nodes:  {entity_type: [{"name": <stable id>, "fields": {...}}, ...]}
     edges:  [{"rel": <relation>, "from": <node name>, "to": <node name>,
@@ -55,6 +55,14 @@ class Source(Protocol):
     #   default_volume: int = 1        # the --volume default for this source
     # A batch source (no live tail) simply returns `prev` from next_cursor; the
     # harness's checkpoint/watch/accumulate machinery then no-ops harmlessly.
+    #
+    # ── optional method (harness calls via getattr; absent → skipped) ───────────
+    #   def freshness_report(self, records: list[dict], cursor: int) -> dict | None:
+    #       """A per-cycle "where does the live tail sit in time?" summary computed
+    #       from the records just read. Return a dict whose `display` key is a list of
+    #       lines to print; the harness prints those and persists the remaining metrics
+    #       under `<name>Freshness` in the checkpoint file. Return None to report
+    #       nothing. Purely informational — never gates ingest or the cursor."""
 
     # ── behavior ───────────────────────────────────────────────────────────────
     def add_source_args(self, p: argparse.ArgumentParser) -> None:

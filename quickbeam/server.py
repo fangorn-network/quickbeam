@@ -23,8 +23,6 @@ os.environ['SSL_CERT_FILE'] = certifi.where()
 import argparse
 import asyncio
 import threading
-import aiohttp
-import random
 import hashlib
 import json
 import logging
@@ -53,6 +51,12 @@ try:
     from quickbeam.embeddings import matryoshka
 except ImportError:
     from embeddings import matryoshka
+try:
+    from quickbeam.ingest.sources.fangorn import parse_sources, read_source
+    from quickbeam.ingest.graph.projection import load_profiles, project_source
+except ImportError:
+    from ingest.sources.fangorn import parse_sources, read_source
+    from ingest.graph.projection import load_profiles, project_source
 
 if sys.platform == 'win32':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -67,14 +71,23 @@ def parse_args():
         description="Fangorn Qdrant server",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--schema", "-s", metavar="NAME=0x...", action="append", dest="schemas", default=[])
-    parser.add_argument("--primary", "-p", metavar="NAME", default=None)
-    parser.add_argument(
-        "--subgraph-url",
-        default="https://gateway.thegraph.com/api/subgraphs/id/2yVbpC7TT1VPq9vLn8a49zCjESNAEjoPg8wZhriQDDcY",
-    )
-    parser.add_argument("--graph-api-key",   default="")
-    parser.add_argument("--ipfs-gateway",    default="https://gateway.pinata.cloud/ipfs")
+    parser.add_argument("--source", action="append", dest="sources", default=[],
+                        metavar="OWNER:NAMESPACE",
+                        help="Namespace to reingest, as OWNER:NAMESPACE. Repeatable. Read "
+                             "off-chain via `fangorn read`, projected, and embedded on "
+                             "startup (if the collection is empty) and on POST /reingest.")
+    parser.add_argument("--fangorn-bin", default="fangorn",
+                        help="The `fangorn` CLI invocation (shell-split, so a full command works).")
+    # Projection knobs — how graph roots become documents (mirror `quickbeam build`).
+    parser.add_argument("--root-profile", action="append", default=[],
+                        help="Named projection(s) to emit, repeatable. A name not in the "
+                             "registry is taken literally as its own vertex tag; with none "
+                             "given, one profile is auto-derived per distinct vertex tag.")
+    parser.add_argument("--profiles-file", default=None,
+                        help="Optional JSON file of custom/override root profiles.")
+    parser.add_argument("--max-depth", type=int, default=2)
+    parser.add_argument("--label-cap", type=int, default=50)
+    parser.add_argument("--node-cap", type=int, default=2000)
     parser.add_argument("--qdrant-url",      default=None,  metavar="URL", help="Qdrant Cloud URL e.g. https://xyz.cloud.qdrant.io:6334 (overrides --qdrant-host/port)")
     parser.add_argument("--qdrant-api-key",  default=None,  help="Qdrant Cloud API key")
     parser.add_argument("--qdrant-host",     default="localhost")
@@ -88,17 +101,10 @@ def parse_args():
              "Matryoshka-truncate query embeddings to match it.",
     )
     parser.add_argument("--searchable-fields", default="auto")
-    parser.add_argument("--page-size",       type=int, default=100)
-    parser.add_argument("--ipfs-timeout",    type=int, default=20)
-    parser.add_argument("--concurrency",     type=int, default=16)
     parser.add_argument("--host",            default="0.0.0.0")
     parser.add_argument("--port",            type=int, default=8080)
     parser.add_argument("--reset",           action="store_true", default=False)
     parser.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5")
-    parser.add_argument(
-        "--bundle-cid", default=None, metavar="CID",
-        help="IPFS CID of an NDJSON bundle to seed from on first startup (skipped if collection already has points)",
-    )
     parser.add_argument(
         "--catalog-map-file", default="./db/catalog_map.json.gz", metavar="PATH",
         help="Gzipped catalog-map artifact produced by `quickbeam build --umap-target file`. "
@@ -135,23 +141,12 @@ MODEL_DIM_MAP = {
 
 cfg: argparse.Namespace = None
 
-def get_schemas() -> dict[str, str]:
-    schemas = {}
-    for pair in cfg.schemas:
-        if "=" not in pair:
-            raise ValueError(f"--schema must be NAME=0x..., got: {pair!r}")
-        name, schema_id = pair.split("=", 1)
-        schemas[name.strip()] = schema_id.strip()
-    if not schemas:
-        raise ValueError("At least one --schema NAME=0x... is required")
-    return schemas
-
-def get_primary(schemas: dict[str, str]) -> str:
-    if cfg.primary:
-        if cfg.primary not in schemas:
-            raise ValueError(f"--primary '{cfg.primary}' not found in --schema keys: {list(schemas.keys())}")
-        return cfg.primary
-    return next(iter(schemas))
+def _projection_args() -> argparse.Namespace:
+    """A lightweight args object carrying the projection knobs `load_profiles` /
+    `project_source` read — the server's equivalent of `build`'s argparse Namespace."""
+    return argparse.Namespace(
+        max_depth=cfg.max_depth, label_cap=cfg.label_cap, node_cap=cfg.node_cap,
+        root_profile=cfg.root_profile, profiles_file=cfg.profiles_file)
 
 def get_searchable_fields() -> set[str]:
     return set(f.strip() for f in cfg.searchable_fields.split(",") if f.strip())
@@ -613,12 +608,12 @@ def _load_checkpoint() -> dict:
     try:
         with open(cfg.checkpoint_file) as f:
             ckpt = json.load(f)
-            # Normalise legacy flat format
-            if "manifests" not in ckpt:
-                ckpt = {"manifests": ckpt, "processed_track_ids": []}
+            ckpt.setdefault("processed_track_ids", [])
+            # sources: "owner:namespace" -> {"head": "0x...", "vertex_cids": [...]}
+            ckpt.setdefault("sources", {})
             return ckpt
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"manifests": {}, "processed_track_ids": []}
+        return {"processed_track_ids": [], "sources": {}}
 
 def _save_checkpoint(checkpoint: dict) -> None:
     os.makedirs(os.path.dirname(cfg.checkpoint_file) or ".", exist_ok=True)
@@ -659,223 +654,6 @@ class BundlePoint(BaseModel):
 
 class BundleUpsertRequest(BaseModel):
     points: list[BundlePoint]
-
-# ---------------------------------------------------------------------------
-# SUBGRAPH
-# ---------------------------------------------------------------------------
-
-PUBLISHES_QUERY = """
-query Publishes($schemaId: Bytes!, $first: Int!, $skip: Int!) {
-  manifestPublisheds(
-    where: { schemaId: $schemaId }
-    first: $first skip: $skip
-    orderBy: blockNumber orderDirection: asc
-  ) { id owner schemaId nameHash name manifestCid blockNumber blockTimestamp transactionHash }
-}
-"""
-
-UPDATES_QUERY = """
-query Updates($schemaId: Bytes!, $first: Int!, $skip: Int!) {
-  manifestUpdateds(
-    where: { schemaId: $schemaId }
-    first: $first skip: $skip
-    orderBy: version orderDirection: desc
-  ) { id owner schemaId nameHash manifestCid version blockNumber blockTimestamp transactionHash }
-}
-"""
-
-_SUBGRAPH_MAX_RETRIES    = 5
-_SUBGRAPH_RETRY_STATUSES = {429, 500, 502, 503, 504}
-
-async def _query_subgraph_async(session: aiohttp.ClientSession, query: str, variables: dict) -> dict:
-    headers = {}
-    if cfg.graph_api_key:
-        headers["Authorization"] = f"Bearer {cfg.graph_api_key}"
-    body      = {"query": query, "variables": variables}
-    last_exc: Exception | None = None
-    for attempt in range(_SUBGRAPH_MAX_RETRIES):
-        try:
-            async with session.post(
-                cfg.subgraph_url, json=body, headers=headers,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status in _SUBGRAPH_RETRY_STATUSES:
-                    raise aiohttp.ClientResponseError(
-                        resp.request_info, resp.history,
-                        status=resp.status, message=f"retryable status {resp.status}",
-                    )
-                resp.raise_for_status()
-                data = await resp.json()
-                if "errors" in data:
-                    raise RuntimeError(f"Subgraph error: {data['errors']}")
-                return data["data"]
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            if isinstance(exc, aiohttp.ClientResponseError) and exc.status not in _SUBGRAPH_RETRY_STATUSES:
-                raise
-            last_exc = exc
-            if attempt < _SUBGRAPH_MAX_RETRIES - 1:
-                backoff = min(8.0, 0.5 * (2 ** attempt)) + random.uniform(0, 0.3)
-                print(f"  [subgraph] {type(exc).__name__} — retry {attempt + 1}/{_SUBGRAPH_MAX_RETRIES - 1} in {backoff:.1f}s")
-                await asyncio.sleep(backoff)
-                continue
-            raise
-    raise last_exc if last_exc else RuntimeError("subgraph query failed")
-
-async def _fetch_all_events_async(session: aiohttp.ClientSession, schema_id: str) -> tuple[list, list]:
-    publishes, updates = [], []
-    for target, query, key in [(publishes, PUBLISHES_QUERY, "manifestPublisheds"), (updates, UPDATES_QUERY, "manifestUpdateds")]:
-        skip = 0
-        while True:
-            data  = await _query_subgraph_async(session, query, {"schemaId": schema_id, "first": cfg.page_size, "skip": skip})
-            batch = data.get(key, [])
-            target.extend(batch)
-            if len(batch) < cfg.page_size:
-                break
-            skip += cfg.page_size
-    return publishes, updates
-
-# ---------------------------------------------------------------------------
-# IPFS
-# ---------------------------------------------------------------------------
-
-FALLBACK_GATEWAYS = [
-    "https://cloudflare-ipfs.com/ipfs",
-    "https://ipfs.io/ipfs",
-    "https://w3s.link/ipfs",
-    "https://dweb.link/ipfs",
-]
-
-async def _fetch_json(session: aiohttp.ClientSession, sem: asyncio.Semaphore, cid: str) -> tuple[str, any]:
-    async with sem:
-        gateways = [cfg.ipfs_gateway.rstrip("/")] + FALLBACK_GATEWAYS
-        for index, base_url in enumerate(gateways):
-            url = f"{base_url}/{cid}"
-            if index > 0:
-                await asyncio.sleep(0.25 * index)
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=cfg.ipfs_timeout)) as resp:
-                    if resp.status == 429:
-                        continue
-                    resp.raise_for_status()
-                    return cid, json.loads(await resp.text())
-            except Exception as e:
-                if index == len(gateways) - 1:
-                    print(f"  [error] All gateways exhausted for CID {cid[:20]}…: {e}")
-                continue
-        return cid, None
-
-async def fetch_all_ipfs(cids: list[str]) -> dict[str, any]:
-    if not cids:
-        return {}
-    sem = asyncio.Semaphore(cfg.concurrency)
-    async with aiohttp.ClientSession() as session:
-        results = await asyncio.gather(*[_fetch_json(session, sem, cid) for cid in cids])
-    return dict(results)
-
-# ---------------------------------------------------------------------------
-# SCHEMA FETCH + PAYLOAD RESOLUTION
-# ---------------------------------------------------------------------------
-
-def _build_seen_cids(publishes: list, updates: list) -> dict[str, dict]:
-    seen: dict[str, dict] = {}
-    for p in publishes:
-        cid, ts = p["manifestCid"], int(p["blockTimestamp"])
-        if cid not in seen or ts > seen[cid]["blockTimestamp"]:
-            seen[cid] = {"owner": p["owner"], "nameHash": p["nameHash"], "name": p["name"],
-                         "manifestCid": cid, "version": 0, "blockTimestamp": ts}
-    for u in updates:
-        cid, ts = u["manifestCid"], int(u["blockTimestamp"])
-        if cid not in seen or ts > seen[cid]["blockTimestamp"]:
-            seen[cid] = {"owner": u["owner"], "nameHash": u["nameHash"], "name": u.get("name", u["nameHash"]),
-                         "manifestCid": cid, "version": int(u["version"]), "blockTimestamp": ts}
-    return seen
-
-def _dedup_entries(all_entries: list) -> list:
-    best:   dict[str, dict] = {}
-    no_key: list[dict]      = []
-    for item in all_entries:
-        key = _track_id_str(item["entry"])
-        if not key:
-            no_key.append(item)
-            continue
-        ts = item["meta"]["blockTimestamp"]
-        if key not in best or ts > best[key]["meta"]["blockTimestamp"]:
-            best[key] = item
-    return list(best.values()) + no_key
-
-async def fetch_schema_entries(
-    session: aiohttp.ClientSession,
-    schema_name: str,
-    schema_id:   str,
-    prior_checkpoint: dict[str, int],
-) -> tuple[list[dict], dict[str, int]]:
-    publishes, updates = await _fetch_all_events_async(session, schema_id)
-    print(f"  [{schema_name}] subgraph: {len(publishes)} publishes, {len(updates)} updates")
-
-    seen_cids = _build_seen_cids(publishes, updates)
-    new_cids  = [cid for cid, meta in seen_cids.items()
-                 if prior_checkpoint.get(cid, -1) < meta["blockTimestamp"]]
-    print(f"  [{schema_name}] IPFS: {len(new_cids)} manifests to fetch, {len(seen_cids) - len(new_cids)} skipped")
-
-    fresh_manifests = await fetch_all_ipfs(new_cids)
-
-    chunk_refs: list[dict] = []
-    for cid, manifest_json in fresh_manifests.items():
-        if not manifest_json:
-            continue
-        meta    = seen_cids[cid]
-        entries = manifest_json.get("entries", [])
-        for entry in entries:
-            fields = entry.get("fields", {}) or {}
-            dcid   = fields.get("dataCid")
-            if dcid and isinstance(dcid, str):
-                chunk_refs.append({"dataCid": dcid, "meta": meta})
-
-    unique_data_cids = list({ref["dataCid"] for ref in chunk_refs})
-    print(f"  [{schema_name}] deep IPFS: resolving {len(unique_data_cids)} chunk files…")
-
-    resolved_payloads = await fetch_all_ipfs(unique_data_cids)
-    failed_cids       = [c for c, p in resolved_payloads.items() if p is None]
-    if failed_cids:
-        print(f"  [retry] retrying {len(failed_cids)} failed chunks…")
-        await asyncio.sleep(1.5)
-        retry = await fetch_all_ipfs(failed_cids)
-        resolved_payloads.update({k: v for k, v in retry.items() if v is not None})
-
-    all_entries: list[dict] = []
-    for ref in chunk_refs:
-        dcid    = ref["dataCid"]
-        meta    = ref["meta"]
-        payload = resolved_payloads.get(dcid)
-        if not payload:
-            continue
-        records: list = []
-        if isinstance(payload, list):
-            records = [r for r in payload if isinstance(r, dict)]
-        elif isinstance(payload, dict):
-            if "track" in payload and isinstance(payload["track"], dict):
-                records = [{"fields": payload["track"]}]
-            elif "fields" in payload and isinstance(payload["fields"], dict):
-                records = [payload]
-            else:
-                records = [{"fields": payload}]
-        for record in records:
-            entry  = record if "fields" in record and isinstance(record["fields"], dict) else {"name": record.get("name", ""), "fields": record}
-            fields = entry.get("fields", {}) or {}
-            for pk in ["trackId", "track_id", "id", "contentId"]:
-                if fields.get(pk):
-                    fields["trackId"] = str(fields[pk]).strip().removeprefix("track:")
-                    break
-            entry["fields"] = fields
-            all_entries.append({"entry": entry, "meta": meta})
-
-    new_checkpoint: dict[str, int] = dict(prior_checkpoint)
-    for cid, meta in seen_cids.items():
-        new_checkpoint[cid] = meta["blockTimestamp"]
-
-    deduped = _dedup_entries(all_entries)
-    print(f"  [{schema_name}] {len(deduped)} active records")
-    return deduped, new_checkpoint
 
 # ---------------------------------------------------------------------------
 # JOIN + DOCUMENT BUILD
@@ -925,59 +703,6 @@ def _build_searchable_text(fields: dict) -> str:
     if subtitle: parts.append(subtitle)
     parts.extend(text_terms)
     return " ".join(parts).strip() or title or subtitle or "record"
-
-def join_records(entries_by_schema: dict[str, list[dict]], primary: str) -> list[dict]:
-    primary_entries = entries_by_schema.get(primary, [])
-    if not primary_entries:
-        print(f"  [warn] primary schema '{primary}' has no entries")
-        return []
-
-    secondary_fields: dict[str, dict] = {}
-    for schema_name, entries in entries_by_schema.items():
-        if schema_name == primary:
-            continue
-        for item in entries:
-            key = _track_id_str(item["entry"])
-            if not key:
-                continue
-            flat = _flatten_fields(item["entry"].get("fields", {}))
-            secondary_fields.setdefault(key, {}).update(flat)
-
-    global debug_secondary
-    debug_secondary = secondary_fields
-
-    merged: list[dict] = []
-    for item in primary_entries:
-        track_id = _track_id_str(item["entry"])
-        if not track_id:
-            continue
-        core_fields = _flatten_fields(item["entry"].get("fields", {}))
-        tag_fields  = secondary_fields.get(track_id, {})
-        fields      = {**core_fields, **tag_fields}
-        fields["trackId"] = track_id
-        merged.append({"track_id": track_id, "fields": fields, "meta": item["meta"], "has_tags": bool(tag_fields)})
-
-    global role_map_global
-    role_map_global = infer_roles([m["fields"] for m in merged])
-    print(f"  [roles] inferred: {role_map_global.get('labels')}")
-
-    joined  = []
-    matched = 0
-    for m in merged:
-        track_id, fields = m["track_id"], m["fields"]
-        doc = _build_searchable_text(fields)
-        if m["has_tags"]:
-            matched += 1
-        joined.append({
-            "id":      track_id,          # string — will be converted to UUID on upsert
-            "doc":     doc,
-            "fields":  fields,
-            "owner":   m["meta"]["owner"],
-            "meta":    m["meta"],
-        })
-
-    print(f"  [join] {len(joined)} records — {matched} with tags")
-    return joined
 
 # ---------------------------------------------------------------------------
 # EMBED + UPSERT (server-side ingestion)
@@ -1034,48 +759,83 @@ def _upsert_joined(joined: list[dict]) -> None:
 # ---------------------------------------------------------------------------
 
 async def ingest():
-    global _map_cache, _text_index
+    """Reingest every configured `--source OWNER:NAMESPACE`: read the namespace's
+    graph off-chain (`fangorn read`), project it into root-profile documents, tombstone
+    roots that dropped out since the last read, and embed the new ones — the same
+    primitives `quickbeam build`/`watch` use, sharing the server's role map + embed path."""
+    global _map_cache, _text_index, role_map_global
     loop       = asyncio.get_event_loop()
-    schemas    = get_schemas()
-    primary    = get_primary(schemas)
+    sources    = parse_sources(cfg.sources)
     checkpoint = _load_checkpoint()
 
     print(f"\n{'=' * 60}")
-    print(f"Ingesting {len(schemas)} schema(s): {list(schemas.keys())}")
+    if not sources:
+        print("Reingest: no --source configured — nothing to do.")
+        print(f"{'=' * 60}")
+        return
+    print(f"Reingesting {len(sources)} source(s): {', '.join(f'{o}:{n}' for o, n in sources)}")
     print(f"{'=' * 60}")
 
-    connector = aiohttp.TCPConnector(limit=16, limit_per_host=8, enable_cleanup_closed=True)
-    async with aiohttp.ClientSession(connector=connector) as session:
-        results = await asyncio.gather(*[
-            fetch_schema_entries(session, name, schema_id, checkpoint.get("manifests", {}).get(name, {}))
-            for name, schema_id in schemas.items()
-        ])
+    proj_args     = _projection_args()
+    processed_ids = set(checkpoint.get("processed_track_ids", []))
+    all_new: list[dict] = []
 
-    entries_by_schema:         dict[str, list[dict]]     = {}
-    new_checkpoints_by_schema: dict[str, dict[str, int]] = {}
-    for (name, _), (entries, new_ckpt) in zip(schemas.items(), results):
-        entries_by_schema[name]         = entries
-        new_checkpoints_by_schema[name] = new_ckpt
+    for owner, namespace in sources:
+        key = f"{owner}:{namespace}"
+        try:
+            contents = await loop.run_in_executor(
+                None, read_source, cfg.fangorn_bin, owner, namespace)
+        except Exception as e:  # noqa: BLE001 — a bad source must not abort the others
+            print(f"  [{key}] read failed: {e}")
+            continue
 
-    joined = join_records(entries_by_schema, primary)
+        discovered = {v["schemaId"] for v in contents.get("vertices", [])}
+        profiles   = load_profiles(proj_args, discovered)
+        records    = project_source(owner, namespace, contents, profiles, proj_args)
+        curr_ids   = {r["track_id"] for r in records}
 
-    if not joined:
-        print("  No records to update.")
-        for name, ckpt in new_checkpoints_by_schema.items():
-            checkpoint.setdefault("manifests", {})[name] = ckpt
+        # Tombstone roots present at the last read but gone now (deleted upstream).
+        src_ck   = checkpoint.setdefault("sources", {}).setdefault(key, {})
+        prev_ids = set(src_ck.get("vertex_cids", []))
+        dropped  = prev_ids - curr_ids
+        if dropped:
+            await loop.run_in_executor(None, lambda d=dropped: qdrant_client.delete(
+                collection_name=cfg.collection,
+                points_selector=qmodels.PointIdsList(points=[_str_to_uuid(t) for t in d]),
+                wait=True))
+            processed_ids -= dropped
+            print(f"  [{key}] tombstoned {len(dropped)} dropped root(s)")
+        src_ck["head"]        = contents.get("head")
+        src_ck["vertex_cids"] = list(curr_ids)
+
+        src_new = [r for r in records if r["track_id"] not in processed_ids]
+        all_new.extend(src_new)
+        print(f"  [{key}] {len(records)} record(s) — {len(src_new)} new")
+
+    if not all_new:
+        print("  No new records to embed.")
         _save_checkpoint(checkpoint)
+        _map_cache  = None
+        _text_index = None
         return
 
-    processed_ids = set(checkpoint.get("processed_track_ids", []))
-    new_records   = [r for r in joined if r["id"] not in processed_ids]
-    print(f"  Diff: {len(new_records)} new, {len(joined) - len(new_records)} already processed")
+    # Infer the role map from the new records so `_build_searchable_text` composes the
+    # right document text (and the query-side role accessors resolve the same fields).
+    role_map_global = infer_roles([r["fields"] for r in all_new])
+    print(f"  [roles] inferred: {role_map_global.get('labels')}")
 
-    if new_records:
-        await loop.run_in_executor(None, _upsert_joined, new_records)
-        checkpoint.setdefault("processed_track_ids", []).extend(r["id"] for r in new_records)
+    joined = [{
+        "id":     r["track_id"],
+        "doc":    _build_searchable_text(_flatten_fields(r["fields"])),
+        "fields": _flatten_fields(r["fields"]),
+        "owner":  r["meta"].get("owner"),
+        "meta":   {"namespace": r["meta"].get("namespace"),
+                   "sourceCid": r["meta"].get("sourceCid")},
+    } for r in all_new]
 
-    for name, ckpt in new_checkpoints_by_schema.items():
-        checkpoint.setdefault("manifests", {})[name] = ckpt
+    await loop.run_in_executor(None, _upsert_joined, joined)
+    processed_ids.update(r["track_id"] for r in all_new)
+    checkpoint["processed_track_ids"] = list(processed_ids)
     _save_checkpoint(checkpoint)
 
     _map_cache  = None
@@ -1094,9 +854,11 @@ def _hit_from_point(pt, score: float | None = None) -> dict:
     owner   = payload.get("owner")
     meta    = payload.get("meta", {}) or {}
     hit     = {"id": payload.get("id", str(pt.id)), "fields": fields, "owner": owner}
-    # Surface on-chain provenance so the MCP layer can attach it to every result.
+    # Surface on-chain provenance so the MCP layer can attach it to every result. The
+    # source CID is the record's own on-chain vertex id (a verifiable content address);
+    # older payloads carried it under `manifestCid`, so fall back to that.
     hit["meta"] = {
-        "manifestCid":    meta.get("manifestCid"),
+        "sourceCid":      meta.get("sourceCid") or meta.get("manifestCid"),
         "blockTimestamp": meta.get("blockTimestamp"),
         "version":        meta.get("version"),
         "owner":          meta.get("owner"),
@@ -1107,86 +869,6 @@ def _hit_from_point(pt, score: float | None = None) -> dict:
     if vec is not None:
         hit["embedding"] = vec if isinstance(vec, list) else vec.tolist()
     return hit
-
-# ---------------------------------------------------------------------------
-# BUNDLE SEED FROM IPFS
-# ---------------------------------------------------------------------------
-
-async def _seed_from_ipfs(cid: str) -> None:
-    """
-    Fetch an NDJSON bundle from IPFS and upsert it into the local collection.
-    Runs as a background task at startup — server is live and queryable while
-    this progresses. Tries the configured gateway first, then fallbacks.
-    """
-    global _map_cache, _text_index
-
-    gateways = [cfg.ipfs_gateway.rstrip("/")] + FALLBACK_GATEWAYS
-    resp     = None
-
-    async with aiohttp.ClientSession() as session:
-        for i, base in enumerate(gateways):
-            url = f"{base}/{cid}"
-            print(f"[seed] fetching bundle from {url}")
-            try:
-                resp = await session.get(url, timeout=aiohttp.ClientTimeout(total=None))
-                if resp.status == 200:
-                    break
-                print(f"[seed] gateway returned {resp.status}, trying next…")
-                resp = None
-            except Exception as exc:
-                print(f"[seed] gateway error: {exc}, trying next…")
-
-        if resp is None:
-            print(f"[seed] all gateways failed for CID {cid} — aborting seed")
-            return
-
-        BATCH    = 500
-        batch:   list[qmodels.PointStruct] = []
-        total    = 0
-        loop     = asyncio.get_event_loop()
-
-        async def _flush(b):
-            await loop.run_in_executor(
-                None,
-                lambda: qdrant_client.upsert(collection_name=cfg.collection, points=b, wait=True),
-            )
-
-        async for raw in resp.content:
-            for line in raw.split(b"\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                track_id = row.get("track_id", "")
-                vec      = row.get("embedding")
-                if not track_id or not vec:
-                    continue
-                batch.append(qmodels.PointStruct(
-                    id      = _str_to_uuid(track_id),
-                    vector  = vec,
-                    payload = {
-                        "id":     track_id,
-                        "owner":  row.get("owner"),
-                        "fields": row.get("fields", {}),
-                        "meta":   row.get("meta", {}),
-                    },
-                ))
-                if len(batch) >= BATCH:
-                    await _flush(batch)
-                    total += len(batch)
-                    batch  = []
-                    print(f"[seed] {total} points upserted…", end="\r", flush=True)
-
-        if batch:
-            await _flush(batch)
-            total += len(batch)
-
-    _map_cache  = None
-    _text_index = None
-    print(f"\n[seed] done — {total} points seeded from {cid}")
 
 # ---------------------------------------------------------------------------
 # APP LIFECYCLE
@@ -1231,7 +913,7 @@ async def lifespan(app: FastAPI):
     # ensureCollection in main), so the collection — and its true vector dim —
     # already exist. Trust that dim and truncate query embeddings to match it,
     # rather than guessing from the model. Only create a collection when one is
-    # genuinely missing (e.g. standalone --bundle-cid seeding).
+    # genuinely missing (e.g. a fresh instance about to seed from --source).
     if qdrant_client.collection_exists(cfg.collection):
         info       = qdrant_client.get_collection(cfg.collection)
         vparams    = info.config.params.vectors
@@ -1254,13 +936,16 @@ async def lifespan(app: FastAPI):
     count = _collection_count()
     print(f"[startup] collection '{cfg.collection}' ready — {count} points")
 
-    if count == 0 and cfg.bundle_cid:
-        print(f"[startup] collection empty — seeding from bundle CID {cfg.bundle_cid}")
-        asyncio.create_task(_seed_from_ipfs(cfg.bundle_cid))
-    elif cfg.bundle_cid:
-        print(f"[startup] --bundle-cid provided but collection already has {count} points — skipping seed")
+    if count == 0 and cfg.sources:
+        print(f"[startup] collection empty — seeding from source(s): "
+              f"{', '.join(cfg.sources)}")
+        asyncio.create_task(ingest())
+    elif cfg.sources:
+        print(f"[startup] collection already has {count} points — "
+              f"POST /reingest to pull new on-chain data for {', '.join(cfg.sources)}")
     else:
-        print(f"[startup] use POST /reingest to pull new subgraph data, POST /bundle/upsert to seed from a bundle")
+        print(f"[startup] no --source configured; POST /bundle/upsert to seed from a bundle, "
+              f"or pass --source OWNER:NAMESPACE and POST /reingest")
 
     # Warm both hot paths in the background so the user's first query is fast:
     # fastembed finishes loading its ONNX model lazily on the first embed, and

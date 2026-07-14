@@ -31,7 +31,7 @@ def _fwd(name: str, extra: list[str]) -> None:
 
 @app.command(**_PASSTHROUGH)
 def build(ctx: typer.Context):
-    """Build embeddings from subgraph / IPFS data into Qdrant."""
+    """Build embeddings from an owner:namespace graph (`fangorn read`) into Qdrant."""
     import asyncio
     _fwd("quickbeam build", ctx.args)
     from quickbeam.embeddings import main
@@ -46,7 +46,7 @@ def serve(ctx: typer.Context):
     Everything BEFORE `--watch` configures the server; everything AFTER it is
     forwarded to `quickbeam watch`. Example:
 
-      quickbeam serve --x402-pay-to 0xRECV --watch --bundle fangorn=0xID --poll-interval 120
+      quickbeam serve --x402-pay-to 0xRECV --watch --source 0xOWNER:namespace --poll-interval 120
     """
     import sys, subprocess, atexit, signal
 
@@ -89,7 +89,7 @@ def mcp(ctx: typer.Context):
 
 @app.command(**_PASSTHROUGH)
 def watch(ctx: typer.Context):
-    """Live daemon: poll subgraph for new events and embed them automatically."""
+    """Live daemon: subscribe to owner:namespace commits (`fangorn subscribe`) and embed them."""
     import asyncio
     _fwd("quickbeam watch", ctx.args)
     from quickbeam.watcher import main

@@ -1,38 +1,27 @@
 {
-  "generated_at": 1783622956,
+  "generated_at": 1784069773,
   "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
-  "collection": "fangorn",
+  "collection": "robinhood",
   "domains": [
     {
       "name": "robinhood",
-      "description": "Robinhood Chain tokenized-stock market \u2014 live asset snapshots + notable on-chain transfer flow",
-      "count": 37632,
+      "description": "",
+      "count": 34296,
       "dim": 256,
-      "bytes": 173452273,
-      "shard_count": 24,
+      "bytes": 91342828,
+      "shard_count": 1,
       "entity_types": [
         "Transfer",
+        "Wallet",
         "Asset"
       ],
       "manifest": "robinhood/manifest.json",
-      "edge_count": 51007,
+      "edge_count": 526089,
       "relations": [
         "hasTransfer",
         "receivedBy",
         "sentBy"
       ]
-    },
-    {
-      "name": "lotr",
-      "description": "",
-      "count": 17,
-      "dim": 256,
-      "bytes": 10885,
-      "shard_count": 1,
-      "entity_types": [
-        "File"
-      ],
-      "manifest": "lotr/manifest.json"
     }
   ]
 }

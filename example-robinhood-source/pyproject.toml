@@ -1,0 +1,32 @@
+    [build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickbeam-robinhood"
+version = "0.1.0"
+description = "An example pluggable quickbeam Source: Robinhood Chain → a Fangorn graph."
+requires-python = ">=3.12"
+# Depends on quickbeam for the harness runtime, but NOT to satisfy the `Source`
+# contract — RobinhoodSource matches it structurally (see source.py). Install this
+# package into the same environment as quickbeam and `quickbeam data robinhood` works.
+dependencies = ["quickbeam"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# The one line that wires this source into quickbeam's CLI: `discover_sources()` reads
+# the `quickbeam.sources` entry-point group, so installing this package makes
+# `quickbeam data robinhood` appear with the full watch/publish/checkpoint loop. The
+# CLI verb is the entry-point NAME (here "robinhood"); it can differ from Source.name.
+[project.entry-points."quickbeam.sources"]
+robinhood = "quickbeam_robinhood.source:RobinhoodSource"
+
+# A standalone console script, so you can also run the harness without the quickbeam
+# CLI: `robinhood-ingest --with-transfers --output-dir ./stage --volume 1`.
+[project.scripts]
+robinhood-ingest = "quickbeam_robinhood.source:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quickbeam_robinhood*"]

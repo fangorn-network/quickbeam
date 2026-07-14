@@ -313,7 +313,7 @@ def _provenance(rec: dict) -> dict:
     """Where a record came from on-chain — a first-class field on every result."""
     meta = rec.get("meta") or {}
     return {
-        "source_cid": meta.get("manifestCid"),
+        "source_cid": meta.get("sourceCid") or meta.get("manifestCid"),
         "published":  _iso8601(meta.get("blockTimestamp")),
         "version":    meta.get("version"),
         "publisher":  meta.get("owner") or rec.get("owner"),

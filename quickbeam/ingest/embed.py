@@ -240,7 +240,10 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                         "entityType": p.get("entity_type") or p["fields"].get("entityType"),
                         "owner":      p["meta"].get("owner"),
                         "fields":     p["fields"],
-                        "meta":       {"manifestCid": p["meta"].get("manifestCid")},
+                        # Carry the on-chain source CID so served results have real
+                        # provenance (the `source_cid` the MCP layer surfaces).
+                        "meta":       {"namespace": p["meta"].get("namespace"),
+                                       "sourceCid": p["meta"].get("sourceCid")},
                     }
                 )
                 for vec, p in zip(vectors, chunk)
@@ -249,13 +252,9 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
         )
 
         # Mutate the in-memory checkpoint only — persistence is the caller's job,
-        # on its own cadence (see main()'s batched flush). Deterministic point
-        # ids above make re-running an unflushed manifest idempotent.
+        # on its own cadence. Deterministic point ids above make re-running an
+        # unflushed source idempotent.
         checkpoint["processed_track_ids"].extend(p["track_id"] for p in chunk)
-        checkpoint["manifests"].update({
-            p["meta"]["manifestCid"]: p["meta"].get("blockTimestamp")
-            for p in chunk
-        })
 
         del texts, vectors
         import gc; gc.collect()

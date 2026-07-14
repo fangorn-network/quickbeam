@@ -1,19 +1,19 @@
 """
 The ingestion harness — the source-agnostic runtime every `Source` runs on.
 
-Lifted (behaviour-preserving) from the plumbing that grew inside
-`pipelines/robinhood.py`. Owns the shared CLI, staged-volume emission, incremental
-checkpointing, the `--watch` poll daemon, and `--publish` to fangorn. A `Source`
-(see `source.py`) supplies only read + shape + cursor; `run_source(src)` wires it up.
+Owns the shared CLI, staged-volume emission, incremental checkpointing, the
+`--watch` poll daemon, and `--publish` to fangorn. A `Source` (see `source.py`)
+supplies only read + shape + cursor; `run_source(src)` wires it up.
 
-Pipeline position (unchanged): this stages `volume_{N}_{stem}.json` node/edge files
-that `schemagen` → `fangorn commit --bundle` → `push` publishes on-chain; `watch`
-then embeds the committed tip. This module never embeds and never touches the CDN.
+Pipeline position: this stages `volume_{N}_{stem}.json` node/edge files, then
+`--publish` assembles them into one batch and writes it into the configured wallet's
+namespace with `fangorn repo init <namespace>` + `fangorn upload <namespace> <batch>`.
+`quickbeam watch --source <owner>:<namespace>` reads that namespace back off-chain and
+embeds it. This module never embeds and never touches the CDN.
 """
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import os
 import shlex
@@ -32,8 +32,8 @@ def build_parser(src: Source) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog=f"quickbeam data {src.name}",
         description=f"Transform {src.name} events into staged node/edge volumes. "
-                    f"Publish with `fangorn commit --bundle`, then embed with "
-                    f"`quickbeam watch --bundle`.")
+                    f"Publish with `fangorn repo init` + `fangorn upload`, then embed "
+                    f"with `quickbeam watch --source <owner>:<namespace>`.")
     src.add_source_args(p)
 
     p.add_argument("--checkpoint-file", default=None,
@@ -66,19 +66,19 @@ def build_parser(src: Source) -> argparse.ArgumentParser:
 
     pub = p.add_argument_group("publish to fangorn (optional — the ingest→publish leg)")
     pub.add_argument("--publish", action="store_true",
-                     help="After writing volumes, run `fangorn commit --bundle` + "
-                          "`fangorn push` to publish the snapshot on-chain. The repo "
-                          "must be `fangorn repo init`'d against the bundle schema first.")
-    pub.add_argument("--repo", default=".",
-                     help="Fangorn repo dir to run commit/push in (its cwd).")
+                     help="After writing volumes, assemble them into one batch and run "
+                          "`fangorn repo init <namespace>` (idempotent) + `fangorn commit "
+                          "-m <msg>` + `fangorn push` to settle the snapshot into the "
+                          "configured wallet's namespace.")
+    pub.add_argument("--namespace", default=None,
+                     help="Fangorn namespace to publish into (required with --publish). "
+                          "`quickbeam watch --source <owner>:<namespace>` reads it back.")
     pub.add_argument("--fangorn-bin", default="fangorn",
                      help="The fangorn CLI invocation — a full command, not just a path "
                           "(shell-split). Default `fangorn` (a global install reading "
                           "~/.fangorn/config.json). For the git-native dev build use its "
                           "wrapper, e.g. \"dotenvx run -f ~/fangorn/fangorn/.env -- node "
                           "~/fangorn/fangorn/dist/src/cli/cli.js\".")
-    pub.add_argument("--commit-message", default=None,
-                     help="Commit message (default: a timestamped snapshot message).")
     return p
 
 
@@ -111,7 +111,7 @@ def _print_dry_run(src: Source, records: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# STAGED-VOLUME EMISSION — write the node/edge files `schemagen` reads.
+# STAGED-VOLUME EMISSION — write the node/edge files the publish leg reads back.
 # ---------------------------------------------------------------------------
 def _load_node_list(path: str) -> list[dict]:
     """Existing staged nodes/edges (empty list if absent/unreadable). A corrupt
@@ -150,8 +150,8 @@ def _stem_for(src: Source, entity: str) -> str:
 
 def emit_volumes(src: Source, records: list[dict], output_dir: str, volume: int = 1,
                  accumulate: bool = False) -> dict:
-    """INGEST OUTPUT — write the staged node/edge volume files `schemagen` reads.
-    Returns a per-type count summary.
+    """INGEST OUTPUT — write the staged node/edge volume files the publish leg reads
+    back into a `fangorn upload` batch. Returns a per-type count summary.
 
     accumulate=True turns non-snapshot stems into a growing ledger: new rows are
     MERGED into the staged file rather than overwriting it, so each commit is a
@@ -238,20 +238,61 @@ def load_checkpoint(src: Source, path: str | None) -> int:
     return int(_read_json_obj(path).get(_ckpt_key(src), 0) or 0)
 
 
-def save_checkpoint(src: Source, path: str | None, cursor: int) -> None:
+def _merge_json_file(path: str | None, updates: dict) -> None:
+    """Read-merge-write `updates` into the JSON object at `path` (atomically), never
+    clobbering foreign keys already there. Shared by the checkpoint cursor and the
+    freshness block so two sources — or the cursor + freshness of one source — can
+    coexist in one file. A crashed write never truncates the file (write-tmp-rename)."""
     if not path:
         return
     d = _read_json_obj(path)      # merge into whatever is there — never clobber foreign keys
-    d[_ckpt_key(src)] = int(cursor)
+    d.update(updates)
+    # Ensure the dir exists (e.g. a fresh `db/`), or the .tmp write below raises
+    # FileNotFoundError and stalls every cycle.
+    parent = os.path.dirname(path)
+    if parent and not os.path.exists(parent):
+        os.makedirs(parent, exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(d, f)
-    os.replace(tmp, path)  # atomic — a crashed write never truncates the checkpoint
+    os.replace(tmp, path)  # atomic — a crashed write never truncates the file
+
+
+def save_checkpoint(src: Source, path: str | None, cursor: int) -> None:
+    _merge_json_file(path, {_ckpt_key(src): int(cursor)})
+
+
+def save_freshness(src: Source, path: str | None, report: dict) -> None:
+    """Persist the freshness metrics alongside the cursor under `<name>Freshness`, so
+    the checkpoint file is a single place to read 'where is the tail in time?'. The
+    `display` lines are dropped (they're a render, not state)."""
+    _merge_json_file(path, {f"{src.name}Freshness":
+                            {k: v for k, v in report.items() if k != "display"}})
 
 
 # ---------------------------------------------------------------------------
 # INGEST — one cycle, and the daemon that loops it.
 # ---------------------------------------------------------------------------
+def _report_freshness(src: Source, records: list[dict], cursor: int, args) -> None:
+    """Print (and, outside --dry-run, persist) the source's freshness summary if it
+    supplies the optional `freshness_report` hook. Purely informational — a failure
+    here never aborts the cycle."""
+    fn = getattr(src, "freshness_report", None)
+    if not callable(fn):
+        return
+    try:
+        report = fn(records, cursor)
+    except Exception as e:  # noqa: BLE001 — a report is never worth killing a cycle for
+        print(f"[{src.name}] freshness report failed: {e}", file=sys.stderr)
+        return
+    if not report:
+        return
+    for line in report.get("display", []):
+        print(line)
+    if not args.dry_run and args.checkpoint_file:
+        save_freshness(src, args.checkpoint_file, report)
+
+
 def ingest_once(src: Source, args) -> int:
     """One read → emit volumes (→ optionally publish to fangorn). Returns record count.
     This is the unit a cron job runs each tick, and the daemon runs each cycle."""
@@ -260,21 +301,27 @@ def ingest_once(src: Source, args) -> int:
     if not records:
         print(f"[{src.name}] no events to ingest")
         return 0
+    _report_freshness(src, records, cursor, args)
     if args.dry_run:
         _print_dry_run(src, records)
         return len(records)
     print(f"[{src.name}] ingesting {len(records)} event(s) → {args.output_dir} "
           f"(volume {args.volume})")
     emit_volumes(src, records, args.output_dir, args.volume, accumulate=args.accumulate)
-    # Advance the checkpoint. After emit_volumes so --dry-run stays side-effect-free.
-    nxt = src.next_cursor(records, cursor)
-    if nxt > cursor:
-        save_checkpoint(src, args.checkpoint_file, nxt)
+    # Publish BEFORE advancing the checkpoint, and advance only on a successful publish
+    # (or when not publishing), so a failed publish is retried next cycle rather than
+    # silently skipped by a cursor that already moved past it.
+    published = True
     if args.publish:
-        _publish_to_fangorn(src, args)
+        published = _publish_to_fangorn(src, args)
     else:
-        print(f"[{src.name}] next: `quickbeam data schemagen` → `fangorn commit "
-              "--bundle` → `quickbeam watch --bundle …`  (or add --publish to commit now)")
+        print(f"[{src.name}] next: `fangorn repo init <namespace>` → `fangorn upload "
+              "<namespace> <batch>` → `quickbeam watch --source <owner>:<namespace> …`  "
+              "(or add --publish to publish now)")
+    if published:
+        nxt = src.next_cursor(records, cursor)
+        if nxt > cursor:
+            save_checkpoint(src, args.checkpoint_file, nxt)
     return len(records)
 
 
@@ -303,15 +350,26 @@ def watch_ingest(src: Source, args) -> None:
 # to the fangorn CLI (`--fangorn-bin` may be a FULL command, not just a path — e.g.
 # the dev invocation `dotenvx run -f /abs/.env -- node /abs/dist/src/cli/cli.js` —
 # so it is shell-split). `tag` is only a log prefix.
+#
+# The publish leg is owner:namespace and follows fangorn's git-native model: assemble
+# the staged volumes into one batch {vertices, edges}, then
+#   fangorn repo init <namespace>   (idempotent — tracks the namespace, allocates if new)
+#   fangorn commit <batch> -m <msg> (snapshots the batch into a LOCAL commit)
+#   fangorn push                    (settles that commit as the on-chain state root)
+# There is no schema registration and no `upload` verb — commit is local, push is the
+# permissioned on-chain write that `fangorn read`/`subscribe` (what `watch --source`
+# consumes) resolve back. All three steps share one CWD: `repo init` writes the
+# `.fangorn/repo.json` pointer there and `commit`/`push` resolve the repo by searching
+# upward from CWD, so they MUST run in the same directory.
 # ---------------------------------------------------------------------------
-def _run_fangorn_steps(steps: list[tuple[str, list[str]]], *, cwd: str,
-                       fangorn_bin: str, tag: str) -> bool:
-    """Run a sequence of (label, argv-tail) fangorn steps in `cwd`. Returns False on
-    the first failure (missing CLI or non-zero exit), True if all succeed."""
+def _run_fangorn_steps(steps: list[tuple[str, list[str]]], *,
+                       fangorn_bin: str, tag: str, cwd: str | None = None) -> bool:
+    """Run a sequence of (label, argv-tail) fangorn steps. Returns False on the first
+    failure (missing CLI or non-zero exit), True if all succeed."""
     prefix = shlex.split(fangorn_bin)
     for label, tail in steps:
         cmd = [*prefix, *tail]
-        print(f"[{tag}] fangorn {label} (cwd={cwd}): {' '.join(cmd)}")
+        print(f"[{tag}] fangorn {label}: {' '.join(cmd)}")
         try:
             r = subprocess.run(cmd, cwd=cwd)
         except FileNotFoundError:
@@ -326,53 +384,102 @@ def _run_fangorn_steps(steps: list[tuple[str, list[str]]], *, cwd: str,
     return True
 
 
-def fangorn_repo_init(*, repo: str, fangorn_bin: str, name: str, schema_name: str,
+def _load_staged_volume(src: Source, output_dir: str,
+                        volume: int) -> tuple[dict[str, list[dict]], list[dict]]:
+    """Read back the volume_<N>_*.json files emit_volumes wrote, inverting the
+    entity→stem mapping (`src.stems`). Returns ({entityType: [{"name","fields"}]},
+    [edge...]) — the shape the publish leg turns into a `fangorn upload` batch."""
+    stem_to_entity = {stem: entity for entity, stem in getattr(src, "stems", {}).items()}
+    edges_stem = getattr(src, "edges_stem", "edges")
+    nodes_by_entity: dict[str, list[dict]] = {}
+    if not os.path.isdir(output_dir):
+        return nodes_by_entity, []
+    prefix = f"volume_{volume}_"
+    edges_file = f"{prefix}{edges_stem}.json"
+    for fname in sorted(os.listdir(output_dir)):
+        if not (fname.startswith(prefix) and fname.endswith(".json")) or fname == edges_file:
+            continue
+        stem = fname[len(prefix):-len(".json")]
+        entity = stem_to_entity.get(stem, stem.capitalize())
+        nodes_by_entity[entity] = _load_node_list(os.path.join(output_dir, fname))
+    edges = _load_node_list(os.path.join(output_dir, edges_file))
+    return nodes_by_entity, edges
+
+
+def _repo_dir(args) -> str:
+    """Stable per-namespace working directory for the fangorn repo pointer. `repo init`
+    drops `.fangorn/repo.json` here and `commit`/`push` resolve it by searching upward,
+    so the three steps must share this CWD. Kept separate per namespace so distinct
+    sources publishing under one output-dir don't clobber each other's pointer. HEAD is
+    reconstructed from the on-chain tip by `repo init`, so this dir is restart-safe."""
+    d = os.path.join(args.output_dir, ".fangorn-repos", args.namespace)
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def fangorn_repo_init(*, namespace: str, fangorn_bin: str, cwd: str,
                       tag: str = "publish") -> bool:
-    """`fangorn repo init <name> -s <schema_name>` in `repo`. The bundle schema id is
-    deterministic from its name, so this works BEFORE the schema is registered on-chain
-    (registration happens on the first `commit --bundle`). No-op-safe to call only when
-    `<repo>/.fangorn` is absent."""
+    """`fangorn repo init <namespace>` — bootstrap/track the wallet's namespace (writes
+    `.fangorn/repo.json` in `cwd`). Idempotent: if the namespace already exists it just
+    re-tracks it (HEAD ← on-chain tip), so it's safe to run every cycle."""
     return _run_fangorn_steps(
-        [("repo init", ["repo", "init", name, "-s", schema_name])],
-        cwd=repo, fangorn_bin=fangorn_bin, tag=tag)
+        [("repo init", ["repo", "init", namespace])],
+        fangorn_bin=fangorn_bin, tag=tag, cwd=cwd)
 
 
-def fangorn_commit_push(*, repo: str, fangorn_bin: str, output_dir: str, volume: int,
-                        message: str, schemas_dir: str | None = None,
+def fangorn_commit_push(*, batch_path: str, message: str, fangorn_bin: str, cwd: str,
                         tag: str = "publish") -> bool:
-    """`fangorn commit --bundle <output_dir> --volume N` (+ `--schemas-dir` when given,
-    which auto-registers any missing schemas) followed by `fangorn push`, run in `repo`.
-    This is the ingest→publish leg: the on-chain write that emits the DataSource events a
-    subgraph indexes and `watch --bundle` reads."""
-    commit_tail = ["commit", "--bundle", os.path.abspath(output_dir),
-                   "--volume", str(volume), "-m", message]
-    if schemas_dir:
-        commit_tail += ["--schemas-dir", os.path.abspath(schemas_dir)]
-    ok = _run_fangorn_steps(
-        [("commit", commit_tail), ("push", ["push"])],
-        cwd=repo, fangorn_bin=fangorn_bin, tag=tag)
-    if ok:
-        print(f"[{tag}] published snapshot to fangorn ✓")
-    return ok
+    """`fangorn commit <batch_path> -m <message>` (local) then `fangorn push` (on-chain).
+    Must run in the same `cwd` as `fangorn_repo_init`. `batch_path` is a JSON file
+    `{vertices:[{id,tag,payload}], edges:[{rel,from,to}]}` (an absolute path, so CWD
+    doesn't affect which file is read)."""
+    return _run_fangorn_steps(
+        [("commit", ["commit", batch_path, "-m", message]),
+         ("push", ["push"])],
+        fangorn_bin=fangorn_bin, tag=tag, cwd=cwd)
 
 
 def _publish_to_fangorn(src: Source, args) -> bool:
-    """The harness `--publish` leg: commit + push the just-written volumes. Thin wrapper
-    over `fangorn_commit_push` that adds the initialized-repo preflight and default
-    commit message (behaviour-preserving)."""
-    # Preflight: commit --bundle only works inside an initialized repo. Fail clearly
-    # once instead of a confusing non-zero exit every cycle.
-    if not os.path.isdir(os.path.join(args.repo, ".fangorn")):
-        print(f"[{src.name}] --publish: {args.repo!r} is not a fangorn repo (no .fangorn/). "
-              f"Bootstrap once: cd there and `fangorn repo init <name> -s <bundleSchema>`. "
-              f"Skipping publish.", file=sys.stderr)
+    """The harness `--publish` leg: assemble the just-written volumes into one batch and
+    settle it into the configured wallet's namespace via `fangorn repo init` +
+    `commit -m` + `push` (all in one per-namespace repo dir)."""
+    if not getattr(args, "namespace", None):
+        print(f"[{src.name}] --publish requires --namespace. Skipping publish.",
+              file=sys.stderr)
         return False
-    msg = args.commit_message or (
-        f"{src.name} snapshot "
-        + datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
-    return fangorn_commit_push(
-        repo=args.repo, fangorn_bin=args.fangorn_bin, output_dir=args.output_dir,
-        volume=args.volume, message=msg, tag=src.name)
+
+    nodes_by_entity, edges = _load_staged_volume(src, args.output_dir, args.volume)
+    vertices = [
+        {"id": n["name"], "tag": entity, "payload": n["fields"]}
+        for entity, node_list in nodes_by_entity.items()
+        for n in node_list
+    ]
+    edge_records = [{"rel": e["rel"], "from": e["from"], "to": e["to"]} for e in edges]
+    if not vertices:
+        print(f"[{src.name}] --publish: nothing staged to publish.", file=sys.stderr)
+        return False
+
+    cwd = _repo_dir(args)
+    message = (f"quickbeam:{src.name} v{args.volume} — "
+               f"{len(vertices)} vertices, {len(edge_records)} edges")
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
+        json.dump({"vertices": vertices, "edges": edge_records}, f)
+        batch_path = f.name
+    try:
+        ok = (fangorn_repo_init(namespace=args.namespace, fangorn_bin=args.fangorn_bin,
+                                cwd=cwd, tag=src.name)
+              and fangorn_commit_push(batch_path=batch_path, message=message,
+                                      fangorn_bin=args.fangorn_bin, cwd=cwd, tag=src.name))
+    finally:
+        try:
+            os.unlink(batch_path)
+        except OSError:
+            pass
+    if ok:
+        print(f"[{src.name}] published {len(vertices)} vertice(s), {len(edge_records)} "
+              f"edge(s) to namespace {args.namespace!r} ✓")
+    return ok
 
 
 def run_source(src: Source, argv: list[str] | None = None) -> None:
