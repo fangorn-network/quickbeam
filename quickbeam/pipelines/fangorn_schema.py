@@ -240,11 +240,21 @@ def parse_args():
     return p.parse_args()
 
 
-def run():
-    args = parse_args()
-    os.makedirs(args.out_dir, exist_ok=True)
-    pat = (os.path.join(args.input_dir, "volume_*_*.json") if args.volume == 0
-           else os.path.join(args.input_dir, f"volume_{args.volume}_*.json"))
+def generate_schemas(*, input_dir: str = "./stage_volumes", volume: int = 1,
+                     out_dir: str | None = None, prefix: str, version: str = "v1",
+                     bundle_name: str, sample: int = 20000, edge_scan: int = 0,
+                     all_strings: bool = False) -> dict:
+    """Infer Fangorn node schemas + a bundle shape from staged volume files and write
+    them to `out_dir` (default `<input_dir>/schemas`, where `fangorn commit --bundle`
+    looks by default). This is the callable core of `schemagen` — the CLI `run()` is a
+    thin argparse wrapper over it, and `Publisher.onboard()` calls it directly.
+
+    Returns {"bundle_name": <full bundle schema name>, "schemas": [...], "bundle": {...}}
+    — the bundle schema name is what `fangorn repo init -s <name>` needs."""
+    out_dir = out_dir or os.path.join(input_dir, "schemas")
+    os.makedirs(out_dir, exist_ok=True)
+    pat = (os.path.join(input_dir, "volume_*_*.json") if volume == 0
+           else os.path.join(input_dir, f"volume_{volume}_*.json"))
     files = sorted(glob.glob(pat))
     node_files = [f for f in files if not f.endswith("_edges.json")]
     edge_files = [f for f in files if f.endswith("_edges.json")]
@@ -252,7 +262,7 @@ def run():
         raise SystemExit(f"No node files matched {pat}")
 
     def schema_name(type_name: str) -> str:
-        return f"{args.prefix}.{type_name.lower()}.{args.version}"
+        return f"{prefix}.{type_name.lower()}.{version}"
 
     # ── Node schemas ────────────────────────────────────────────────────────
     # When scanning all volumes, several files can share a type (e.g. a places
@@ -263,7 +273,7 @@ def run():
     merged_identity: dict[str, dict] = {}
     counts: dict[str, int] = {}
     for path in node_files:
-        type_name, definition, identity, count = infer_schema(path, args.sample, args.all_strings)
+        type_name, definition, identity, count = infer_schema(path, sample, all_strings)
         merged.setdefault(type_name, {}).update(definition)
         counts[type_name] = counts.get(type_name, 0) + count
         # Union aliases across files sharing a type; first @id wins.
@@ -282,7 +292,7 @@ def run():
         if identity and identity.get("aliases"):
             entry["identity"] = identity
         schemas.append(entry)
-        out = os.path.join(args.out_dir, f"{name}.json")
+        out = os.path.join(out_dir, f"{name}.json")
         with open(out, "w", encoding="utf-8") as f:
             json.dump(entry, f, indent=2)
         id_note = ""
@@ -298,7 +308,7 @@ def run():
         print(f"\n🔗 Inferring bundle edges from {len(edge_files)} edges file(s)...")
         triples: Counter = Counter()
         for ef in edge_files:
-            triples.update(infer_bundle_edges(ef, args.edge_scan))
+            triples.update(infer_bundle_edges(ef, edge_scan))
         for (rel, ft, tt), n in sorted(triples.items(), key=lambda kv: -kv[1]):
             if ft not in type_to_schema or tt not in type_to_schema:
                 print(f"   ⚠️  edge {rel} {ft}→{tt}: endpoint type not among node schemas, skipping")
@@ -310,23 +320,33 @@ def run():
     else:
         print("   ⚠️  no edges file found — bundle will have nodes only")
 
-    bundle_name = f"{args.prefix}.{args.bundle_name}.{args.version}"
+    full_bundle_name = f"{prefix}.{bundle_name}.{version}"
     bundle = {
-        "name": bundle_name,
+        "name": full_bundle_name,
         "kind": "bundle",
         "bundle": {"nodes": type_to_schema, "edges": bundle_edges},
     }
-    with open(os.path.join(args.out_dir, f"{bundle_name}.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, f"{full_bundle_name}.json"), "w", encoding="utf-8") as f:
         json.dump(bundle, f, indent=2)
 
     # ── Consolidated manifest (registration order: node schemas, then bundle) ─
     consolidated = {"schemas": schemas, "bundle": bundle}
-    with open(os.path.join(args.out_dir, "fangorn_schemas.json"), "w", encoding="utf-8") as f:
+    with open(os.path.join(out_dir, "fangorn_schemas.json"), "w", encoding="utf-8") as f:
         json.dump(consolidated, f, indent=2)
 
-    print(f"\n📦 Wrote {len(schemas)} node schema(s) + bundle '{bundle_name}' "
-          f"({len(bundle_edges)} edge shapes) → {args.out_dir}/")
+    print(f"\n📦 Wrote {len(schemas)} node schema(s) + bundle '{full_bundle_name}' "
+          f"({len(bundle_edges)} edge shapes) → {out_dir}/")
     print("   Register with the Fangorn SDK in this order: node schemas first, then the bundle.")
+    return {"bundle_name": full_bundle_name, "schemas": schemas, "bundle": bundle}
+
+
+def run():
+    """CLI wrapper — parse argv and delegate to `generate_schemas`."""
+    args = parse_args()
+    generate_schemas(
+        input_dir=args.input_dir, volume=args.volume, out_dir=args.out_dir,
+        prefix=args.prefix, version=args.version, bundle_name=args.bundle_name,
+        sample=args.sample, edge_scan=args.edge_scan, all_strings=args.all_strings)
 
 
 if __name__ == "__main__":

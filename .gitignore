@@ -1,10 +1,10 @@
+.env
+.fangorn
 node_modules/
 **venv**
-**/db
+**/db**     
 **/qdrant_storage
-**/bundle**
 **/cuda-**
-.env
 **/__pycache/
 .claude
 **/__pycache__
@@ -12,3 +12,4 @@ node_modules/
 **/**stage_volumes/
 **/personal_notes/
 /cdn**
+/build

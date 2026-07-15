@@ -83,15 +83,20 @@ async function load(): Promise<Loaded> {
   const manifest = (await mres.json()) as Loaded['manifest'];
 
   const files = (manifest.shards ?? []).map((s) => s.file);
-  const points: ShardPoint[] = [];
+  // Delta shards re-deliver updated records under the same track_id, so dedupe
+  // last-wins (a later shard's row displaces the stale one). Tombstoned ids
+  // (delete propagation — shards are immutable) are dropped entirely.
+  const byId = new Map<string, ShardPoint>();
   for (const file of files) {
     const rows = await fetchShardRows(`${CDN_URL}/domains/${domain}/shards/${file}`);
     for (const row of rows) {
       const p = toPoint(row);
-      if (p) points.push(p);
+      if (p) byId.set(p.id, p);
     }
   }
-  return { manifest, points };
+  const tombstones = (manifest as { tombstones?: string[] }).tombstones ?? [];
+  for (const id of tombstones) byId.delete(id);
+  return { manifest, points: [...byId.values()] };
 }
 function loaded(): Promise<Loaded> {
   return (_loaded ??= load());

@@ -1,0 +1,14 @@
+{
+  "file": {
+    "root_type": "File",
+    "max_depth": 2,
+    "include": ["File"],
+    "content_fields": ["filename , text"]
+  },
+  "text": {
+    "root_type": "Text",
+    "max_depth": 0, 
+    "include": ["text"],
+    "content_fields": ["text", "body", "raw_content"]
+  }
+}

@@ -58,8 +58,9 @@ ROLE_SYNONYMS: dict[str, list[str]] = {
                   "file", "asset"],
     "relations": ["album", "albumname", "release", "releasegroup", "group",
                   "collection", "parent", "set", "series", "playlist"],
-    "text":      ["description", "comment", "bio", "notes", "body", "content",
-                  "abstract", "review", "summary", "message"],
+    "text":      ["text", "description", "comment", "bio", "notes", "body",
+                  "content", "abstract", "review", "summary", "message", "blurb",
+                  "overview"],
 }
 
 SINGULAR_ROLES = ["identity", "title", "subtitle", "temporal", "spatial", "media"]
@@ -309,3 +310,29 @@ def infer_roles(records: list[dict], fields_spec: dict[str, str] | None = None) 
     role_map["labels"] = labels
     role_map["fields"] = fields
     return role_map
+
+
+def role_map_applies(role_map: dict, records: list[dict]) -> bool:
+    """Does `role_map` actually describe `records`? Guards the embed path against a
+    stale role-map file left over from a DIFFERENT corpus. Applying a mismatched map
+    makes every record embed the same empty `"Title: . Tags:"` text, collapsing all
+    vectors to a single point — identical, undiscriminating search scores. When this
+    returns False the caller should re-infer over the records at hand.
+
+    `records` are flattened field dicts (field name -> value)."""
+    if not role_map:
+        return False
+    present: set = set()
+    for r in records[:200]:
+        if isinstance(r, dict):
+            present.update(r.keys())
+    assigned = [role_map.get("title"), role_map.get("subtitle")]
+    for k in ("tags", "text", "measures", "relations"):
+        assigned += (role_map.get(k) or [])
+    assigned = [a for a in assigned if a]
+    if not assigned:
+        return False
+    hits = sum(1 for a in assigned if a in present)
+    # A stale foreign map overlaps ~0; a matching map overlaps fully. Require a
+    # majority of assigned fields to actually be present.
+    return hits >= max(1, (len(assigned) + 1) // 2)

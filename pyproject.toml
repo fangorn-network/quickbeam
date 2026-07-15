@@ -35,6 +35,11 @@ dev   = ["pytest", "fastmcp", "eth-account"]
 [project.scripts]
 quickbeam = "quickbeam.cli:app"
 
+# Pluggable ingestion sources — quickbeam core registers NONE. Each source lives in an
+# external package that adds an entry to the `quickbeam.sources` group; `discover_sources()`
+# picks it up so `quickbeam data <name>` (and `quickbeam.Publisher`) work for it. See the
+# `quickbeam-publisher` example project for how a source package registers itself.
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["quickbeam*"]

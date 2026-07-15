@@ -1,0 +1,14 @@
+{
+  "name": "playground-git-service",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Thin HTTP wrapper over @fangorn-network/sdk for the git-native playground",
+  "scripts": {
+    "start": "node index.mjs",
+    "dev": "node --watch index.mjs"
+  },
+  "dependencies": {
+    "@fangorn-network/sdk": "file:../../../fangorn"
+  }
+}

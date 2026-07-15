@@ -31,7 +31,7 @@ def _fwd(name: str, extra: list[str]) -> None:
 
 @app.command(**_PASSTHROUGH)
 def build(ctx: typer.Context):
-    """Build embeddings from subgraph / IPFS data into Qdrant."""
+    """Build embeddings from an owner:namespace graph (`fangorn read`) into Qdrant."""
     import asyncio
     _fwd("quickbeam build", ctx.args)
     from quickbeam.embeddings import main
@@ -46,7 +46,7 @@ def serve(ctx: typer.Context):
     Everything BEFORE `--watch` configures the server; everything AFTER it is
     forwarded to `quickbeam watch`. Example:
 
-      quickbeam serve --x402-pay-to 0xRECV --watch --bundle fangorn=0xID --poll-interval 120
+      quickbeam serve --x402-pay-to 0xRECV --watch --source 0xOWNER:namespace --poll-interval 120
     """
     import sys, subprocess, atexit, signal
 
@@ -89,7 +89,7 @@ def mcp(ctx: typer.Context):
 
 @app.command(**_PASSTHROUGH)
 def watch(ctx: typer.Context):
-    """Live daemon: poll subgraph for new events and embed them automatically."""
+    """Live daemon: subscribe to owner:namespace commits (`fangorn subscribe`) and embed them."""
     import asyncio
     _fwd("quickbeam watch", ctx.args)
     from quickbeam.watcher import main
@@ -118,6 +118,14 @@ def cdn_append(ctx: typer.Context):
     _fwd("quickbeam cdn append", ctx.args)
     from quickbeam.cdn import append_main
     append_main()
+
+
+@cdn_app.command("edges", **_PASSTHROUGH)
+def cdn_edges(ctx: typer.Context):
+    """Install a domain's linkset (typed edges) into the CDN for graph traversal."""
+    _fwd("quickbeam cdn edges", ctx.args)
+    from quickbeam.cdn import edges_main
+    edges_main()
 
 
 @cdn_app.command("serve", **_PASSTHROUGH)
@@ -183,14 +191,6 @@ def places_fetch(ctx: typer.Context):
     main()
 
 
-@data_app.command(**_PASSTHROUGH)
-def placespg(ctx: typer.Context):
-    """Convert Postgres places_raw (Google Places) into a Fangorn graph."""
-    _fwd("quickbeam data placespg", ctx.args)
-    from quickbeam.pipelines.places_pg import run
-    run()
-
-
 @data_app.command("events-fetch", **_PASSTHROUGH)
 def events_fetch(ctx: typer.Context):
     """Scrape Eventbrite organizers / Tribe calendars into Postgres events_raw."""
@@ -200,27 +200,11 @@ def events_fetch(ctx: typer.Context):
 
 
 @data_app.command(**_PASSTHROUGH)
-def eventspg(ctx: typer.Context):
-    """Convert events_raw (Eventbrite/Tribe) into a Fangorn graph, merged with places."""
-    _fwd("quickbeam data eventspg", ctx.args)
-    from quickbeam.pipelines.events_pg import run
-    run()
-
-
-@data_app.command(**_PASSTHROUGH)
 def prebake(ctx: typer.Context):
     """Embed local volume node files straight into Qdrant (offline build)."""
     _fwd("quickbeam data prebake", ctx.args)
     from quickbeam.pipelines.prebake import run
     run()
-
-
-@data_app.command(**_PASSTHROUGH)
-def osm(ctx: typer.Context):
-    """Fetch recent OSM changesets for a bounding box."""
-    _fwd("quickbeam data osm", ctx.args)
-    from quickbeam.pipelines.osm import main
-    main()
 
 
 @data_app.command(**_PASSTHROUGH)
@@ -237,6 +221,31 @@ def keylink(ctx: typer.Context):
     _fwd("quickbeam data keylink", ctx.args)
     from quickbeam.pipelines.linkgen import run_keylink
     run_keylink()
+
+
+# ── Pluggable ingestion sources — one `data <verb>` command per discovered Source.
+# quickbeam core registers none: `discover_sources()` returns only the sources contributed
+# by installed packages via `quickbeam.sources` entry points, so a scraper package gets its
+# own `data <verb>` command (with the full watch/publish loop) with zero changes here. With
+# no source package installed, `data` simply exposes the built-in extract/schemagen verbs.
+# Each command lazily loads its Source class and hands off to the shared harness `run_source`.
+def _register_source_commands() -> None:
+    from quickbeam.ingest.scrapers import discover_sources
+    from quickbeam.ingest.scrapers import run_source
+
+    def _make(verb: str, loader):
+        def _cmd(ctx: typer.Context):
+            _fwd(f"quickbeam data {verb}", ctx.args)
+            run_source(loader()())
+        _cmd.__doc__ = (f"Ingest the '{verb}' source into staged node/edge volumes "
+                        f"(harness: --watch/--publish/--dry-run). See `data {verb} --help`.")
+        return _cmd
+
+    for verb, loader in discover_sources().items():
+        data_app.command(verb, **_PASSTHROUGH)(_make(verb, loader))
+
+
+_register_source_commands()
 
 
 if __name__ == "__main__":
