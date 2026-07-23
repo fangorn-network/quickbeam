@@ -1,0 +1,42 @@
+{
+  "name": "alpaca",
+  "description": "",
+  "count": 116,
+  "dim": 256,
+  "model": "nomic-ai/nomic-embed-text-v1.5",
+  "distance": "Cosine",
+  "filter": {},
+  "created_at": 1784302650,
+  "role_map": {
+    "identity": null,
+    "title": null,
+    "subtitle": null,
+    "temporal": null,
+    "spatial": null,
+    "media": null,
+    "tags": [],
+    "measures": [],
+    "relations": [],
+    "text": [],
+    "labels": {},
+    "fields": []
+  },
+  "entity_types": [
+    {
+      "type": "Asset",
+      "count": 100
+    },
+    {
+      "type": "NewsItem",
+      "count": 16
+    }
+  ],
+  "shards": [
+    {
+      "file": "shard-0000-e05969a7781a.ndjson.gz",
+      "count": 116,
+      "bytes": 302069,
+      "sha256": "e05969a7781ae6702d1d52968939d735e1d2fd30261d56784b05899ca864630b"
+    }
+  ]
+}

@@ -20,11 +20,84 @@ def _transfer(sym, txHash, **kw):
             "logIndex": kw.pop("logIndex", 0), "value": kw.pop("value", 1.0), **kw}
 
 
-def test_asset_node_id_is_stable_per_symbol():
-    # An asset is a live quote: the same symbol collapses to one id (upsert), so two
-    # snapshots of NVDA overwrite rather than duplicate.
+def test_asset_node_id_is_stable_per_contract():
+    # An asset is a live quote: the same CONTRACT collapses to one id (upsert), so two
+    # snapshots of it overwrite rather than duplicate.
+    assert node_id(_asset("NVDA", address="0xAbC")) == "rh:asset:0xabc"
+    assert (node_id(_asset("NVDA", address="0xAbC", price=200))
+            == node_id(_asset("NVDA", address="0xabc", price=999)))
+    # No address (a hand-built/legacy event) still degrades to the symbol.
     assert node_id(_asset("NVDA")) == "rh:asset:NVDA"
-    assert node_id(_asset("NVDA", price=200)) == node_id(_asset("NVDA", price=999))
+
+
+def test_asset_node_id_separates_two_contracts_sharing_a_ticker():
+    # The real bug this keying fixes: Robinhood Chain lists TWO "NVIDIA • Robinhood Token"
+    # ERC-20s — the real $206.50 wrapper and a 1B-supply squat with no exchange rate.
+    # Symbol keying dropped one of them (last-write-wins by page order), so the chain's
+    # most-held token had no Asset record. Both must survive.
+    real = _asset("NVDA", address="0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+                  price=206.5, totalSupply=8467.481, holders=11440)
+    squat = _asset("NVDA", address="0x465834D5BA3af2169E49B70A139448e59e3CA492",
+                   totalSupply=1_000_000_000, holders=156)
+    assert node_id(real) != node_id(squat)
+    nodes, _ = build_graph([real, squat])
+    assert len(nodes["Asset"]) == 2
+    prices = {a["fields"].get("price") for a in nodes["Asset"]}
+    assert prices == {206.5, None}          # the priced wrapper is no longer overwritten
+
+
+def test_ticker_collision_flags_canonical_and_squat():
+    # When two contracts share a ticker, the most-held (tie: priced) is canonical and the
+    # rest are squats — so a symbol-grouped aggregate can exclude the impostor.
+    real = _asset("NVDA", address="0xd0601CE157Db5bdC3162BbaC2a2C8aF5320D9EEC",
+                  price=206.5, holders=11440)
+    squat = _asset("NVDA", address="0x465834D5BA3af2169E49B70A139448e59e3CA492",
+                   holders=156)
+    nodes, _ = build_graph([real, squat])
+    by_addr = {a["fields"]["address"].lower(): a["fields"] for a in nodes["Asset"]}
+    canon = by_addr["0xd0601ce157db5bdc3162bbac2a2c8af5320d9eec"]
+    imp = by_addr["0x465834d5ba3af2169e49b70a139448e59e3ca492"]
+    assert canon["isCanonical"] is True and "isSquat" not in canon
+    assert imp["isSquat"] is True and imp["isCanonical"] is False
+
+
+def test_lone_contract_gets_no_squat_verdict():
+    # A ticker with a single contract is just the token — no canonical/squat verdict.
+    nodes, _ = build_graph([_asset("TSLA", address="0xTes1a", price=250.0, holders=99)])
+    f = nodes["Asset"][0]["fields"]
+    assert "isCanonical" not in f and "isSquat" not in f
+
+
+def test_asset_marks_unpriced_when_no_exchange_rate():
+    # An unpriced token is an explicit facet, not a silent USD drop.
+    priced = shape_fields(_asset("SGOV", address="0xa", price=100.0))
+    unpriced = shape_fields(_asset("BE", address="0xb", holders=6353))
+    assert priced["unpriced"] is False
+    assert unpriced["unpriced"] is True
+
+
+def test_known_plumbing_address_gets_entity_role(monkeypatch):
+    # A registered plumbing address is pre-labeled with entityRole so consumers filter on
+    # it instead of re-deriving conduit ratios by hand.
+    import quickbeam_robinhood.source as src
+    monkeypatch.setitem(src._KNOWN_ROLES, "0xc0ffee", "conduit")
+    nodes, _ = build_graph([_transfer("SLV", "0xf00d", address="0xslv",
+                                      fromAddr="0xC0FFEE", toAddr="0xdead", value=1.0)])
+    conduit = next(w["fields"] for w in nodes["Wallet"]
+                   if w["fields"]["address"] == "0xC0FFEE")
+    assert conduit["entityRole"] == "conduit" and conduit["signal"] == "conduit"
+
+
+def test_transfer_carries_contract_and_links_to_the_right_asset():
+    # A Transfer must name its contract, so flow joins back to ONE asset even when two
+    # contracts share a ticker.
+    t = _transfer("NVDA", "0xfeed", address="0xd0601CE1", value=2.0,
+                  fromAddr="0xA", toAddr="0xB")
+    f = shape_fields(t)
+    assert f["address"] == "0xd0601CE1"
+    _, edges = build_graph([_asset("NVDA", address="0xd0601CE1", price=206.5), t])
+    assert ("hasTransfer", "rh:asset:0xd0601ce1", "rh:xfer:0xfeed:0") in {
+        (e["rel"], e["from"], e["to"]) for e in edges}
 
 
 def test_transfer_node_id_is_unique_per_event():
@@ -89,17 +162,26 @@ def test_asset_fields_omit_read_time_block_but_transfers_keep_it():
     assert tf["blockNumber"] == 999 and tf["timestamp"] == 123
 
 
-def test_asset_carries_observed_and_activity_time_not_as_event_time():
-    # The honest time model: an Asset gets `observedAt` (read-time, as staleness
-    # metadata) and — with flow — `lastActivityAt`/`lastActivityBlock` (REAL chain
-    # time of its latest transfer). Neither poses as the event `timestamp`, and none
-    # leak into the embedded blurb (which stays semantic, not read-time noise).
+def test_asset_carries_chain_activity_time_but_never_read_time():
+    # The honest time model: an Asset's freshness anchor is `lastActivityAt`/
+    # `lastActivityBlock` — the REAL chain time of its latest transfer. Neither poses as
+    # the event `timestamp`, and neither leaks into the embedded blurb.
     af = shape_fields(_asset("NVDA", observedAt=1_700_000_000, lastActivityAt=1_699_000_000,
                              lastActivityBlock=555, recentTransfers=3))
-    assert af["observedAt"] == 1_700_000_000 and af["lastActivityAt"] == 1_699_000_000
-    assert af["lastActivityBlock"] == 555
+    assert af["lastActivityAt"] == 1_699_000_000 and af["lastActivityBlock"] == 555
     assert "timestamp" not in af and "blockNumber" not in af  # not event time
     assert "1700000000" not in af["text"] and "1699000000" not in af["text"]
+
+
+def test_unchanged_asset_reshapes_identically_so_its_cid_is_stable():
+    # observedAt (read clock) must NOT reach the record: content addressing means an
+    # unchanged asset has to re-shape byte-identically, or every cycle mints a fresh CID
+    # and the embed checkpoint re-embeds it. That defect produced 11 byte-identical
+    # snapshots of one ticker differing only in observedAt.
+    a = _asset("NVDA", address="0xabc", price=206.5, observedAt=1_700_000_000)
+    b = _asset("NVDA", address="0xabc", price=206.5, observedAt=1_700_009_999)
+    assert "observedAt" not in shape_fields(a)
+    assert shape_fields(a) == shape_fields(b)
 
 
 def test_asset_blurb_describes_trust_not_raw_counts():
@@ -163,6 +245,45 @@ def test_flow_metrics_reads_organic_flow_as_broad():
     assert m["dataQuality"] == "organic"
 
 
+def test_flow_metrics_gates_one_to_many_spray_as_suspect():
+    # THE REGRESSION THIS LOCKS: one wallet spraying 100 receivers is maximally
+    # concentrated (senderHHI == 1.0) but definitionally NON-circular, so the weighted
+    # blend scored it ~0.31 and called it "organic" — the chain's biggest holder bases
+    # were dust airdrops reading as the only organic flow in the corpus.
+    from quickbeam_robinhood.source import _flow_metrics
+    xf = [{"value": 0.00002, "from": "0xSPRAYER", "to": f"0x{i:040x}", "ts": 1000 + i}
+          for i in range(100)]
+    m = _flow_metrics(xf)
+    assert m["senderHHI"] == 1.0          # one wallet is the entire send side
+    assert m["circularityRatio"] == 0.0   # a spray never loops — this must not absolve it
+    assert m["flowShape"] == "one-to-many-spray"
+    assert m["manipulationScore"] >= 0.66 and m["dataQuality"] == "suspect"
+
+
+def test_spray_gate_does_not_fire_on_genuine_broad_flow():
+    # The gate keys on SEND-side concentration, so many-senders-to-one (an organic
+    # aggregator) and ordinary broad flow must stay untouched.
+    from quickbeam_robinhood.source import _flow_metrics
+    xf = [{"value": 10.0 + i, "from": f"0x{i:04x}", "to": "0xHUB", "ts": 1000 + i * 97}
+          for i in range(20)]
+    m = _flow_metrics(xf)
+    assert "flowShape" not in m and m["dataQuality"] != "suspect"
+
+
+def test_split_dust_separates_holder_writes_from_real_flow():
+    # Dust is a holder-count write, not flow. At $200/token the $0.01 line sits at
+    # 0.00005 tokens: the spray falls below it, the real transfers stay.
+    from quickbeam_robinhood.source import _split_dust
+    sized = [(5.0, {"id": "real1"}), (0.0001, {"id": "real2"}),
+             (0.00002, {"id": "dust"}), (0.0, {"id": "zero"})]
+    real, dust = _split_dust(sized, px=200.0)
+    assert [r[1]["id"] for r in real] == ["real1", "real2"]
+    assert [d[1]["id"] for d in dust] == ["dust", "zero"]
+    # Unpriced token: no USD line exists, so only true zero-value transfers can be cut.
+    real, dust = _split_dust(sized, px=None)
+    assert [d[1]["id"] for d in dust] == ["zero"]
+
+
 def test_shape_fields_indexes_flow_metrics_but_keeps_them_out_of_text():
     f = shape_fields(_asset("NVDA", price=100, dataQuality="suspect",
                             circularityRatio=0.95, senderHHI=0.8, manipulationScore=0.88,
@@ -179,13 +300,31 @@ def test_shape_fields_indexes_flow_metrics_but_keeps_them_out_of_text():
 
 def test_holder_metrics_flags_dust_dominated_token():
     # A token with 4,203 "holders" but only a handful holding real balance: dustHolderShare
-    # → ~1.0, and the whale grip shows in topHolderShare.
+    # → ~1.0, and the whale grip shows in topHolderShare. We reached the dust line here, so
+    # the ratio is a real measurement.
     from quickbeam_robinhood.source import _holder_metrics
-    m = _holder_metrics([500.0, 300.0, 150.0, 50.0], holders_count=4203, hit_threshold_wall=True)
+    m = _holder_metrics([500.0, 300.0, 150.0, 50.0], holders_count=4203,
+                        hit_threshold_wall=True, total_supply=2000.0)
     assert m["activeHolders"] == 4
     assert m["dustHolderShare"] > 0.99
+    assert m["seenSupplyShare"] == 0.5           # the 4 real holders hold 1000 of 2000 supply
     assert m["topHolderShare"] == 0.5            # 500 / 1000
     assert "activeHoldersIsLowerBound" not in m  # we hit the dust wall, count is exact
+
+
+def test_holder_metrics_suppresses_dust_share_when_only_the_page_cap_was_hit():
+    # THE FABRICATION THIS PREVENTS: stopping on the page cap makes 1 - cap/holders_count
+    # a measure of OUR CAP, not the token — and it looks worst for the most widely-held
+    # tokens. Live, NVDA is still above the $1 line 1,500 holders deep (those 1,500 hold
+    # 99.1% of supply) yet a 300-deep capped read "showed" 97.4% dust. Emit nothing rather
+    # than an inverted statistic.
+    from quickbeam_robinhood.source import _holder_metrics
+    capped = _holder_metrics([1.0] * 300, holders_count=11740,
+                             hit_threshold_wall=False, total_supply=8467.481)
+    assert capped["activeHolders"] == 300
+    assert capped["activeHoldersIsLowerBound"] is True
+    assert "dustHolderShare" not in capped        # unmeasured ⇒ unreported
+    assert capped["seenSupplyShare"] > 0          # cap-safe, still honest
 
 
 def test_transfer_blurb_states_usd_and_real_block_time():

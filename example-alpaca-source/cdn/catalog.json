@@ -1,0 +1,24 @@
+{
+  "generated_at": 1784302650,
+  "embedding_model": "nomic-ai/nomic-embed-text-v1.5",
+  "collection": "alpaca",
+  "domains": [
+    {
+      "name": "alpaca",
+      "description": "",
+      "count": 116,
+      "dim": 256,
+      "bytes": 302069,
+      "shard_count": 1,
+      "entity_types": [
+        "Asset",
+        "NewsItem"
+      ],
+      "manifest": "alpaca/manifest.json",
+      "edge_count": 16,
+      "relations": [
+        "hasNews"
+      ]
+    }
+  ]
+}

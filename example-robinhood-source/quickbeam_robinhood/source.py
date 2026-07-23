@@ -169,6 +169,38 @@ def _fmt_amt(v):
 # These go into indexed payload (a `where` clause), NOT the embedding prose. What DOES go
 # in the prose is a robust description of TRUST (concentrated/circular vs broad/organic).
 # ---------------------------------------------------------------------------
+# A transfer worth less than this in USD moves no economic value — it exists to write a
+# holder entry. See _split_dust for why filtering it is load-bearing, not cosmetic.
+_DUST_USD = 0.01
+
+# One-to-many spray gate (see _flow_metrics): when one wallet is effectively the entire
+# send side and fans out to at least this many receivers, the flow cannot be called
+# organic no matter how one-way (non-circular) it looks.
+_SPRAY_HHI, _SPRAY_FANOUT, _SPRAY_SCORE = 0.99, 10, 0.80
+
+
+def _split_dust(sized: list[tuple[float, dict]], px: float | None
+                ) -> tuple[list[tuple[float, dict]], list[tuple[float, dict]]]:
+    """Split (tokenAmount, rawItem) pairs into (real, dust) at the ~$0.01 line. PURE.
+
+    WHY this is load-bearing: Blockscout returns transfers NEWEST-FIRST, so a single
+    airdrop that sprays 100 dust transfers SATURATES the read window and pushes a token's
+    real trading out of it entirely. Not hypothetical — AAPL's window read 1 sender → 100
+    receivers totalling 0.0027 tokens ($0.91), while its accumulated ledger held $22,445.78
+    of real flow across 55 senders and 201 receivers. Measured on the raw window, the
+    chain's most-held tokens report as dormant. Dust is not flow; it is a holder-count
+    write. Filtering it here (and paging PAST it) is what makes recentVolume/circularity
+    describe trading rather than describing the spray.
+
+    An unpriced token has no USD line, so there we can only drop true zero-value transfers."""
+    real: list[tuple[float, dict]] = []
+    dust: list[tuple[float, dict]] = []
+    for v, it in sized:
+        keep = (v * px) >= _DUST_USD if px else v > 0
+        (real if keep else dust).append((v, it))
+    return real, dust
+
+
 def _flow_metrics(transfers: list[dict]) -> dict:
     """Robust flow signals from a window of transfers. Each transfer is
     {"value": <token units float>, "from": <addr|None>, "to": <addr|None>, "ts": <epoch|None>}.
@@ -248,6 +280,19 @@ def _flow_metrics(transfers: list[dict]) -> dict:
         wsum = sum(w for w, _ in terms)
         m["manipulationScore"] = round(sum(w * v for w, v in terms) / wsum, 4)
 
+    # ONE-TO-MANY SPRAY GATE. A single wallet fanning out to many receivers is maximally
+    # concentrated (senderHHI → 1.0) yet DEFINITIONALLY non-circular — so the weighted
+    # blend above scored a 100-address dust airdrop at ~0.31 and called it "organic":
+    # 0.40×0.0 circularity drowned 0.30×1.0 HHI. Low circularity is not evidence of health
+    # when one wallet IS the entire send side, so concentration has to GATE the verdict
+    # rather than merely contribute a term to it. `flowShape` names the pattern so a spray
+    # is legible downstream, not just penalized.
+    if (m.get("manipulationScore") is not None
+            and m.get("senderHHI", 0.0) >= _SPRAY_HHI
+            and m["uniqueReceivers"] >= _SPRAY_FANOUT):
+        m["flowShape"] = "one-to-many-spray"
+        m["manipulationScore"] = max(m["manipulationScore"], _SPRAY_SCORE)
+
     # Coarse, filterable trust facet derived from the score + sample size. Deliberately
     # conservative: a tiny sample can't be called organic, only "sparse".
     score = m.get("manipulationScore")
@@ -263,26 +308,38 @@ def _flow_metrics(transfers: list[dict]) -> dict:
 
 
 def _holder_metrics(active_balances: list[float], holders_count: int | None,
-                    hit_threshold_wall: bool) -> dict:
+                    hit_threshold_wall: bool, total_supply: float | None = None) -> dict:
     """Real-ownership shape from the NON-DUST holders (balances already filtered above a
     dust threshold and sorted descending). `holders_count` is Blockscout's raw holder
     total (dust included). PURE. Returns:
-      activeHolders    — count of holders above the dust threshold that we saw
-      dustHolderShare  — 1 - activeHolders/holders_count (the 4,203-"holder" tokens that
-                         are mostly dust recipients light up near 1.0)
-      topHolderShare   — largest active holder's share of the active balance (whale grip)
-    `hit_threshold_wall` True means we stopped at the dust boundary, so `activeHolders` is
-    the true count; False means we stopped on a page cap and it's a lower bound (flagged)."""
+      activeHolders    — non-dust holders we SAW; a LOWER BOUND when we stopped on the
+                         page cap rather than at the dust line (flagged).
+      dustHolderShare  — 1 - activeHolders/holders_count. ONLY emitted when we actually
+                         reached the dust line. See the warning below.
+      topHolderShare   — largest holder's share of the balance we saw (whale grip).
+      seenSupplyShare  — share of totalSupply held by the holders we saw.
+
+    WHY dustHolderShare IS GATED ON `hit_threshold_wall`: when the read stops on the page
+    cap, `active` is just the cap, so 1 - cap/holders_count measures OUR CAP, not the
+    token — and it looks damning for exactly the tokens that are most widely held (big
+    holders_count ⇒ ratio → 1.0). Measured live, NVDA is still above the $1 line 1,500
+    holders deep (smallest seen $14.45; those 1,500 hold 99.1% of supply), yet the capped
+    read reported "97.4% dust". That is not a weak number, it is an inverted one. Emitting
+    it only when the dust line was truly reached keeps a fabricated statistic out of the
+    corpus; `seenSupplyShare` is the cap-SAFE concentration read that survives truncation,
+    since totalSupply is known independently of how deep we paged."""
     m: dict = {}
     active = len(active_balances)
     m["activeHolders"] = active
     if not hit_threshold_wall:
         m["activeHoldersIsLowerBound"] = True
-    if holders_count and holders_count > 0:
+    if holders_count and holders_count > 0 and hit_threshold_wall:
         m["dustHolderShare"] = round(max(0.0, 1.0 - active / holders_count), 4)
     tot = sum(active_balances)
     if tot > 0:
         m["topHolderShare"] = round(max(active_balances) / tot, 4)
+        if total_supply and total_supply > 0:
+            m["seenSupplyShare"] = round(min(1.0, tot / total_supply), 4)
     return m
 
 
@@ -470,12 +527,30 @@ def _signal(ev: dict) -> str:
     return t or "event"
 
 
+def _asset_id(ev: dict) -> str:
+    """Asset node id — keyed on the CONTRACT ADDRESS, not the symbol.
+
+    Tickers are NOT unique on-chain. Blockscout lists two "NVIDIA • Robinhood Token"
+    ERC-20s: the real wrapper (0xd0601CE1…, $206.50, 11,440 holders — the most-held
+    token on the chain) and a 1B-supply squat with no exchange_rate (0x465834D5…, 156
+    holders). Keying Assets on `symbol` made one silently overwrite the other, and since
+    asset events carry no blockNumber the "latest snapshot wins" tiebreak in build_graph
+    was `0 >= 0` — i.e. last-write-wins by Blockscout's page order. The squat won, so the
+    chain's most-held token had no Asset record at all while its transfers still flowed
+    into the corpus (an invisible bimodal split). Address keying keeps BOTH: the squat
+    stays visible and filterable instead of impersonating the real wrapper.
+
+    Falls back to the symbol only for events that carry no address."""
+    addr = ev.get("address")
+    return f"rh:asset:{addr.lower()}" if addr else f"rh:asset:{ev.get('symbol', '?')}"
+
+
 def node_id(ev: dict) -> str:
-    """Stable node id. Asset snapshots collapse to one id per symbol (a live quote
+    """Stable node id. Asset snapshots collapse to one id per CONTRACT (a live quote
     that OVERWRITES); discrete events get a unique id so each is its own record."""
     t, sym = ev.get("type"), ev.get("symbol", "?")
     if t == "asset":
-        return f"rh:asset:{sym}"
+        return _asset_id(ev)
     if t == "corporate_action":
         return f"rh:ca:{sym}:{ev.get('exDate', '?')}:{ev.get('actionType', '?')}"
     if t == "oracle_update":
@@ -507,27 +582,37 @@ def shape_fields(ev: dict) -> dict:
     for k in ("price", "dayChangePct", "marketCap", "oldPrice", "newPrice",
               "oldDepth", "newDepth", "sentiment", "holders", "totalSupply",
               "value", "usdValue", "recentVolume", "recentVolumeUsd",
-              "recentTransfers", "lastActivityBlock", "lastActivityAt", "observedAt",
+              "recentTransfers", "lastActivityBlock", "lastActivityAt",
               # ROBUST FLOW METRICS — indexed as filterable measures (a `where` clause),
               # deliberately NOT folded into the embedded blurb: numbers belong in a
               # filter, trust belongs in the prose. See _flow_metrics / verbalize.
               "netVolume", "netVolumeUsd", "circularityRatio", "senderHHI",
               "uniqueSenders", "uniqueReceivers", "distinctCounterparties",
               "amountQuantization", "interArrivalCV", "manipulationScore", "sampleSize",
+              "dustTransferShare",
               # HOLDER SHAPE (with --with-holders).
-              "activeHolders", "dustHolderShare", "topHolderShare"):
+              "activeHolders", "dustHolderShare", "topHolderShare", "seenSupplyShare"):
         if ev.get(k) is not None:
             fields[k] = _num(ev[k])
-    for k in ("observedAt", "lastActivityAt", "lastActivityBlock", "recentTransfers",
+    for k in ("lastActivityAt", "lastActivityBlock", "recentTransfers",
               "uniqueSenders", "uniqueReceivers", "distinctCounterparties", "sampleSize",
               "activeHolders"):
         if k in fields:                            # counts/epochs read cleaner as ints
             fields[k] = int(fields[k])
-    for k in ("dataQuality",):                     # coarse string trust facet
+    for k in ("dataQuality", "flowShape"):         # coarse string trust facets
         if ev.get(k) is not None:
             fields[k] = ev[k]
     if ev.get("activeHoldersIsLowerBound"):
         fields["activeHoldersIsLowerBound"] = True
+    # PRICE COVERAGE — an explicit facet so unpriced tokens (no Blockscout exchange_rate:
+    # BE, ROBIN, the NVDA squat…) stop being SILENTLY dropped by every USD-based filter.
+    # Their whole holder base has Not-Computable USD flow; `unpriced=true` makes that a
+    # queryable state instead of an absence. Booleanized so `unpriced=false` is indexed too.
+    if ev.get("type") == "asset":
+        fields["unpriced"] = ev.get("price") is None
+    for k in ("isCanonical", "isSquat"):   # set later by build_graph on ticker collisions
+        if ev.get(k) is not None:
+            fields[k] = bool(ev[k])
     if ev.get("address"):
         fields["address"] = ev["address"]         # on-chain token contract
     for k in ("fromAddr", "toAddr", "txHash"):     # transfer provenance
@@ -537,10 +622,16 @@ def shape_fields(ev: dict) -> dict:
     # time (blockNumber + block timestamp), so only they get `blockNumber`/`timestamp`
     # to SEQUENCE flow (holding periods, turnover). An Asset is a LIVE quote with no
     # event time of its own — stamping it with read-time wall-clock would make every
-    # quote read as "happened now". Instead an Asset carries `observedAt` (WHEN we read
-    # it — indexed as staleness metadata, NOT an event time, and NOT in the blurb) and,
-    # with flow, `lastActivityAt`/`lastActivityBlock` — the real chain time of its most
-    # recent transfer, a true freshness/liveness anchor. All handled via the loop above.
+    # quote read as "happened now". Its freshness anchor is `lastActivityAt`/
+    # `lastActivityBlock`: the real CHAIN time of its most recent transfer.
+    #
+    # `observedAt` (our read clock) is deliberately NOT indexed here, though the raw event
+    # still carries it for freshness_report — exactly like `observedHead`. Reason: content
+    # addressing. An unchanged asset must re-shape to identical content so it mints the
+    # same CID and the embed checkpoint's processed_track_ids skips it. Stamping read-time
+    # into the record defeated that — every cycle minted 98 fresh CIDs even when nothing
+    # moved, and one ticker accumulated 11 byte-identical snapshots differing ONLY in
+    # observedAt. Read-time belongs in the cycle's freshness report, not in the record.
     if ev.get("type") != "asset":
         blk = _num(ev.get("blockNumber"))
         ts = _num(ev.get("blockTimestamp"))
@@ -563,25 +654,64 @@ def shape_fields(ev: dict) -> dict:
 # is its own node, linked from its Asset by a typed edge; transfers additionally
 # link to first-class Wallet nodes for their sender/receiver.
 # ---------------------------------------------------------------------------
+# KNOWN PLUMBING ADDRESSES — a maintained address→role registry so synthetic-volume
+# infrastructure (the mint source, stable relay/conduit hops) is labeled ONCE, here, and
+# every downstream consumer can filter on `entityRole` instead of re-deriving pass-through
+# ratios by hand. Keyed by LOWERCASE address; roles: mint / conduit / hub / sink. The
+# zero address is classified generically in _ensure_wallet, so it needs no entry. Add named
+# relays as flow audits identify them — a report's conduit list drops straight in here.
+# (REPORT-2026-07-17 named a 0xcfAEce…→0x1A18a8… relay chain; add their full addresses once
+# resolved — the report only carried truncated prefixes.)
+_KNOWN_ROLES: dict[str, str] = {}
+
+
+def _flag_ticker_squats(asset_fields: list[dict]) -> None:
+    """Mark isCanonical / isSquat IN PLACE across a batch's Asset fields. Lives here (not
+    shape_fields) because the verdict is cross-contract — it needs every same-symbol asset
+    in hand. Tickers aren't unique on-chain (two NVDA contracts — see _asset_id); when >1
+    share a symbol the canonical wrapper is the most-held (tie-break: the one that has a
+    price) and the rest are squats. Both stay as records; the flags just make the split
+    filterable instead of one silently shadowing the other in every symbol-grouped aggregate.
+    A lone contract gets no verdict — it is simply the token."""
+    groups: dict[str, list[dict]] = {}
+    for f in asset_fields:
+        groups.setdefault(f.get("symbol"), []).append(f)
+    for sym, group in groups.items():
+        if sym is None or len(group) < 2:
+            continue
+        winner = max(group, key=lambda f: (f.get("holders") or 0, f.get("price") is not None))
+        for f in group:
+            f["isCanonical"] = f is winner
+            if f is not winner:
+                f["isSquat"] = True
+
+
 def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
     """Return ({entityType: [{"name", "fields"}]}, [edge...]). PURE — no I/O, so a
     unit test is: hand-build events, call it, assert on the nodes/edges."""
-    assets: dict[str, dict] = {}          # symbol -> Asset node (latest snapshot)
-    asset_block: dict[str, int] = {}      # symbol -> block of the kept snapshot
+    assets: dict[str, dict] = {}          # asset id (per contract) -> Asset node
+    asset_block: dict[str, int] = {}      # asset id -> block of the kept snapshot
     others: dict[str, list[dict]] = {}    # entityType -> node list
     wallets: dict[str, dict] = {}         # id -> Wallet node (deduped by address)
     edges: list[dict] = []
     seen_nodes: set[str] = set()
 
-    def _ensure_asset(ev: dict) -> None:
+    def _ensure_asset(ev: dict) -> str | None:
+        """Synthesize a minimal Asset for a contract seen only through events, so its
+        edge has a valid source. Returns the asset id to hang that edge off."""
         sym = ev.get("symbol")
-        if sym and sym not in assets:
-            assets[sym] = {"name": f"rh:asset:{sym}", "fields": {
+        if not sym:
+            return None
+        aid = _asset_id(ev)
+        if aid not in assets:
+            assets[aid] = {"name": aid, "fields": {
                 "symbol": sym, "name": ev.get("name") or sym,
                 "sector": ev.get("sector") or "equity", "entityType": "Asset",
                 "text": f"{ev.get('name') or sym} ({sym}) — tokenized "
                         f"{ev.get('sector') or 'equity'} stock.",
+                **({"address": ev["address"]} if ev.get("address") else {}),
             }}
+        return aid
 
     def _ensure_wallet(addr: str | None) -> str | None:
         """Promote a bare from/to address string into a first-class Wallet node. The
@@ -590,42 +720,53 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
         to its wallets, `Wallet → Transfer → Asset` is walkable via hasTransfer."""
         if not addr:
             return None
-        wid = f"rh:wallet:{addr.lower()}"
+        al = addr.lower()
+        wid = f"rh:wallet:{al}"
         if wid not in wallets:
             try:
                 is_mint = int(addr, 16) == 0        # 0x000…0 = ERC-20 mint/burn sentinel
             except ValueError:
                 is_mint = False
-            wallets[wid] = {"name": wid, "fields": {
+            # entityRole from the maintained registry (or the generic mint sentinel) so
+            # known plumbing is pre-labeled server-side — consumers filter on it instead of
+            # re-deriving conduit/pass-through ratios per report. Absent for ordinary wallets.
+            role = _KNOWN_ROLES.get(al) or ("mint" if is_mint else None)
+            fields = {
                 "entityType": "Wallet",
                 "address":    addr,                 # checksummed, for display
-                "signal":     "mint" if is_mint else "wallet",
+                "signal":     role or "wallet",
                 "text":       (f"Mint/burn address {addr} (ERC-20 zero address)."
-                               if is_mint else f"On-chain wallet {addr}."),
-            }}
+                               if is_mint else
+                               f"On-chain wallet {addr}"
+                               + (f" — known {role}." if role else ".")),
+            }
+            if role:
+                fields["entityRole"] = role
+            wallets[wid] = {"name": wid, "fields": fields}
         return wid
 
     for ev in events:
-        sym = ev.get("symbol")
         blk = int(ev.get("blockNumber", 0) or 0)
         if ev.get("type") == "asset":
-            # Latest snapshot per symbol wins (a live quote overwrites).
-            if sym not in assets or blk >= asset_block.get(sym, -1):
-                assets[sym] = {"name": node_id(ev), "fields": shape_fields(ev)}
-                asset_block[sym] = blk
+            # Latest snapshot per CONTRACT wins (a live quote overwrites). Two contracts
+            # sharing a ticker no longer collide — see _asset_id.
+            aid = _asset_id(ev)
+            if aid not in assets or blk >= asset_block.get(aid, -1):
+                assets[aid] = {"name": aid, "fields": shape_fields(ev)}
+                asset_block[aid] = blk
             continue
 
         spec = _EVENT_SPEC.get(ev.get("type"))
         if not spec:
             continue
         entity, rel = spec
-        _ensure_asset(ev)
+        aid = _ensure_asset(ev)
         nid = node_id(ev)
         if nid not in seen_nodes:
             seen_nodes.add(nid)
             others.setdefault(entity, []).append({"name": nid, "fields": shape_fields(ev)})
-        if sym:
-            edges.append({"rel": rel, "from": f"rh:asset:{sym}", "to": nid,
+        if aid:
+            edges.append({"rel": rel, "from": aid, "to": nid,
                           "fromType": "Asset", "toType": entity})
         # Wallet endpoints: a Transfer points at its sender/receiver. Only transfers
         # carry from/to addresses.
@@ -637,6 +778,7 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
             edges.append({"rel": "receivedBy", "from": nid, "to": to,
                           "fromType": entity, "toType": "Wallet"})
 
+    _flag_ticker_squats([a["fields"] for a in assets.values()])
     nodes = {"Asset": list(assets.values())}
     nodes.update(others)
     if wallets:
@@ -865,14 +1007,32 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
                     break
                 prev_hcursor = npp
                 hparams = _enc_cursor(npp)
-            asset_ev.update(_holder_metrics(active_bal, asset_ev.get("holders"), hit_wall))
+            asset_ev.update(_holder_metrics(active_bal, asset_ev.get("holders"), hit_wall,
+                                            asset_ev.get("totalSupply")))
 
         # Real on-chain flow: recent ERC-20 Transfer events for this token. PAGINATED —
         # Blockscout returns ~50/page, so we walk `next_page_params` until we've
         # collected max_transfers or run out of pages.
         if with_transfers and addr:
+            px = asset_ev.get("price")             # token→USD at this snapshot
+
+            def _tokens_moved(it):
+                tot = it.get("total") or {}
+                v = _num(tot.get("value"))
+                d = int(tot.get("decimals") or dec or 18)
+                return v / (10 ** d) if v is not None else 0.0
+
+            def _is_real(it) -> bool:
+                v = _tokens_moved(it)
+                return (v * px) >= _DUST_USD if px else v > 0
+
+            # Page until we hold `max_transfers` REAL (non-dust) transfers — not merely
+            # max_transfers ROWS. Blockscout serves newest-first, so a dust spray otherwise
+            # fills the entire window and the token reads as dormant (see _split_dust). A
+            # healthy token still breaks on page 1-2, so the wider page budget is only
+            # spent on the tokens that are actually buried under a spray.
             items: list[dict] = []
-            max_pages = min(200, max(1, -(-max_transfers // 50) + 2))
+            max_pages = min(200, max(1, -(-max_transfers // 50) + 6))
             tparams: dict | None = None
             prev_tcursor: dict | None = None
             for _ in range(max_pages):
@@ -883,21 +1043,22 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
                     break
                 items.extend(page.get("items", []))
                 npp = page.get("next_page_params")
-                if not npp or npp == prev_tcursor or len(items) >= max_transfers:
+                if (not npp or npp == prev_tcursor
+                        or sum(1 for it in items if _is_real(it)) >= max_transfers):
                     break
                 prev_tcursor = npp
                 tparams = _enc_cursor(npp)
 
-            def _tokens_moved(it):
-                tot = it.get("total") or {}
-                v = _num(tot.get("value"))
-                d = int(tot.get("decimals") or dec or 18)
-                return v / (10 ** d) if v is not None else 0.0
-
             sized = sorted(((_tokens_moved(it), it) for it in items), key=lambda x: -x[0])
-            px = asset_ev.get("price")             # token→USD at this snapshot
-            asset_ev["recentTransfers"] = len(items)
-            asset_ev["recentVolume"] = round(sum(v for v, _ in sized), 4)
+            real, dust = _split_dust(sized, px)
+            if sized:
+                # Dust is reported as its own signal, not silently discarded — symmetric
+                # with dustHolderShare. A spray is evidence about the token, not noise.
+                asset_ev["dustTransferShare"] = round(len(dust) / len(sized), 4)
+            # recentTransfers/recentVolume describe REAL flow only; the dust that used to
+            # inflate them now lives in dustTransferShare.
+            asset_ev["recentTransfers"] = len(real)
+            asset_ev["recentVolume"] = round(sum(v for v, _ in real), 4)
             if px:
                 asset_ev["recentVolumeUsd"] = round(asset_ev["recentVolume"] * px, 2)
             # ROBUST FLOW METRICS — computed from the SAME `items` already in hand (zero
@@ -909,7 +1070,7 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
                      "from": (it.get("from") or {}).get("hash"),
                      "to": (it.get("to") or {}).get("hash"),
                      "ts": _iso_to_epoch(it.get("timestamp"))}
-                    for v, it in sized]
+                    for v, it in real]
             fm = _flow_metrics(flow)
             if px and "netVolume" in fm:
                 fm["netVolumeUsd"] = round(fm["netVolume"] * px, 2)
@@ -923,9 +1084,13 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
             if atimes:
                 asset_ev["lastActivityAt"] = max(atimes)
             out.append(asset_ev)
-            for v, it in sized[:max_transfers]:
+            for v, it in real[:max_transfers]:
                 out.append({
                     "type": "transfer", "symbol": sym, "name": name, "sector": sector,
+                    # The CONTRACT this transfer belongs to. Without it a Transfer could
+                    # only be joined back to an Asset by ticker — which is exactly the
+                    # ambiguity that hid the two NVDA contracts (see _asset_id).
+                    "address": addr,
                     # 8dp, not 4: these are 18-decimal fractional-share tokens, so a real
                     # transfer can be sub-0.0001 units — 4dp would zero it out.
                     "value": round(v, 8),

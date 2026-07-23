@@ -75,6 +75,7 @@ import json
 import os
 from datetime import datetime, timezone
 
+import faiss
 import httpx
 import numpy as np
 from fastmcp import FastMCP
@@ -149,14 +150,24 @@ async def _embed_query(model: str, dim: int, text: str) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# IN-MEMORY DATASET (pulled shards; brute-force cosine)
+# IN-MEMORY DATASET (pulled shards; int8-quantized HNSW ANN)
 # ---------------------------------------------------------------------------
-# CDN snapshots are baked to be pullable (often small enough for in-browser
-# clients), so an exact brute-force cosine over an in-memory matrix is both
-# simplest and best here — no Qdrant server, no external process, nothing to leak.
+# Shards are pulled once and searched in-process — the query vector never leaves
+# this box (the "intent is private" thesis). A brute-force float32 matrix is exact
+# but O(n) per query AND holds every vector at full width, which is the wall at
+# millions of vectors. Instead we build a faiss IndexHNSWSQ: HNSW gives sub-linear
+# ANN search, the int8 scalar quantizer stores codes ~4x smaller than float32 — so
+# this is both the "ANN" and the "compressed history" the raw matrix couldn't give.
+# ponytail: HNSW recall/speed/size knobs below — the calibration a minimal model
+# can't guess. Raise efSearch for recall, M for graph quality (both cost RAM/time).
+_HNSW_M = 32
+_HNSW_EF_CONSTRUCTION = 200
+_HNSW_EF_SEARCH = 128
+
+
 class _Dataset:
     __slots__ = ("name", "manifest", "model", "dim", "distance",
-                 "records", "_by_id", "vecs", "edges")
+                 "records", "_by_id", "index", "edges")
 
     def __init__(self, name: str, manifest: dict):
         self.name = name
@@ -166,7 +177,7 @@ class _Dataset:
         self.distance = manifest.get("distance", "Cosine")
         self.records: list[dict] = []
         self._by_id: dict[str, dict] = {}
-        self.vecs: np.ndarray | None = None
+        self.index: faiss.Index | None = None
         self.edges: list[dict] | None = None  # None = not yet loaded
 
     def add(self, row: dict) -> list[float] | None:
@@ -189,14 +200,26 @@ class _Dataset:
         return vec
 
     def finalize(self, vectors: list[list[float]]) -> None:
-        """Stack + L2-normalize the vectors so cosine reduces to a dot product."""
-        if vectors:
-            m = np.asarray(vectors, dtype=np.float32)
-            norms = np.linalg.norm(m, axis=1, keepdims=True)
-            norms[norms == 0] = 1.0
-            self.vecs = m / norms
-        else:
-            self.vecs = np.zeros((0, self.dim or 0), dtype=np.float32)
+        """Build an int8-quantized HNSW index over the vectors. Vectors are
+        L2-normalized first so cosine ranks by L2 distance (for unit vectors
+        ||a-b||² = 2 - 2·cos), and the squared-L2 faiss returns is converted back to
+        a cosine score at query time. faiss row id == record index (both are added
+        in the same order), so a hit's label indexes straight into self.records."""
+        dim = self.dim or (len(vectors[0]) if vectors else 0)
+        self.dim = dim
+        if not vectors or not dim:
+            self.index = None
+            return
+        m = np.asarray(vectors, dtype=np.float32)
+        norms = np.linalg.norm(m, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        m /= norms
+        index = faiss.IndexHNSWSQ(dim, faiss.ScalarQuantizer.QT_8bit, _HNSW_M)
+        index.hnsw.efConstruction = _HNSW_EF_CONSTRUCTION
+        index.train(m)   # SQ learns per-dimension int8 ranges
+        index.add(m)
+        index.hnsw.efSearch = _HNSW_EF_SEARCH
+        self.index = index
 
 
 _REGISTRY: dict[str, _Dataset] = {}
@@ -623,19 +646,36 @@ async def search(dataset: str, query: str, limit: int = 10,
     if not ds.model or not ds.dim:
         return {"error": "no_embed_contract", "dataset": dataset}
 
-    # Candidate mask (structured pre-filter), then cosine over the survivors.
-    idx = np.arange(len(ds.records))
-    if entity_type is not None:
-        idx = idx[[ds.records[i].get("entityType") == entity_type for i in idx]]
-    if owner is not None:
-        idx = idx[[ds.records[i].get("owner") == owner for i in idx]]
-
     results: list[dict] = []
-    if len(idx) and ds.vecs is not None and len(ds.vecs):
-        q = await _embed_query(ds.model, ds.dim, query)
-        scores = ds.vecs[idx] @ q
-        order = np.argsort(-scores)[:max(0, limit)]
-        results = [_shape(ds.records[idx[j]], float(scores[j])) for j in order]
+    if ds.index is not None and ds.index.ntotal and limit > 0:
+        q = await _embed_query(ds.model, ds.dim, query)   # already L2-normalized
+        qv = np.asarray([q], dtype=np.float32)
+
+        # Structured pre-filter (entity_type / owner) rides the ANN search as an
+        # IDSelector so we never fall back to an O(n) scan. faiss labels are record
+        # indices, so filter directly on ds.records.
+        # ponytail: HNSW + a very selective selector can under-recall (graph edges
+        # to kept nodes get pruned); upgrade path is brute-force over the kept
+        # subset's reconstructed codes when a filter is that narrow.
+        params = None
+        run = True
+        if entity_type is not None or owner is not None:
+            keep = [i for i, r in enumerate(ds.records)
+                    if (entity_type is None or r.get("entityType") == entity_type)
+                    and (owner is None or r.get("owner") == owner)]
+            if keep:
+                params = faiss.SearchParametersHNSW(
+                    sel=faiss.IDSelectorBatch(np.asarray(keep, dtype=np.int64)))
+            else:
+                run = False  # nothing passes the filter
+
+        if run:
+            k = min(limit, ds.index.ntotal)
+            dists, labels = ds.index.search(qv, k, params=params)
+            for dist, lbl in zip(dists[0], labels[0]):
+                if lbl < 0:                       # faiss pads short results with -1
+                    continue
+                results.append(_shape(ds.records[lbl], 1.0 - float(dist) / 2.0))
 
     out = {"dataset": dataset, "results": results}
     if settlement is not None:

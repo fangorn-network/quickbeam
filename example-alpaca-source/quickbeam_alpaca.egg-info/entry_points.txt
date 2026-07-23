@@ -1,0 +1,5 @@
+[console_scripts]
+alpaca-ingest = quickbeam_alpaca.source:run
+
+[quickbeam.sources]
+alpaca = quickbeam_alpaca.source:AlpacaSource

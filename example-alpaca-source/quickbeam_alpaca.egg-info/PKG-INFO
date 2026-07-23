@@ -1,0 +1,8 @@
+Metadata-Version: 2.4
+Name: quickbeam-alpaca
+Version: 0.1.0
+Summary: An example pluggable quickbeam Source: Alpaca Market Data → a Fangorn graph.
+Requires-Python: >=3.12
+Requires-Dist: quickbeam
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

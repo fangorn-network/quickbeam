@@ -29,7 +29,7 @@ dependencies = [
 gpu = ["fastembed-gpu"]
 cpu = ["fastembed"]
 # Agent / payments layer: MCP server (FastMCP) + x402 EIP-712 payment signing.
-agent = ["fastmcp", "eth-account", "httpx"]
+agent = ["fastmcp", "eth-account", "httpx", "faiss-cpu"]
 dev   = ["pytest", "fastmcp", "eth-account"]
 
 [project.scripts]

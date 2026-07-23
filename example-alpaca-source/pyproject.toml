@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickbeam-alpaca"
+version = "0.1.0"
+description = "An example pluggable quickbeam Source: Alpaca Market Data → a Fangorn graph."
+requires-python = ">=3.12"
+# Depends on quickbeam for the harness runtime only; AlpacaSource matches the `Source`
+# contract structurally (see source.py), so nothing is imported from quickbeam to satisfy
+# it. Install into the same env as quickbeam and `quickbeam data alpaca` works.
+dependencies = ["quickbeam"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# Wires this source into quickbeam's CLI: discover_sources() reads the entry-point group,
+# so installing this package makes `quickbeam data alpaca` appear. The verb is the
+# entry-point NAME ("alpaca").
+[project.entry-points."quickbeam.sources"]
+alpaca = "quickbeam_alpaca.source:AlpacaSource"
+
+[project.scripts]
+alpaca-ingest = "quickbeam_alpaca.source:run"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quickbeam_alpaca*"]

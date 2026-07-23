@@ -56,9 +56,12 @@ quickbeam data robinhood --with-transfers --output-dir $STAGE --volume 1 \
   
 # 3. LIVE LEDGER — daemonize: re-read every 120s, growing a superset ledger so the
 #    watcher never tombstones prior flow (see --accumulate).
-quickbeam data robinhood --with-transfers --watch --poll-interval 120 \
+#    --with-holders adds the ownership shape (activeHolders/topHolderShare/seenSupplyShare).
+#    It costs a bounded extra call leg per token and is what stops a raw `holders` count
+#    from being read as adoption.
+quickbeam data robinhood --with-transfers --with-holders --watch --poll-interval 20 \
   --output-dir $STAGE --volume 1 --publish --namespace robinhood \
-  --accumulate --checkpoint-file db/robinhood_ingest_block.json --max-transfers 500
+  --accumulate --checkpoint-file db/robinhood_ingest_block.json --max-transfers 100
 
 # 4. EMBED + SERVE — read the namespace back off-chain, embed, ship CDN deltas.
 #    OWNER is the publisher wallet address that step 2 published under — `fangorn repo
