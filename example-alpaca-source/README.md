@@ -77,6 +77,36 @@ quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
 quickbeam mcp --cdn-url http://localhost:8090 --transport http --port 8765
 ```
 
+## Price history — the backtest feed (`--price-history`)
+
+The Robinhood-Chain tokens mirror real equities 1:1, so their **underlying-equity OHLCV
+is the on-chain fill price**. This mode emits a **PriceBar** per (symbol, bar) — the
+per-asset price time-series a backtest needs (`open/high/low/close/volume/volumeUsd/ts`).
+It reuses the same Alpaca `/v2/stocks/bars` leg, just at a 1-minute cadence over N days.
+
+```bash
+# 1. BACKFILL — 30 days of 1-minute bars for the Robinhood tickers, published into a
+#    dataset the same MCP serves (query it by symbol; separate from the flow corpus).
+quickbeam data alpaca --price-history --bar-timeframe 1Min --bar-days 30 \
+  --symbols SPY,NVDA,GME,SGOV,BABA,MSTR,...   \
+  --output-dir $STAGE --volume 1 --publish --namespace robinhood-prices --accumulate \
+  --checkpoint-file db/alpaca_bars_day.json
+
+# 2. EMBED + SERVE — --structured-types PriceBar makes bars INDEX+SERVE but NOT embed:
+#    a 1-min bar is only ever queried by where{symbol,ts}/aggregate, so it skips the
+#    embed model (the GPU bottleneck) and rides a constant placeholder vector.
+quickbeam watch --source $OWNER:robinhood-prices --collection robinhood-prices \
+  --cdn-dir ./cdn --cdn-domain robinhood-prices --structured-types PriceBar
+```
+
+Then from the MCP: `aggregate`/`export` with `where {symbol, ts:{gte,lte}}`.
+
+Caveats: bars are **structured-only** (no `text`, no Asset edge — queried by their own
+`symbol` field, not graph-walked). The free **IEX feed sees only IEX-routed volume**, so
+`volumeUsd` understates true dollar volume (OHLC track fine); pass `--feed sip` with a
+paid key for the full tape. 1-min × 30d × ~95 tickers is ~hundreds of thousands of rows —
+`--bar-timeframe 5Min` or a smaller `--symbols` set trims it.
+
 ## Tests
 
 ```bash

@@ -47,6 +47,16 @@ def read_source(fangorn_bin: str, owner: str, namespace: str) -> dict:
     return json.loads(result.stdout)
 
 
+def read_ndjson_cmd(fangorn_bin: str, owner: str, namespace: str) -> list[str]:
+    """Argv for `fangorn read <namespace> --owner <owner> --ndjson` — the STREAMING
+    read: one `{kind:head|vertex|edge}` JSON object per stdout line instead of one
+    giant `{vertices, edges}` blob. A large namespace (e.g. ~780k price bars) can't be
+    materialized+JSON.stringify'd in memory on either side; the reader consumes this
+    line by line so each vertex is embedded and freed without buffering the whole
+    corpus (see watcher._iter_read_ndjson)."""
+    return [*shlex.split(fangorn_bin), "read", namespace, "--owner", owner, "--ndjson"]
+
+
 def read_head(fangorn_bin: str, owner: str) -> str:
     """Shell out to `fangorn head <owner>` — the cheap on-chain root check (used to
     skip a cycle with no on-chain change)."""

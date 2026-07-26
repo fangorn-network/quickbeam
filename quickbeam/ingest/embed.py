@@ -209,23 +209,44 @@ def compose_document_text(fields: dict, role_map: dict,
     return f"search_document: {text_str[:1000]}"
 
 
+def _structured_types(args) -> set[str]:
+    """entityTypes declared INDEX-but-DON'T-EMBED via --structured-types. A 1-minute
+    price bar is only ever queried by where{symbol,ts}/aggregate (the analytical path
+    filters CDN payload, not vectors — see mcp_server._iter_records), so running 780k of
+    them through the embed model — the GPU bottleneck — is pure waste. They still ride
+    the normal upsert with a constant placeholder vector (never a meaningful ANN match)."""
+    return {t.strip() for t in (getattr(args, "structured_types", "") or "").split(",") if t.strip()}
+
+
 async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, truncate, checkpoint):
     SAVE_BATCH_SIZE = 5000
+    structured = _structured_types(args)
+    vec_len = dim if truncate else MODEL_DIM_MAP.get(args.embedding_model, dim)
+    # ponytail: structured rows still store a full-length constant vector (CDN/Qdrant
+    # bloat at 780k bars). Skips the embed MODEL (the real cost); payload-only shard rows
+    # are the upgrade if storage bites — needs cdn.bake + mcp shard loader to carry vectorless rows.
+    const_vec = [1.0] + [0.0] * (vec_len - 1)  # placeholder for structured (non-embedded) rows
     n_batches = max(1, (len(records) + SAVE_BATCH_SIZE - 1) // SAVE_BATCH_SIZE)
     for i in range(0, len(records), SAVE_BATCH_SIZE):
         chunk = records[i: i + SAVE_BATCH_SIZE]
         if n_batches > 1:
             print(f"  [Embed] sub-batch {i // SAVE_BATCH_SIZE + 1}/{n_batches} ({len(chunk)} records)")
 
-        texts = [compose_document_text(item["fields"], role_map, args.searchable_fields)
-                 for item in chunk]
+        # Only records that aren't structured-only go through the embed model; the rest
+        # get const_vec, scattered back into position so upload order matches `chunk`.
+        embed_pos = [j for j, p in enumerate(chunk)
+                     if (p.get("entity_type") or p["fields"].get("entityType")) not in structured]
+        texts = [compose_document_text(chunk[j]["fields"], role_map, args.searchable_fields)
+                 for j in embed_pos]
 
-        vectors = []
+        vectors = [list(const_vec) for _ in chunk]
         SUB_CHUNK_SIZE = 1000
         with tqdm(total=len(texts), desc="  ↳ Embedding", unit=" doc") as pbar:
+            k = 0
             for si in range(0, len(texts), SUB_CHUNK_SIZE):
                 for vec in embed_engine.embed(texts[si: si + SUB_CHUNK_SIZE], batch_size=args.embed_batch):
-                    vectors.append(matryoshka(vec, dim) if truncate else vec.tolist())
+                    vectors[embed_pos[k]] = matryoshka(vec, dim) if truncate else vec.tolist()
+                    k += 1
                     pbar.update(1)
                 import gc; gc.collect()
 

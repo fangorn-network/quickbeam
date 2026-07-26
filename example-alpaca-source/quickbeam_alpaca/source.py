@@ -176,6 +176,8 @@ def node_id(ev: dict) -> str:
     sym = ev.get("symbol", "?")
     if ev.get("type") == "asset":
         return f"ap:asset:{sym}"
+    if ev.get("type") == "price_bar":
+        return f"ap:bar:{sym}:{ev.get('timeframe', '?')}:{ev.get('ts', '?')}"
     h = hashlib.sha256((ev.get("id") or ev.get("headline", "")).encode()).hexdigest()[:16]
     return f"ap:news:{sym}:{h}"
 
@@ -183,6 +185,20 @@ def node_id(ev: dict) -> str:
 def shape_fields(ev: dict) -> dict:
     """One raw event → the `fields` dict for its node (text blurb + structured measures)."""
     t = ev.get("type")
+    if t == "price_bar":
+        # Structured-only: no `text`/`signal` — a bar is filtered by where{symbol,ts},
+        # never embedded (see --structured-types). ts is epoch seconds (int) so the
+        # server's numeric {gte,lte} comparator ranges over it directly.
+        bar = {
+            "entityType": "PriceBar", "symbol": ev.get("symbol"),
+            "ts": int(ev["ts"]) if ev.get("ts") is not None else None,
+            "timeframe": ev.get("timeframe"), "source": ev.get("source"),
+            "open": _num(ev.get("open")), "high": _num(ev.get("high")),
+            "low": _num(ev.get("low")), "close": _num(ev.get("close")),
+            "volume": _num(ev.get("volume")), "vwap": _num(ev.get("vwap")),
+            "volumeUsd": _num(ev.get("volumeUsd")),
+        }
+        return {k: v for k, v in bar.items() if v is not None}
     base = {
         "entityType": "Asset" if t == "asset" else "NewsItem",
         "symbol": ev.get("symbol"),
@@ -216,6 +232,7 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
     no bar this crawl, so the edge always has a valid source)."""
     assets: dict[str, dict] = {}
     news: dict[str, dict] = {}
+    bars: dict[str, dict] = {}
     edges: list[dict] = []
 
     def _ensure_asset(sym: str) -> str:
@@ -235,6 +252,10 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
         nid = node_id(ev)
         if t == "asset":
             assets[nid] = {"name": nid, "fields": shape_fields(ev)}
+        elif t == "price_bar":
+            # No Asset edge: bars are queried by their own `symbol` field via
+            # where{symbol,ts}, never graph-walked — 780k per-bar edges would be pure bloat.
+            bars[nid] = {"name": nid, "fields": shape_fields(ev)}
         elif t == "news":
             news[nid] = {"name": nid, "fields": shape_fields(ev)}
             aid = _ensure_asset(sym)
@@ -246,6 +267,8 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
         nodes["Asset"] = list(assets.values())
     if news:
         nodes["NewsItem"] = list(news.values())
+    if bars:
+        nodes["PriceBar"] = list(bars.values())
     return nodes, edges
 
 
@@ -319,6 +342,58 @@ def _all_assets(headers: dict, trading_url: str = ALPACA_TRADING_URL) -> dict[st
     return out
 
 
+def _iso_to_epoch(s) -> int | None:
+    """Alpaca bar timestamp (ISO-8601, e.g. 2026-07-16T13:42:00Z) → epoch seconds."""
+    if not s:
+        return None
+    try:
+        return int(dt.datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
+
+
+def read_price_bars(*, api_key: str | None = None, api_secret: str | None = None,
+                    symbols: list[str] | None = None, top: int = 100,
+                    all_assets: bool = False, trading_url: str = ALPACA_TRADING_URL,
+                    timeframe: str = "1Min", days: int = 30, feed: str = "iex",
+                    end_day: str | None = None) -> list[dict]:
+    """Read a per-symbol OHLCV history: `days` back through `end_day` at `timeframe`.
+    Emits one `price_bar` event per (symbol, bar) — structured rows for where{symbol,ts}
+    /aggregate backtests, NOT semantic search (mark PriceBar `--structured-types` on the
+    watcher so they skip the embed model). Underlying-equity bars ARE the fill price for
+    the 1:1 tokenized-equity mirror. Universe precedence matches read_alpaca_events."""
+    headers = _auth_headers(api_key, api_secret)
+    end = _session_day(end_day)
+    start = (dt.date.fromisoformat(end) - dt.timedelta(days=days)).isoformat()
+    if symbols:
+        syms = symbols
+    elif all_assets:
+        syms = list(_all_assets(headers, trading_url))
+    else:
+        syms = _most_actives(headers, top)
+    if not syms:
+        return []
+    src = f"alpaca:{feed}"
+    events: list[dict] = []
+    for sym, sym_bars in _fetch_bars(headers, syms, start, end, feed, timeframe).items():
+        for b in sym_bars:
+            ts = _iso_to_epoch(b.get("t"))
+            if ts is None:
+                continue
+            close, vwap, vol = b.get("c"), b.get("vw"), b.get("v")
+            px = vwap if vwap is not None else close       # bar's mean fill for USD notional
+            events.append({
+                "type": "price_bar", "symbol": sym, "ts": ts, "timeframe": timeframe,
+                "open": b.get("o"), "high": b.get("h"), "low": b.get("l"), "close": close,
+                "volume": vol, "vwap": vwap,
+                # IEX free feed sees only IEX-routed volume, so volumeUsd UNDERSTATES true
+                # dollar volume; close/OHLC track fine. Upgrade to --feed sip for full tape.
+                "volumeUsd": round(vol * px, 2) if (vol is not None and px is not None) else None,
+                "source": src,
+            })
+    return events
+
+
 def _session_day(day: str | None) -> str:
     """The trading day to crawl (YYYY-MM-DD). Default = today; the bars call itself
     returns the latest available session's bar when today has none yet (weekend/pre-open),
@@ -376,17 +451,19 @@ def read_alpaca_events(*, api_key: str | None = None, api_secret: str | None = N
 
 
 def _fetch_bars(headers: dict, symbols: list[str], start: str, end: str,
-                feed: str) -> dict[str, list[dict]]:
-    """Multi-symbol daily bars, following `next_page_token`. Alpaca caps ~10k symbols
-    per query-string; the most-actives universe (≤100) fits one URL. For big universes
-    we chunk at 200 symbols to stay well under the URL limit."""
+                feed: str, timeframe: str = "1Day") -> dict[str, list[dict]]:
+    """Multi-symbol bars at `timeframe` (e.g. 1Day, 1Min), following `next_page_token`.
+    Alpaca caps ~10k symbols per query-string; the most-actives universe (≤100) fits one
+    URL. For big universes we chunk at 200 symbols to stay well under the URL limit.
+    limit=10000 is Alpaca's page max — load-bearing for 1Min over 30d (else thousands of
+    round-trips per symbol)."""
     out: dict[str, list[dict]] = {}
     for i in range(0, len(symbols), 200):
         chunk = ",".join(symbols[i:i + 200])
         token = None
         while True:
-            params = {"symbols": chunk, "timeframe": "1Day", "start": start,
-                      "end": end, "feed": feed, "limit": 1000, "adjustment": "raw"}
+            params = {"symbols": chunk, "timeframe": timeframe, "start": start,
+                      "end": end, "feed": feed, "limit": 10000, "adjustment": "raw"}
             if token:
                 params["page_token"] = token
             qs = "&".join(f"{k}={v}" for k, v in params.items())
@@ -438,7 +515,7 @@ class AlpacaSource:
     `quickbeam.ingest.scrapers.Source` without importing it."""
 
     name = "alpaca"
-    stems = {"Asset": "assets", "NewsItem": "news"}
+    stems = {"Asset": "assets", "NewsItem": "news", "PriceBar": "pricebars"}
     # Assets are the latest daily bar per symbol → snapshot (rewritten each crawl).
     # News is a stream of discrete items → ledgered under --accumulate.
     snapshot_stems = {"assets"}
@@ -471,10 +548,27 @@ class AlpacaSource:
                        help="Skip the news feed (Assets only).")
         p.add_argument("--news-limit", type=int, default=10,
                        help="Max news articles to pull per crawl (default 10).")
+        p.add_argument("--price-history", action="store_true",
+                       help="Emit a per-symbol OHLCV history (PriceBar rows) instead of "
+                            "daily-bar Asset snapshots + news. For the tokenized-equity "
+                            "backtest: --symbols <robinhood tickers> at --bar-timeframe "
+                            "over --bar-days. Mark PriceBar on the watcher's "
+                            "--structured-types so bars index+serve but don't embed.")
+        p.add_argument("--bar-timeframe", default="1Min",
+                       help="PriceBar cadence for --price-history (default 1Min; also "
+                            "5Min, 1Hour, 1Day — any Alpaca timeframe).")
+        p.add_argument("--bar-days", type=int, default=30,
+                       help="Calendar days of PriceBar history to pull (default 30).")
 
     def read(self, cursor: int, args: argparse.Namespace) -> list[dict]:
         syms = ([s.strip().upper() for s in args.symbols.split(",") if s.strip()]
                 if args.symbols else None)
+        if getattr(args, "price_history", False):
+            return read_price_bars(
+                api_key=args.api_key, api_secret=args.api_secret,
+                symbols=syms, top=args.top, all_assets=args.all_assets,
+                trading_url=args.trading_url, timeframe=args.bar_timeframe,
+                days=args.bar_days, feed=args.feed, end_day=args.day)
         return read_alpaca_events(
             api_key=args.api_key, api_secret=args.api_secret,
             symbols=syms, top=args.top, all_assets=args.all_assets,
@@ -486,9 +580,12 @@ class AlpacaSource:
 
     def next_cursor(self, records: list[dict], prev: int) -> int:
         """The crawl day as a YYYYMMDD int. Re-crawling the same day keeps `prev`
-        (upsert no-op); a later day advances it."""
+        (upsert no-op); a later day advances it. Price-bar crawls advance on the newest
+        bar's UTC day so a --watch loop resumes past the last day pulled."""
         days = [int(e["day"].replace("-", "")) for e in records
                 if e.get("type") == "asset" and e.get("day")]
+        days += [int(dt.datetime.fromtimestamp(e["ts"], tz=dt.timezone.utc).strftime("%Y%m%d"))
+                 for e in records if e.get("type") == "price_bar" and e.get("ts")]
         return max([prev, *days]) if days else prev
 
 

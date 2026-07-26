@@ -14,6 +14,7 @@ embeds it. This module never embeds and never touches the CDN.
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 import shlex
@@ -384,26 +385,48 @@ def _run_fangorn_steps(steps: list[tuple[str, list[str]]], *,
     return True
 
 
-def _load_staged_volume(src: Source, output_dir: str,
-                        volume: int) -> tuple[dict[str, list[dict]], list[dict]]:
-    """Read back the volume_<N>_*.json files emit_volumes wrote, inverting the
-    entity→stem mapping (`src.stems`). Returns ({entityType: [{"name","fields"}]},
-    [edge...]) — the shape the publish leg turns into a `fangorn upload` batch."""
+def _write_staged_batch(src: Source, output_dir: str, volume: int,
+                        batch_path: str) -> tuple[int, int]:
+    """Stream the volume_<N>_*.json files emit_volumes wrote into ONE fangorn batch
+    file (`{"vertices":[{id,tag,payload}],"edges":[{rel,from,to}]}`), inverting the
+    entity→stem mapping (`src.stems`). Returns (vertex_count, edge_count).
+
+    Written record-by-record on purpose: a large namespace is hundreds of MB of JSON,
+    and materializing every row (plus a remapped copy) before dumping cost GBs of
+    Python objects that stayed resident while the fangorn subprocess ran — the two
+    peaks overlapped and OOM'd the box. Peak here is one stem file at a time.
+    ponytail: still json.load()s each stem file whole; switch to ijson if a single
+    stem outgrows RAM."""
     stem_to_entity = {stem: entity for entity, stem in getattr(src, "stems", {}).items()}
     edges_stem = getattr(src, "edges_stem", "edges")
-    nodes_by_entity: dict[str, list[dict]] = {}
-    if not os.path.isdir(output_dir):
-        return nodes_by_entity, []
     prefix = f"volume_{volume}_"
     edges_file = f"{prefix}{edges_stem}.json"
-    for fname in sorted(os.listdir(output_dir)):
-        if not (fname.startswith(prefix) and fname.endswith(".json")) or fname == edges_file:
-            continue
-        stem = fname[len(prefix):-len(".json")]
-        entity = stem_to_entity.get(stem, stem.capitalize())
-        nodes_by_entity[entity] = _load_node_list(os.path.join(output_dir, fname))
-    edges = _load_node_list(os.path.join(output_dir, edges_file))
-    return nodes_by_entity, edges
+    n_vertices = n_edges = 0
+
+    with open(batch_path, "w", encoding="utf-8") as out:
+        out.write('{"vertices":[')
+        for fname in sorted(os.listdir(output_dir) if os.path.isdir(output_dir) else []):
+            if not (fname.startswith(prefix) and fname.endswith(".json")) or fname == edges_file:
+                continue
+            stem = fname[len(prefix):-len(".json")]
+            entity = stem_to_entity.get(stem, stem.capitalize())
+            rows = _load_node_list(os.path.join(output_dir, fname))
+            for n in rows:
+                if n_vertices:
+                    out.write(",")
+                json.dump({"id": n["name"], "tag": entity, "payload": n["fields"]}, out)
+                n_vertices += 1
+            del rows
+            gc.collect()
+        out.write('],"edges":[')
+        for e in _load_node_list(os.path.join(output_dir, edges_file)):
+            if n_edges:
+                out.write(",")
+            json.dump({"rel": e["rel"], "from": e["from"], "to": e["to"]}, out)
+            n_edges += 1
+        out.write("]}")
+    gc.collect()
+    return n_vertices, n_edges
 
 
 def _repo_dir(args) -> str:
@@ -448,24 +471,18 @@ def _publish_to_fangorn(src: Source, args) -> bool:
               file=sys.stderr)
         return False
 
-    nodes_by_entity, edges = _load_staged_volume(src, args.output_dir, args.volume)
-    vertices = [
-        {"id": n["name"], "tag": entity, "payload": n["fields"]}
-        for entity, node_list in nodes_by_entity.items()
-        for n in node_list
-    ]
-    edge_records = [{"rel": e["rel"], "from": e["from"], "to": e["to"]} for e in edges]
-    if not vertices:
+    import tempfile
+    fd, batch_path = tempfile.mkstemp(suffix=".json")
+    os.close(fd)
+    n_vertices, n_edges = _write_staged_batch(src, args.output_dir, args.volume, batch_path)
+    if not n_vertices:
         print(f"[{src.name}] --publish: nothing staged to publish.", file=sys.stderr)
+        os.unlink(batch_path)
         return False
 
     cwd = _repo_dir(args)
     message = (f"quickbeam:{src.name} v{args.volume} — "
-               f"{len(vertices)} vertices, {len(edge_records)} edges")
-    import tempfile
-    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as f:
-        json.dump({"vertices": vertices, "edges": edge_records}, f)
-        batch_path = f.name
+               f"{n_vertices} vertices, {n_edges} edges")
     try:
         ok = (fangorn_repo_init(namespace=args.namespace, fangorn_bin=args.fangorn_bin,
                                 cwd=cwd, tag=src.name)
@@ -477,7 +494,7 @@ def _publish_to_fangorn(src: Source, args) -> bool:
         except OSError:
             pass
     if ok:
-        print(f"[{src.name}] published {len(vertices)} vertice(s), {len(edge_records)} "
+        print(f"[{src.name}] published {n_vertices} vertice(s), {n_edges} "
               f"edge(s) to namespace {args.namespace!r} ✓")
     return ok
 

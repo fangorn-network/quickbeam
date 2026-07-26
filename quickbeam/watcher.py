@@ -27,17 +27,17 @@ import argparse
 import asyncio
 import json
 import os
-import shlex
 import sys
 
 from quickbeam.ingest.checkpoint import (
     _load_checkpoint, _save_checkpoint, _save_role_map)
 from quickbeam.ingest.embed import (
-    MODEL_DIM_MAP, _init_embed_engine, _embed_and_upload, ensure_indexes)
+    MODEL_DIM_MAP, _init_embed_engine, _embed_and_upload, ensure_indexes,
+    _structured_types)
 from quickbeam.ingest.graph.projection import load_profiles, project_source
 from quickbeam.ingest.identity import _str_to_uuid
 from quickbeam.ingest.sources.fangorn import (
-    parse_sources, subscribe_cmd)
+    parse_sources, subscribe_cmd, read_ndjson_cmd)
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from quickbeam.roles import infer_roles, role_map_applies
@@ -109,6 +109,11 @@ def parse_args():
     p.add_argument("--checkpoint-file", default="./db/ingest_checkpoint.json")
     p.add_argument("--collection", default="fangorn")
     p.add_argument("--searchable-fields", default="auto")
+    p.add_argument("--structured-types", default="",
+                   help="Comma-separated entityType names to INDEX+SERVE but NOT embed "
+                        "(e.g. PriceBar). Structured rows queried only via where{...}/"
+                        "aggregate skip the embed model and ride a constant placeholder "
+                        "vector — see embed._embed_and_upload.")
     p.add_argument("--embedding-model", default="nomic-ai/nomic-embed-text-v1.5")
     p.add_argument("--dim", type=int, default=256)
     p.add_argument("--embed-batch", type=int, default=16)
@@ -246,46 +251,101 @@ async def _drain_stderr(key: str, stream):
             print(f"[fangorn subscribe {key}] {line}", file=sys.stderr)
 
 
-async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
-                           timeout: float) -> dict:
-    """Async, timeout-bounded `fangorn read <ns> --owner <owner>` for the startup seed.
+async def _iter_read_ndjson(fangorn_bin: str, owner: str, namespace: str,
+                            idle_timeout: float):
+    """Async generator over `fangorn read <ns> --owner <owner> --ndjson`, yielding one
+    parsed `{kind:head|vertex|edge}` dict per stdout line.
 
-    CRITICAL: the seed MUST NOT use the synchronous `read_source` (subprocess.run) —
-    that blocks the asyncio event loop for the entire read, and a full-namespace read
-    is a slow O(namespace) light-client fetch (thousands of IPFS chunk gets) that can
-    run for many minutes. Blocking the loop freezes stderr draining and the subscribe
-    stream, so the whole watcher hangs on the seed and never goes live. Here the read is
-    its own child process we can wait on with a hard timeout and kill if it overruns, so
-    a slow/hung read degrades to 'skip the seed, go live' instead of freezing."""
+    Why streaming (not the old `communicate()` + `json.loads`): a full-namespace read of
+    a large corpus (e.g. ~780k price bars) is materialized+JSON.stringify'd on the fangorn
+    side and buffered+parsed on this side — several full copies across two processes, which
+    OOMs the machine before any embedding. `--ndjson` emits one small object per line so the
+    reader can embed and free each vertex without ever holding the whole corpus.
+
+    `idle_timeout` bounds the gap BETWEEN lines (not the total read, which is legitimately
+    minutes for a big namespace): a hung/silent read still degrades to 'skip the seed, go
+    live, retry next reconnect' instead of freezing, exactly as the old total timeout did."""
     proc = await asyncio.create_subprocess_exec(
-        *shlex.split(fangorn_bin), "read", namespace, "--owner", owner,
+        *read_ndjson_cmd(fangorn_bin, owner, namespace),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT,
     )
+    stderr_task = asyncio.create_task(_drain_stderr(f"read {owner}:{namespace}", proc.stderr))
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
+        assert proc.stdout is not None
+        while True:
+            try:
+                raw = await asyncio.wait_for(proc.stdout.readline(), timeout=idle_timeout)
+            except asyncio.TimeoutError:
+                raise TimeoutError(f"fangorn read produced no output for {idle_timeout:.0f}s")
+            if not raw:
+                break  # EOF
+            line = raw.decode(errors="replace").strip()
+            if not line:
+                continue
+            yield json.loads(line)
+        rc = await proc.wait()
+        if rc != 0:
+            raise RuntimeError(f"fangorn read exited rc={rc}")
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+        stderr_task.cancel()
+
+
+async def _ingest_structured(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                             checkpoint, owner, namespace, batch):
+    """Project + upsert a batch of STRUCTURED (edgeless, non-embedded) vertices, then
+    return the count. Structured types (--structured-types, e.g. PriceBar) are edgeless
+    rows served only via where{}/aggregate — never graph-walked (see the projection
+    folding walk) — so they bypass the resident snapshot and the tombstone diff entirely
+    and can be projected+indexed in bounded batches and dropped, instead of holding all
+    ~780k at once. They ride a constant placeholder vector (the embed MODEL is skipped —
+    see _embed_and_upload), so the role map is irrelevant to them.
+
+    CDN delivery is NOT done here: append_domain re-scrolls the whole collection (with
+    vectors) and loads every delivered id per call, so delivering per batch is O(n^2) and
+    memory-heavy at seed scale. The seed instead bakes once (memory-bounded) after the full
+    stream; live changes deliver their small delta via the normal _deliver_cdn path."""
+    if not batch:
+        return 0
+    contents = {"vertices": batch, "edges": []}
+    profiles = load_profiles(args, {v["schemaId"] for v in batch})
+    records = project_source(owner, namespace, contents, profiles, args)
+    await _embed_and_upload(args, qdrant, embed_engine, records, role_map_ref[0] or {},
+                            dim, truncate, checkpoint)
+    _save_checkpoint(checkpoint, args.checkpoint_file)
+    return len(records)
+
+
+def _bake_cdn_seed(args, qdrant, edges):
+    """One-shot, memory-bounded CDN delivery for a completed seed: bake the whole domain
+    from the collection (bake_domain streams to rolling shards — bounded memory, unlike
+    the per-delta append which scrolls+buffers the whole collection), then append the
+    (small) embedded-graph edges. Used only after a clean seed; per-change deltas keep
+    using _deliver_cdn."""
+    if not (args.cdn_dir and args.cdn_domain):
+        return
+    try:
+        from quickbeam.cdn import bake_domain
+        entry = bake_domain(qdrant, args.collection, args.cdn_dir, args.cdn_domain,
+                            config_path=args.cdn_config, model=args.embedding_model)
+        print(f"[Watcher] CDN seed bake: {entry['count']:,} point(s) into "
+              f"{args.cdn_dir}/{args.cdn_domain}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[Watcher] CDN seed bake error: {e}", file=sys.stderr)
+    if edges:
         try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except asyncio.TimeoutError:
-            pass
-        raise TimeoutError(f"fangorn read exceeded {timeout:.0f}s")
-    if proc.returncode != 0:
-        raise RuntimeError(f"fangorn read failed: {err.decode(errors='replace').strip()}")
-    data = json.loads(out)
-    # Reject a degenerate read: `head: null` with no vertices means `onChainTip` came
-    # back null (a flaky RPC / light-client read, or an on-chain head that isn't settled
-    # yet), NOT an authoritatively-empty namespace. Treating it as a real seed would
-    # (a) mark the source seeded and reuse an empty snapshot forever, and (b) diff every
-    # previously-embedded vertex as "removed" and tombstone the whole collection. Raise
-    # so the caller keeps the prior snapshot, goes live, and retries the seed next
-    # reconnect. A genuinely empty namespace still returns a non-null head, so this only
-    # rejects the broken case.
-    if data.get("head") is None and not data.get("vertices"):
-        raise RuntimeError("read returned null head + empty namespace (unsettled head or "
-                           "flaky RPC read) — not seeding on this")
-    return data
+            from quickbeam.cdn import append_edges
+            added = append_edges(args.cdn_dir, args.cdn_domain, edges)
+            if added:
+                print(f"[Watcher] CDN edges: +{added['added']} new ({added['count']} total)")
+        except Exception as e:  # noqa: BLE001
+            print(f"[Watcher] CDN seed edges error: {e}", file=sys.stderr)
 
 
 async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, truncate,
@@ -316,34 +376,83 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
         vertices_by_cid = snapshot["vertices"]
         edges_by_key = snapshot["edges"]
 
-        # Seed current on-chain state ONCE so the existing corpus is embedded before we
-        # go live. Bounded + off the event loop (see _seed_read_async): a slow/hung read
-        # no longer freezes the watcher — it skips the seed, goes live, and retries the
-        # seed on the next reconnect until it lands. After a successful seed, reconnects
-        # reuse the persisted snapshot instead of re-reading the whole namespace.
-        if not snapshot["seeded"]:
-            try:
-                contents = await _seed_read_async(
-                    args.fangorn_bin, owner, namespace, args.seed_timeout)
-                snapshot["seeded"] = True
-            except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
-                      f"stream, will retry seed on reconnect", file=sys.stderr)
-                contents = {"vertices": [], "edges": []}
-            vertices_by_cid.clear()
-            vertices_by_cid.update({v["cid"]: v for v in contents.get("vertices", [])})
-            edges_by_key.clear()
-            edges_by_key.update({_edge_key(e): e for e in contents.get("edges", [])})
+        structured = _structured_types(args)
 
-            seed_edges: list = []
-            seed_tombstones: list = []
-            n = await _ingest_contents(
-                args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                checkpoint, owner, namespace, contents,
-                edges_sink=seed_edges, tombstones_sink=seed_tombstones,
-            )
-            print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
-            _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
+        # Seed current on-chain state ONCE so the existing corpus is embedded before we go
+        # live. STREAMED (see _iter_read_ndjson): structured/edgeless rows (e.g. 780k price
+        # bars) are projected+indexed in bounded batches and dropped — never held all at
+        # once — so a large namespace no longer OOMs the machine on the seed fetch. Only the
+        # (small) embedded graph (Assets/Transfers + their edges) stays resident for folding.
+        # A slow/hung read still degrades to 'skip seed, go live, retry next reconnect'; a
+        # mid-stream failure leaves seeded=False so the whole stream re-runs (idempotent).
+        if not snapshot["seeded"]:
+            vertices_by_cid.clear()
+            edges_by_key.clear()
+            struct_batch: list = []
+            STRUCT_BATCH = 20000
+            saw_vertex = False
+            head_val = "__unset__"
+            try:
+                async for item in _iter_read_ndjson(
+                        args.fangorn_bin, owner, namespace, args.seed_timeout):
+                    kind = item.get("kind")
+                    if kind == "head":
+                        head_val = item.get("head")
+                    elif kind == "vertex":
+                        saw_vertex = True
+                        v = {"cid": item["cid"], "schemaId": item["schemaId"],
+                             "payload": item["payload"]}
+                        if item["schemaId"] in structured:
+                            struct_batch.append(v)
+                            if len(struct_batch) >= STRUCT_BATCH:
+                                await _ingest_structured(
+                                    args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                                    checkpoint, owner, namespace, struct_batch)
+                                print(f"[Watcher] {key}: seeded {len(struct_batch)} "
+                                      f"structured row(s) (running)")
+                                struct_batch = []
+                        else:
+                            vertices_by_cid[item["cid"]] = v
+                    elif kind == "edge":
+                        e = {"sourceCid": item["sourceCid"], "relation": item["relation"],
+                             "targetCid": item["targetCid"]}
+                        edges_by_key[_edge_key(e)] = e
+
+                # Reject a degenerate read: null head + zero vertices means onChainTip came
+                # back null (flaky/unsettled), NOT an authoritatively-empty namespace —
+                # seeding on it would mark the source seeded on nothing. A genuinely empty
+                # namespace still returns a non-null head, so this only rejects the broken case.
+                if head_val is None and not saw_vertex:
+                    raise RuntimeError("read returned null head + empty namespace "
+                                       "(unsettled head or flaky RPC read) — not seeding")
+
+                # Flush the trailing structured batch, then ingest the resident embedded
+                # graph (folding needs the whole small graph — now fully in memory).
+                if struct_batch:
+                    await _ingest_structured(
+                        args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                        checkpoint, owner, namespace, struct_batch)
+                    struct_batch = []
+
+                seed_edges: list = []
+                n = await _ingest_contents(
+                    args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                    checkpoint, owner, namespace,
+                    {"vertices": list(vertices_by_cid.values()),
+                     "edges": list(edges_by_key.values())},
+                    edges_sink=seed_edges,
+                )
+                snapshot["seeded"] = True
+                print(f"[Watcher] {key}: seeded — {n or 'no'} embedded record(s) + "
+                      f"structured rows indexed")
+                _bake_cdn_seed(args, qdrant, seed_edges)
+            except Exception as e:  # noqa: BLE001
+                print(f"[Watcher] {key}: seed skipped ({e}); going live on the stream, "
+                      f"will retry seed on reconnect", file=sys.stderr)
+                # Partial uploads (if any) are idempotent; seeded stays False so the next
+                # reconnect re-streams the whole namespace and re-bakes cleanly.
+                vertices_by_cid.clear()
+                edges_by_key.clear()
         else:
             print(f"[Watcher] {key}: reusing snapshot "
                   f"({len(vertices_by_cid)} vertices) — resuming stream")
@@ -360,13 +469,31 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
                 print(f"[Watcher] {key}: unparseable change line: {line[:200]}", file=sys.stderr)
                 continue
 
-            # Apply the diff to the in-memory snapshot: removals first, then adds
+            removed_vertex = change.get("removedVertexCids", [])
+            added_vertices = change.get("addedVertices", [])
+            # Structured/edgeless adds bypass the resident snapshot + tombstone diff and
+            # are indexed directly (same as the seed). Keeping them OUT of vertices_by_cid
+            # is what makes the first live change safe: were they tracked, the diff below
+            # would see them as "removed" and mass-tombstone the whole collection.
+            # ponytail: structured-type REMOVALS aren't tombstoned — bars are append-only
+            # historical/live rows, never deleted. Add a direct qdrant.delete on removed
+            # structured cids here if a structured type ever starts deleting.
+            struct_added = [v for v in added_vertices if v["schemaId"] in structured]
+            embed_added = [v for v in added_vertices if v["schemaId"] not in structured]
+
+            n_struct = 0
+            if struct_added:
+                n_struct = await _ingest_structured(
+                    args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                    checkpoint, owner, namespace, struct_added)
+
+            # Apply the embedded diff to the in-memory snapshot: removals first, then adds
             # (an add re-pointing a cid must win over a same-line removal of the old one).
-            for cid in change.get("removedVertexCids", []):
-                vertices_by_cid.pop(cid, None)
+            for cid in removed_vertex:
+                vertices_by_cid.pop(cid, None)          # structured cids aren't here → no-op
             for e in change.get("removedEdges", []):
                 edges_by_key.pop(_edge_key(e), None)
-            for v in change.get("addedVertices", []):
+            for v in embed_added:
                 vertices_by_cid[v["cid"]] = v
             for e in change.get("addedEdges", []):
                 edges_by_key[_edge_key(e)] = e
@@ -379,8 +506,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             src_ck["block"] = change.get("blockNumber")
 
             print(f"[Watcher] {key}: change @ block {change.get('blockNumber')} "
-                  f"(+{len(change.get('addedVertices', []))} / "
-                  f"-{len(change.get('removedVertexCids', []))} vertices) "
+                  f"(+{len(added_vertices)} / -{len(removed_vertex)} vertices) "
                   f"→ {change.get('commitCid')}")
 
             change_edges: list = []
@@ -390,9 +516,12 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
                 checkpoint, owner, namespace, contents,
                 edges_sink=change_edges, tombstones_sink=change_tombstones,
             )
-            status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
+            status = (f"{n} embedded + {n_struct} structured record(s)"
+                      if (n or n_struct) else "no new records for the active profiles")
             print(f"[Watcher] {key}: change applied — {status}")
-            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones)
+            # One delivery covers both: append_domain scrolls the collection and picks up
+            # every un-delivered point (embedded AND the just-indexed structured rows).
+            _deliver_cdn(args, qdrant, n + n_struct, change_edges, change_tombstones)
 
         rc = await proc.wait()
         print(f"[Watcher] {key}: subscribe stream ended (rc={rc})", file=sys.stderr)
@@ -477,18 +606,42 @@ async def main():
     # it grows per change. Domains need no domains.json entry — a missing spec bakes all.
     if args.cdn_dir and args.cdn_domain:
         manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
+        # Re-bake when there's no manifest OR the existing one is EMPTY (count 0) while the
+        # collection actually holds points. An empty manifest is never intentional: the
+        # startup bake races AHEAD of the first seed embed, so a fresh run bakes 0, and a
+        # later run then finds all cids already embedded (checkpoint says seeded) → no new
+        # records → no append delta → and the append path only EXTENDS an existing manifest,
+        # never seeds it. That wedges the served domain empty forever while Qdrant is full
+        # (the exact failure this guards against). Comparing only against count==0 keeps the
+        # incremental append path untouched for a normally-baked domain; use `cdn bake` for
+        # a full manual refresh.
+        baked_count = None
         if os.path.exists(manifest_path):
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
+            try:
+                with open(manifest_path) as f:
+                    baked_count = int(json.load(f).get("count", 0))
+            except (OSError, ValueError, TypeError):
+                baked_count = None            # unreadable manifest → treat as needs-bake
+        try:
+            collection_count = qdrant.count(collection_name=args.collection, exact=True).count
+        except Exception:  # noqa: BLE001
+            collection_count = 0
+        needs_bake = baked_count is None or (baked_count == 0 and collection_count > 0)
+        if not needs_bake:
+            print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked "
+                  f"({baked_count:,} pt) — deltas append per change")
         else:
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
+            why = ("not baked" if baked_count is None
+                   else f"baked empty but collection holds {collection_count:,}")
+            print(f"[Watcher] CDN domain {args.cdn_domain!r} {why} — baking snapshot...")
             try:
                 from quickbeam.cdn import bake_domain
                 entry = bake_domain(qdrant, args.collection, args.cdn_dir, args.cdn_domain,
                                     config_path=args.cdn_config, model=args.embedding_model)
-                print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
+                print(f"[Watcher] CDN bake: {entry['count']:,} point(s) into "
                       f"{args.cdn_dir}/{args.cdn_domain}")
             except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+                print(f"[Watcher] CDN bake failed: {e}", file=sys.stderr)
 
     # One independent subscription per source, all live concurrently.
     await asyncio.gather(*(

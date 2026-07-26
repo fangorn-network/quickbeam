@@ -64,3 +64,36 @@ def test_next_cursor_advances_to_latest_crawl_day():
     assert src.next_cursor([_asset("AAPL", 1.0, day="2026-07-15")], 20260716) == 20260716
     # News-only read (no asset day) keeps the cursor.
     assert src.next_cursor([_news("AAPL", "x")], 20260716) == 20260716
+
+
+def _bar(sym, ts, close, **kw):
+    return {"type": "price_bar", "symbol": sym, "ts": ts, "timeframe": "1Min",
+            "open": kw.pop("open", close), "high": kw.pop("high", close),
+            "low": kw.pop("low", close), "close": close, "source": "alpaca:iex", **kw}
+
+
+def test_price_bar_is_structured_no_text():
+    # A bar is filtered by where{symbol,ts}, never embedded — so it carries NO text/signal
+    # (its entityType goes on the watcher's --structured-types), and ts stays an int epoch
+    # so the server's numeric {gte,lte} ranges over it.
+    f = shape_fields(_bar("SPY", 1_784_000_040, 553.2, volume=1200, vwap=553.1,
+                          volumeUsd=663720.0))
+    assert f["entityType"] == "PriceBar" and f["symbol"] == "SPY"
+    assert f["ts"] == 1_784_000_040 and isinstance(f["ts"], int)
+    assert f["close"] == 553.2 and f["volumeUsd"] == 663720.0
+    assert "text" not in f and "signal" not in f
+
+
+def test_price_bars_are_own_nodes_no_edges():
+    # Each (symbol, timeframe, ts) is its own immutable row; no per-bar Asset edge (bars
+    # are queried by field, not graph-walked).
+    a, b = _bar("SPY", 1_784_000_040, 553.2), _bar("SPY", 1_784_000_100, 553.4)
+    assert node_id(a) != node_id(b)
+    nodes, edges = build_graph([a, b])
+    assert len(nodes["PriceBar"]) == 2 and edges == []
+    assert "Asset" not in nodes
+
+
+def test_next_cursor_advances_on_price_bar_day():
+    # 1_784_000_040 = 2026-07-14 UTC → cursor 20260714.
+    assert AlpacaSource().next_cursor([_bar("SPY", 1_784_000_040, 1.0)], 0) == 20260714

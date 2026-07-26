@@ -31,8 +31,10 @@ ERC-20 Transfer flow. There is no fixture mode; every read hits the live chain.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
+import os
 import socket
 import sys
 import time
@@ -59,6 +61,7 @@ ROBINHOOD_PRESENTATION: dict = {
         "Asset":              "trending_up",
         "Transfer":           "swap_horiz",
         "Wallet":             "account_balance_wallet",
+        "PriceBar":           "candlestick_chart",
         "CorporateAction":    "account_balance",
         "OracleUpdate":       "bolt",
         "LiquidityRebalance": "water_drop",
@@ -122,6 +125,57 @@ def _epoch_to_utc(ts):
         return _dt.datetime.fromtimestamp(int(ts), tz=_dt.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     except (ValueError, TypeError, OSError, OverflowError):
         return None
+
+
+def _asof_close(series: list[tuple[int, float]], ts: int | None) -> float | None:
+    """Historical close AT-OR-BEFORE `ts` (forward-fill) from a time-sorted (ts, close)
+    series — the price you'd have filled at that on-chain moment. None if `ts` precedes the
+    first bar or the series is empty. PURE (bisect, no I/O)."""
+    if not series or ts is None:
+        return None
+    i = bisect.bisect_right(series, (int(ts), float("inf")))
+    return series[i - 1][1] if i > 0 else None
+
+
+def _fill_transfer_prices(evs: list[dict], bars: list[dict]) -> int:
+    """Fill each Transfer's `price` (and recompute `usdValue = value × price`) with the
+    Alpaca close AT its on-chain timestamp — a REAL event-timed price series per asset,
+    not one flat current scalar (which made usdValue dead-flat across every time bin).
+    Mutates `evs` in place; returns how many transfers were priced. PURE — build the
+    per-symbol (ts, close) series from `bars`, as-of each transfer. Transfers with no
+    covering bar (symbol has no equity, or ts precedes the window) are left unpriced —
+    honestly absent, not back-fabricated."""
+    series: dict[str, list[tuple[int, float]]] = {}
+    for b in bars:
+        c, ts = _num(b.get("close")), b.get("ts")
+        if c is not None and ts is not None and b.get("symbol"):
+            series.setdefault(b["symbol"], []).append((int(ts), c))
+    for s in series.values():
+        s.sort()
+    n = 0
+    for e in evs:
+        if e.get("type") != "transfer":
+            continue
+        px = _asof_close(series.get(e.get("symbol"), []), e.get("blockTimestamp"))
+        if px is None:
+            continue
+        e["price"] = round(px, 6)
+        v = _num(e.get("value"))
+        if v is not None:
+            e["usdValue"] = round(v * px, 2)   # overwrite the flat current-price estimate
+        n += 1
+    return n
+
+
+def _transfer_in_window(block: int, ts: int | None,
+                        since_block: int, since_ts: int) -> bool:
+    """True if a transfer at (block, ts) is at/above the deep-backfill floor. PURE.
+    A zero/None field simply isn't tested against its floor (honestly absent, not below)."""
+    if since_block and block and block < since_block:
+        return False
+    if since_ts and ts and ts < since_ts:
+        return False
+    return True
 
 
 def _fmt_usd(x):
@@ -551,6 +605,8 @@ def node_id(ev: dict) -> str:
     t, sym = ev.get("type"), ev.get("symbol", "?")
     if t == "asset":
         return _asset_id(ev)
+    if t == "price_bar":
+        return f"rh:bar:{sym}:{ev.get('timeframe', '?')}:{ev.get('ts', '?')}"
     if t == "corporate_action":
         return f"rh:ca:{sym}:{ev.get('exDate', '?')}:{ev.get('actionType', '?')}"
     if t == "oracle_update":
@@ -569,6 +625,22 @@ def shape_fields(ev: dict) -> dict:
     """Raw event → node fields. Carries the verbalized `text` blurb (embedded), the
     ticker/sector/signal facets, and the type-specific structured measures (indexed
     for hybrid filtering)."""
+    if ev.get("type") == "price_bar":
+        # PRICE-HISTORY layer (from the merged Alpaca leg): a bounded per-symbol bar on a
+        # regular time grid — the 30-day price series a backtest needs, decoupled from
+        # transfer volume (which is minutes-deep on wash tokens, weeks-deep on quiet ones).
+        # STRUCTURED-ONLY: no text/signal, filtered by where{symbol,ts}, never embedded —
+        # mark PriceBar on the watcher's --structured-types. ts is epoch seconds (int).
+        bar = {
+            "entityType": "PriceBar", "symbol": ev.get("symbol"),
+            "ts": int(ev["ts"]) if ev.get("ts") is not None else None,
+            "timeframe": ev.get("timeframe"), "source": ev.get("source"),
+            "open": _num(ev.get("open")), "high": _num(ev.get("high")),
+            "low": _num(ev.get("low")), "close": _num(ev.get("close")),
+            "volume": _num(ev.get("volume")), "vwap": _num(ev.get("vwap")),
+            "volumeUsd": _num(ev.get("volumeUsd")),
+        }
+        return {k: v for k, v in bar.items() if v is not None}
     entity = _TYPE_TO_ENTITY.get(ev.get("type"), "Asset")
     fields: dict = {
         "symbol":     ev.get("symbol"),
@@ -756,6 +828,17 @@ def build_graph(events: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
                 asset_block[aid] = blk
             continue
 
+        if ev.get("type") == "price_bar":
+            # Price-history bar → its own PriceBar node, no Asset edge: queried by its own
+            # `symbol` field via where{symbol,ts}, never graph-walked (per-bar edges would be
+            # bloat at ~160k bars).
+            nid = node_id(ev)
+            if nid not in seen_nodes:
+                seen_nodes.add(nid)
+                others.setdefault("PriceBar", []).append(
+                    {"name": nid, "fields": shape_fields(ev)})
+            continue
+
         spec = _EVENT_SPEC.get(ev.get("type"))
         if not spec:
             continue
@@ -861,22 +944,30 @@ def read_robinhood_events(rpc_url: str | None = None, *,
                           blockscout_url: str | None = None, block_gt: int = 0,
                           max_assets: int = 0,
                           with_transfers: bool = False, max_transfers: int = 5,
-                          with_holders: bool = False) -> list[dict]:
+                          with_holders: bool = False,
+                          transfer_since_block: int = 0,
+                          transfer_since_ts: int = 0) -> list[dict]:
     """Read raw Robinhood-Chain events from the live chain — the tokenized-stock
     universe + live prices from the Blockscout explorer, block height from JSON-RPC
     (and, with `with_transfers`, real on-chain Transfer flow). Only transfers with
     blockNumber > block_gt are returned; Asset snapshots are always emitted (they are
-    live price quotes stamped at chain head, not block-gated events)."""
+    live price quotes stamped at chain head, not block-gated events).
+
+    `transfer_since_block`/`transfer_since_ts` switch transfers to DEEP-WINDOW backfill:
+    every transfer back to that floor, uncapped, instead of the newest `max_transfers`."""
     evs = _read_robinhood_chain(rpc_url or ROBINHOOD_RPC_URL,
                                 blockscout_url or ROBINHOOD_BLOCKSCOUT,
-                                max_assets, with_transfers, max_transfers, with_holders)
+                                max_assets, with_transfers, max_transfers, with_holders,
+                                transfer_since_block, transfer_since_ts)
     return [e for e in evs
             if e.get("type") != "transfer" or int(e.get("blockNumber", 0) or 0) > block_gt]
 
 
 def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0,
                           with_transfers: bool = False, max_transfers: int = 5,
-                          with_holders: bool = False) -> list[dict]:
+                          with_holders: bool = False,
+                          transfer_since_block: int = 0,
+                          transfer_since_ts: int = 0) -> list[dict]:
     """Read the live tokenized-stock universe from Robinhood Chain and emit one
     `asset` snapshot per stock. With `with_transfers`, also read each token's recent
     ERC-20 Transfer events: the Asset gains recentVolume/recentTransfers and the
@@ -1026,28 +1117,73 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
                 v = _tokens_moved(it)
                 return (v * px) >= _DUST_USD if px else v > 0
 
-            # Page until we hold `max_transfers` REAL (non-dust) transfers — not merely
-            # max_transfers ROWS. Blockscout serves newest-first, so a dust spray otherwise
-            # fills the entire window and the token reads as dormant (see _split_dust). A
-            # healthy token still breaks on page 1-2, so the wider page budget is only
-            # spent on the tokens that are actually buried under a spray.
+            # TWO paging modes. Blockscout serves transfers NEWEST-FIRST, cursor-paginated
+            # (no server-side block/time filter), so both walk `next_page_params` backward:
+            #   DEFAULT (count) — stop once we hold `max_transfers` REAL (non-dust) transfers.
+            #     A dust spray otherwise fills the window and the token reads as dormant (see
+            #     _split_dust); a healthy token still breaks on page 1-2, so the wider page
+            #     budget is only spent on tokens buried under a spray.
+            #   WINDOW (backfill) — set by --transfer-since-{days,block}: page until we cross
+            #     BELOW the floor (this page's oldest block/ts < floor), collecting EVERY
+            #     in-window transfer uncapped. This is the deep, time-ranged history a
+            #     backtest needs; the count cap only ever reaches back hours on liquid names.
+            def _oldest(page_items) -> tuple[int, int]:
+                blks = [int(it.get("block_number") or 0) for it in page_items]
+                tss = [x for x in (_iso_to_epoch(it.get("timestamp")) for it in page_items) if x]
+                return (min(blks) if blks else 0), (min(tss) if tss else 0)
+
+            def _below_floor(page_items) -> bool:
+                ob, ots = _oldest(page_items)
+                return not _transfer_in_window(ob, ots, transfer_since_block, transfer_since_ts)
+
+            window = bool(transfer_since_block or transfer_since_ts)
             items: list[dict] = []
-            max_pages = min(200, max(1, -(-max_transfers // 50) + 6))
+            # Window mode is bounded by the floor, not a count — a high hard ceiling only
+            # guards a runaway (a token with no page below the floor). Default stays tight.
+            max_pages = 5000 if window else min(200, max(1, -(-max_transfers // 50) + 6))
             tparams: dict | None = None
             prev_tcursor: dict | None = None
-            for _ in range(max_pages):
+            for _pg in range(max_pages):
                 try:
                     page = _get(f"/api/v2/tokens/{addr}/transfers", tparams) or {}
                 except Exception as e:  # noqa: BLE001 — flow is best-effort, never fatal
                     print(f"[robinhood] transfers for {sym} failed ({e})", file=sys.stderr)
                     break
-                items.extend(page.get("items", []))
+                page_items = page.get("items", [])
+                items.extend(page_items)
+                # Deep backfill pages Blockscout ~50-at-a-time BACKWARD with no server-side
+                # block filter, so a liquid token is thousands of sequential calls — without
+                # this it looks hung. Log how far back we've reached so progress is visible.
+                if window and _pg and _pg % 5 == 0:
+                    _, ots = _oldest(page_items)
+                    print(f"[robinhood]   {sym}: {len(items):,} transfers, back to "
+                          f"{_epoch_to_utc(ots) or '?'} ({_pg} pages)…",
+                          file=sys.stderr, flush=True)
                 npp = page.get("next_page_params")
-                if (not npp or npp == prev_tcursor
-                        or sum(1 for it in items if _is_real(it)) >= max_transfers):
+                if not npp or npp == prev_tcursor:
+                    break
+                real_so_far = sum(1 for it in items if _is_real(it))
+                if window:
+                    # Stop at the time floor OR the --max-transfers ceiling, whichever
+                    # comes first. A wash-traded token (NVDA does ~600k transfers/DAY) makes
+                    # a pure time window millions of rows / hundreds of thousands of pages —
+                    # it never finishes — so the count ceiling is what keeps backfill sane.
+                    # --max-transfers 0 opts into the (rarely wanted) truly-uncapped walk.
+                    if _below_floor(page_items) or (max_transfers and real_so_far >= max_transfers):
+                        break
+                elif real_so_far >= max_transfers:
                     break
                 prev_tcursor = npp
                 tparams = _enc_cursor(npp)
+
+            if window:
+                # Drop the tail that spilled past the floor on the last page (we page a
+                # whole page at a time, so the final page straddles the boundary).
+                def _in_window(it) -> bool:
+                    blk = int(it.get("block_number") or 0)
+                    ts = _iso_to_epoch(it.get("timestamp")) or 0
+                    return _transfer_in_window(blk, ts, transfer_since_block, transfer_since_ts)
+                items = [it for it in items if _in_window(it)]
 
             sized = sorted(((_tokens_moved(it), it) for it in items), key=lambda x: -x[0])
             real, dust = _split_dust(sized, px)
@@ -1084,7 +1220,12 @@ def _read_robinhood_chain(rpc_url: str, blockscout_url: str, max_assets: int = 0
             if atimes:
                 asset_ev["lastActivityAt"] = max(atimes)
             out.append(asset_ev)
-            for v, it in real[:max_transfers]:
+            # DEFAULT emits only the largest max_transfers ("notable" flow). WINDOW emits
+            # EVERY in-window transfer — the deep history is the whole point of the backfill.
+            # WINDOW honors the --max-transfers ceiling too (0 = uncapped); DEFAULT keeps
+            # the newest max_transfers largest.
+            emit = real if (window and not max_transfers) else real[:max_transfers]
+            for v, it in emit:
                 out.append({
                     "type": "transfer", "symbol": sym, "name": name, "sector": sector,
                     # The CONTRACT this transfer belongs to. Without it a Transfer could
@@ -1273,6 +1414,7 @@ class RobinhoodSource:
     # entity_type → volume stem (the volume_<n>_<stem>.json suffix).
     stems = {
         "Asset": "assets", "Transfer": "transfers", "Wallet": "wallets",
+        "PriceBar": "pricebars",
         "CorporateAction": "corporateactions", "OracleUpdate": "oracleupdates",
         "LiquidityRebalance": "liquidity", "NewsSentiment": "news",
     }
@@ -1321,16 +1463,121 @@ class RobinhoodSource:
                        help="Block to begin reading transfer flow from: emit only "
                             "transfers with blockNumber > max(START, checkpoint). Asset "
                             "snapshots are always emitted. A live floor, not a backfill.")
+        p.add_argument("--transfer-since-days", type=float, default=0.0,
+                       help="TIME-WINDOW backfill: page transfers back N days, stopping at "
+                            "the time floor OR the --max-transfers ceiling, whichever comes "
+                            "first (set --max-transfers, e.g. 2000; 0 = truly uncapped — "
+                            "careful). A pure time window is infeasible on wash-traded tokens "
+                            "(NVDA does ~600k transfers/DAY → ~18M over 30d), so the ceiling "
+                            "is required. One-shot — run with a FRESH/absent --checkpoint-file.")
+        p.add_argument("--transfer-since-block", type=int, default=0,
+                       help="Like --transfer-since-days but a hard block floor (takes "
+                            "precedence over --transfer-since-days when both are set).")
+        # MERGED PRICE LEG — one crawl, both upstreams, ONE Alpaca fetch feeding two layers.
+        # The chain has no price HISTORY (Blockscout `exchange_rate` is a live scalar), and
+        # these tokens mirror real equities 1:1, so the underlying-equity bars ARE the price.
+        # From that one fetch: (1) each Transfer's `price`/`usdValue` is filled with the close
+        # AT its on-chain timestamp (event-timed flow pricing), and (2) the bars are emitted
+        # as a bounded PriceBar series on a regular time grid — the 30-day history a backtest
+        # needs, decoupled from transfer volume (which is minutes-deep on wash tokens).
+        p.add_argument("--with-prices", action="store_true",
+                       help="Add Alpaca price history for the discovered tickers: fills each "
+                            "Transfer's event-timed `price`/`usdValue` AND emits a bounded "
+                            "PriceBar series (regular time grid — real 30d coverage on every "
+                            "asset, wash-traded or not). One merged crawl. Needs "
+                            "APCA_API_KEY_ID/APCA_API_SECRET_KEY (a ./.env is auto-loaded); "
+                            "FAILS LOUDLY if creds are missing rather than silently "
+                            "publishing flat prices. Mark PriceBar on the watcher's "
+                            "--structured-types so bars index but don't embed.")
+        p.add_argument("--bar-timeframe", default="5Min",
+                       help="PriceBar cadence + transfer-pricing resolution (default 5Min: "
+                            "~160k rows for 99 tickers × 30d, a good backtest balance. 1Hour "
+                            "≈16k rows/coarser; 1Min ≈800k rows/finest). Any Alpaca timeframe.")
+        p.add_argument("--bar-days", type=int, default=30,
+                       help="Days of PriceBar history to pull (default 30); also auto-extended "
+                            "to cover a deep transfer backfill window.")
+        p.add_argument("--price-feed", default="iex", choices=["iex", "sip", "delayed_sip"],
+                       help="Alpaca market-data feed for --with-prices (default iex, free; "
+                            "iex sees only IEX-routed volume so volumeUsd understates).")
 
     def read(self, cursor: int, args: argparse.Namespace) -> list[dict]:
         """Read the live chain. The effective transfer floor is max(--block-gt,
         --start-block, checkpoint) so the tail resumes above the last block seen."""
         floor = max(args.block_gt, args.start_block, cursor)
-        return read_robinhood_events(
+        # Deep-window backfill floor: --transfer-since-block wins; else N days → epoch.
+        since_block = getattr(args, "transfer_since_block", 0)
+        since_days = getattr(args, "transfer_since_days", 0.0)
+        since_ts = int(time.time() - since_days * 86400) if since_days and not since_block else 0
+        evs = read_robinhood_events(
             args.rpc_url, blockscout_url=args.blockscout_url,
             block_gt=floor, max_assets=args.max_assets,
             with_transfers=args.with_transfers, max_transfers=args.max_transfers,
-            with_holders=getattr(args, "with_holders", False))
+            with_holders=getattr(args, "with_holders", False),
+            transfer_since_block=since_block, transfer_since_ts=since_ts)
+        if getattr(args, "with_prices", False):
+            bars = self._read_prices(evs, args)      # 5-min bars over --bar-days, one fetch
+            # Both layers from that ONE fetch: (1) fill each Transfer's event-timed price,
+            # (2) emit the bars as the bounded PriceBar history series.
+            filled = _fill_transfer_prices(evs, bars)
+            if filled:
+                print(f"[robinhood] priced {filled} transfer(s) at their block time "
+                      f"(event-timed, not the flat current scalar)", file=sys.stderr)
+            if bars:
+                print(f"[robinhood] + {len(bars):,} PriceBar rows "
+                      f"({args.bar_timeframe} × {args.bar_days}d price history)", file=sys.stderr)
+            evs.extend(bars)
+        return evs
+
+    @staticmethod
+    def _read_prices(evs: list[dict], args: argparse.Namespace) -> list[dict]:
+        """Merged Alpaca price leg: pull the underlying-equity OHLCV for the tickers THIS
+        crawl discovered (deduped — a squat and its canonical share a ticker and thus one
+        underlying series), used to fill each Transfer's event-timed `price`. Reuses the
+        sibling alpaca source's bars reader rather than re-implementing the REST leg.
+        Best-effort: a price failure never sinks the chain crawl (the primary data)."""
+        symbols = sorted({e["symbol"] for e in evs
+                          if e.get("type") == "asset" and e.get("symbol")})
+        if not symbols:
+            return []
+        # The quickbeam CLI does NOT auto-load a .env, so a key sitting in ./.env never
+        # reaches os.environ and the whole price leg silently no-ops — publishing flat
+        # value×current-price transfers that LOOK real. Load it here (best-effort) and then
+        # FAIL LOUDLY if creds are still absent: a --with-prices crawl that can't price is a
+        # config error, not a thing to skip quietly.
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()                                       # a .env in the cwd, and…
+            pkg_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
+            load_dotenv(pkg_env)                                # …the one beside this package
+        except ImportError:
+            pass
+        key = getattr(args, "api_key", None) or os.environ.get("APCA_API_KEY_ID")
+        secret = getattr(args, "api_secret", None) or os.environ.get("APCA_API_SECRET_KEY")
+        if not (key and secret):
+            raise SystemExit(
+                "--with-prices needs Alpaca creds, but APCA_API_KEY_ID / APCA_API_SECRET_KEY "
+                "are unset. Put them in ./.env (auto-loaded) or export them:\n"
+                "  set -a; source .env; set +a\n"
+                "Refusing to publish transfers with NO event-timed price rather than "
+                "silently emitting flat value×current-price ones.")
+        try:
+            from quickbeam_alpaca.source import read_price_bars
+        except ImportError:
+            raise SystemExit("--with-prices needs the quickbeam-alpaca package: "
+                             "pip install -e ../example-alpaca-source")
+        # Cover the WHOLE transfer window (a deep --transfer-since-days backfill can reach
+        # far past --bar-days) so old transfers get priced too, not just recent ones.
+        tx_ts = [e["blockTimestamp"] for e in evs
+                 if e.get("type") == "transfer" and e.get("blockTimestamp")]
+        days = args.bar_days
+        if tx_ts:
+            days = max(days, int((time.time() - min(tx_ts)) / 86400) + 2)
+        bars = read_price_bars(api_key=key, api_secret=secret, symbols=symbols,
+                               timeframe=args.bar_timeframe, days=days, feed=args.price_feed)
+        if not bars:
+            print("[robinhood] WARNING: --with-prices returned no bars for any ticker "
+                  f"(feed={args.price_feed}); transfers stay unpriced", file=sys.stderr)
+        return bars
 
     def build_graph(self, records: list[dict]) -> tuple[dict[str, list[dict]], list[dict]]:
         return build_graph(records)

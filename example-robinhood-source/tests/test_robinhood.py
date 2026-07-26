@@ -3,11 +3,15 @@ cursor logic. No network, no DB: hand-build events, call the pure functions, ass
 This is exactly the payoff of the harness split — the source's whole testable core is
 `build_graph`/`next_cursor`, and the harness's staging/checkpoint/publish is tested
 once in quickbeam, not per source."""
+import argparse
 import time
+
+import pytest
 
 from quickbeam_robinhood.source import (RobinhoodSource, build_graph,
                                         freshness_report, node_id, shape_fields,
-                                        verbalize)
+                                        verbalize, _transfer_in_window,
+                                        _asof_close, _fill_transfer_prices)
 
 
 def _asset(sym, **kw):
@@ -383,3 +387,103 @@ def test_freshness_report_never_reports_negative_lag():
 
 def test_freshness_report_empty_is_none():
     assert freshness_report([], 0) is None
+
+
+def _pbar(sym, ts, close):
+    return {"symbol": sym, "ts": ts, "close": close}
+
+
+def test_asof_close_forward_fills_from_the_last_bar_at_or_before():
+    series = [(100, 10.0), (200, 11.0), (300, 12.0)]
+    assert _asof_close(series, 250) == 11.0     # last bar at/before 250
+    assert _asof_close(series, 200) == 11.0     # exact hit
+    assert _asof_close(series, 350) == 12.0     # after the last bar → carry it forward
+    assert _asof_close(series, 99) is None      # before the first bar → honestly absent
+    assert _asof_close([], 100) is None and _asof_close(series, None) is None
+
+
+def test_fill_transfer_prices_uses_event_time_not_a_flat_scalar():
+    # The core fix: usdValue was value × ONE current price (flat across time). Now each
+    # transfer is priced at the Alpaca close AT its own timestamp, so it MOVES.
+    bars = [_pbar("SPY", 100, 500.0), _pbar("SPY", 200, 520.0)]
+    t1 = _transfer("SPY", "0x1", value=2.0, blockTimestamp=150, usdValue=1040.0)  # stale
+    t2 = _transfer("SPY", "0x2", value=2.0, blockTimestamp=250)
+    n = _fill_transfer_prices([_asset("SPY"), t1, t2], bars)
+    assert n == 2
+    assert t1["price"] == 500.0 and t1["usdValue"] == 1000.0   # priced at its own minute
+    assert t2["price"] == 520.0 and t2["usdValue"] == 1040.0   # different price → not flat
+
+
+def test_fill_transfer_prices_leaves_uncovered_transfers_unpriced():
+    # A symbol with no equity series, or a ts before the window, is left unpriced — honest,
+    # not back-fabricated. build_graph still shapes the price when present.
+    bars = [_pbar("SPY", 200, 520.0)]
+    early = _transfer("SPY", "0x1", value=1.0, blockTimestamp=100)   # before first bar
+    noeq = _transfer("ROBIN", "0x2", value=1.0, blockTimestamp=250)  # no Alpaca ticker
+    assert _fill_transfer_prices([early, noeq], bars) == 0
+    assert "price" not in early and "price" not in noeq
+    priced = _transfer("SPY", "0x3", value=3.0, blockTimestamp=250)
+    _fill_transfer_prices([priced], bars)
+    assert shape_fields(priced)["price"] == 520.0                    # survives shaping
+
+
+def _bar(sym, ts, close, **kw):
+    return {"type": "price_bar", "symbol": sym, "ts": ts, "timeframe": "5Min",
+            "open": kw.pop("open", close), "high": kw.pop("high", close),
+            "low": kw.pop("low", close), "close": close, "source": "alpaca:iex", **kw}
+
+
+def test_price_bar_is_structured_no_text_or_signal():
+    # The bounded history layer: a bar is filtered by where{symbol,ts}, never embedded — so
+    # no text/signal, and ts stays an int epoch for the server's numeric {gte,lte}.
+    f = shape_fields(_bar("SPY", 1_784_000_040, 553.2, volume=1200, vwap=553.1,
+                          volumeUsd=663720.0))
+    assert f["entityType"] == "PriceBar" and f["symbol"] == "SPY"
+    assert f["ts"] == 1_784_000_040 and isinstance(f["ts"], int)
+    assert f["close"] == 553.2 and f["timeframe"] == "5Min"
+    assert "text" not in f and "signal" not in f
+
+
+def test_price_bars_are_own_nodes_no_edges_no_wallets():
+    a, b = _bar("SPY", 1_784_000_040, 553.2), _bar("SPY", 1_784_000_340, 553.4)
+    assert node_id(a) == "rh:bar:SPY:5Min:1784000040" and node_id(a) != node_id(b)
+    nodes, edges = build_graph([a, b])
+    assert len(nodes["PriceBar"]) == 2 and edges == []
+    assert "Wallet" not in nodes
+
+
+def test_price_bars_coexist_with_chain_data_in_one_graph():
+    # One merged crawl → Asset + Transfer + Wallet + PriceBar in a single build_graph.
+    recs = [_asset("SPY", price=553.0, address="0xabc"),
+            _transfer("SPY", "0x1", address="0xabc", fromAddr="0xf", toAddr="0xt",
+                      blockNumber=10, value=2.0),
+            _bar("SPY", 1_784_000_040, 553.2)]
+    nodes, edges = build_graph(recs)
+    assert {"Asset", "Transfer", "Wallet", "PriceBar"} <= set(nodes)
+    assert any(e["rel"] == "hasTransfer" for e in edges)   # chain edges intact
+
+
+def test_with_prices_fails_loudly_when_creds_are_missing(monkeypatch):
+    # The trap that made three rebuilds ship flat prices: --with-prices silently no-op'd
+    # without creds. Now it must RAISE (not return []) so the crawl fails visibly instead
+    # of publishing unpriced transfers that look real. (Patch load_dotenv so a real ./.env
+    # can't rescue the test.)
+    monkeypatch.delenv("APCA_API_KEY_ID", raising=False)
+    monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: None)
+    ns = argparse.Namespace(with_prices=True, bar_timeframe="1Min", bar_days=30,
+                            price_feed="iex", api_key=None, api_secret=None)
+    with pytest.raises(SystemExit):
+        RobinhoodSource._read_prices([{"type": "asset", "symbol": "SPY"}], ns)
+
+
+def test_transfer_window_floor_by_block_and_ts():
+    # DEEP BACKFILL floor: a transfer at/above the floor is IN window; below is out.
+    assert _transfer_in_window(500, None, since_block=400, since_ts=0) is True
+    assert _transfer_in_window(399, None, since_block=400, since_ts=0) is False
+    assert _transfer_in_window(0, 1_000, since_block=0, since_ts=900) is True
+    assert _transfer_in_window(0, 899, since_block=0, since_ts=900) is False
+    # No floor set → everything is in window (default newest-N mode never filters here).
+    assert _transfer_in_window(1, 1, since_block=0, since_ts=0) is True
+    # A missing field is honestly absent, not "below" — its floor simply doesn't apply.
+    assert _transfer_in_window(0, None, since_block=400, since_ts=0) is True
