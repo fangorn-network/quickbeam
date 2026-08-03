@@ -28,20 +28,16 @@ quickbeam.egg-info/top_level.txt
 quickbeam/ingest/__init__.py
 quickbeam/ingest/build.py
 quickbeam/ingest/checkpoint.py
-quickbeam/ingest/commits.py
 quickbeam/ingest/embed.py
 quickbeam/ingest/identity.py
 quickbeam/ingest/umap.py
 quickbeam/ingest/graph/__init__.py
-quickbeam/ingest/graph/bundle.py
 quickbeam/ingest/graph/projection.py
-quickbeam/ingest/graph/view.py
 quickbeam/ingest/scrapers/__init__.py
 quickbeam/ingest/scrapers/harness.py
 quickbeam/ingest/scrapers/source.py
 quickbeam/ingest/sources/__init__.py
-quickbeam/ingest/sources/ipfs.py
-quickbeam/ingest/sources/subgraph.py
+quickbeam/ingest/sources/fangorn.py
 quickbeam/pipelines/__init__.py
 quickbeam/pipelines/events.py
 quickbeam/pipelines/fangorn_schema.py
@@ -56,5 +52,4 @@ tests/test_cdn_edges.py
 tests/test_mcp.py
 tests/test_roles.py
 tests/test_schemagen_identity.py
-tests/test_view_fusion.py
 tests/test_x402_agent.py

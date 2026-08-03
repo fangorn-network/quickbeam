@@ -52,7 +52,10 @@ body {
 
 a { color: inherit; text-decoration: none; }
 
-button { font: inherit; color: inherit; cursor: pointer; }
+/* Strip UA chrome. Without this a button with no background/border of its own renders
+   as a light-grey box — glaring on a dark theme. Every styled button here sets both,
+   so they're unaffected; padding is left alone since several rely on their own. */
+button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
 
 :focus-visible {
   outline: 2px solid var(--secondary);
@@ -76,7 +79,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
   height: 2px; background: var(--gradient);
 }
 
-.brand { display: flex; align-items: baseline; gap: 10px; font-weight: 700; letter-spacing: -.02em; }
+.brand { display: flex; align-items: baseline; gap: 10px; font-weight: 700; letter-spacing: -.02em;
+  padding: 0; text-align: left; }
 .brand-mark { font-size: 18px; }
 /* Explicitly a Fangorn demo *of* Audius data — never dressed as an Audius property. */
 .brand-sub { font-size: 12px; color: var(--text-faint); font-weight: 500; }

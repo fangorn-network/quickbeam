@@ -65,7 +65,7 @@ export default function RootLedger({ stats }: { stats: Stats }) {
         <div className="root root-b">
           <span className="root-role">Publisher B — the artist</span>
           {b.labelId ? (
-            <button className="root-name" style={{ background: 'none', border: 0, padding: 0, textAlign: 'left' }}
+            <button className="root-name" style={{ padding: 0, textAlign: 'left' }}
                     onClick={() => goEntity(b.labelId!)}>
               {b.label}
             </button>
