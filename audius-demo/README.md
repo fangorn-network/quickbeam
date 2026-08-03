@@ -30,6 +30,15 @@ venv/bin/python -m quickbeam.cli cdn serve --cdn-dir ./audius-build/cdn --cors -
 cd audius-demo && npm install && npm run dev      # http://localhost:5180
 ```
 
+### The other client
+
+This app is not the only consumer of that snapshot. `quickbeam mcp` pulls the same shards
+and the same linkset and hands them to an **agent** as tools — semantic search plus typed
+traversal, with the same "the data comes to you, the query stays here" property this app
+has. `.mcp.json` at the repo root registers it; it reads from the very same `cdn serve`
+on 8090 that step 1 starts. Setup and the traversal recipe are in
+[`audius-source/README.md`](../audius-source/README.md#let-an-agent-explore-it-mcp).
+
 ### Showing it on another device (ngrok, Cloudflare tunnel, a phone)
 
 Tunnel **only the app port**. The snapshot rides along with it:

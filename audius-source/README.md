@@ -77,6 +77,74 @@ quickbeam cdn edges --cdn-dir ./audius-build/cdn --domain audius \
 quickbeam cdn serve --cdn-dir ./audius-build/cdn --cors
 ```
 
+## Let an agent explore it (MCP)
+
+The browser is one client of that served snapshot. `quickbeam mcp` is another: an MCP
+server that pulls the same shards and the same linkset, then exposes them as agent
+tools. It is a **pull-client, not a proxy** — the snapshot comes to the process and the
+queries never leave it, which is the same claim the browser demo makes, made to an agent
+instead of a person.
+
+```sh
+pip install -e ".[agent]"                    # fastmcp + eth-account
+# `cdn serve` from step 4 above must be running — the MCP server reads from it.
+```
+
+`.mcp.json` at the repo root already registers it over stdio, so Claude Code picks it up
+with no further setup:
+
+```json
+{"mcpServers": {"quickbeam-audius": {
+  "command": "/abs/path/to/venv/bin/python",
+  "args": ["-m", "quickbeam.cli", "mcp", "--transport", "stdio",
+           "--cdn-url", "http://localhost:8090"]}}}
+```
+
+Use the absolute interpreter path. The `venv/bin/quickbeam` console script can carry a
+stale shebang, and `-m quickbeam.cli` sidesteps it.
+
+### The loop
+
+```
+list_datasets → describe(audius) → search(…) → relations(id) → neighbors(id, rel=…)
+```
+
+`describe` returns the 16 relation names from the table above — that is the vocabulary
+`neighbors` accepts. `search` is the semantic axis (exact cosine over all 25,372 records,
+in-process); `relations`/`neighbors` are the relational one.
+
+**Call `relations` before `neighbors`, always.** It returns one row per
+(relation, direction) with a count, instead of the neighbours themselves:
+
+```
+relations(audius:genre:electronic)  →  degree 2958
+   in  inGenre  2232   crosses=False
+   in  worksIn   726   crosses=False
+```
+
+Two rows instead of 2,958 records. Skip it and you get an arbitrary slice of a hub with
+no signal that you saw 25 of three thousand — `neighbors` reports `total` and
+`truncated` for the same reason.
+
+### The hop that makes the point
+
+The split this package builds is legible to an agent in three calls, without either
+publisher's cooperation:
+
+```
+relations(audius:artistref:E2O1R)      → out sameAs 1  crosses=True     ← sorted first
+neighbors(…, rel="sameAs")             → audius:user:E2O1R  publisher=0x2222…
+relations(audius:user:E2O1R)           → out created 41
+```
+
+The platform's stub (wallet A), the artist's own node (wallet B), then their real
+catalog. `crosses=True` marks a group whose neighbour was published by a different
+wallet — the edges no single publisher could have authored alone.
+
+That flag deliberately **excludes vocabulary nodes**, for the reason in the gotchas
+below: Genre/Mood/Tag content-address to one record carrying one owner, so counting them
+reports 12,657 crossings against this graph instead of the true **113**.
+
 ## Why there's a cache
 
 Fangorn is content-addressed: identical content must re-derive an identical CID, or
