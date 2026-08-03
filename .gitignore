@@ -21,3 +21,4 @@ audius-build/stage/
 audius-build/*.log
 **/.wrangler/
 **/*.tsbuildinfo
+**/dist

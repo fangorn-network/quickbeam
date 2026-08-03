@@ -1,0 +1,5 @@
+quickbeam
+pymupdf
+
+[dev]
+pytest

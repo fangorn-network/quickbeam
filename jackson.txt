@@ -1,0 +1,395 @@
+================================================================================
+JACKSON, MS — LOCAL DISCOVERY EMBEDDINGS RUNBOOK (from scratch)
+================================================================================
+
+Build a small, self-contained semantic-search shard for a locality (here:
+Jackson, Mississippi) covering its physical BUSINESSES (Google Places: hours,
+ratings, reviews) and the EVENTS happening at them (Eventbrite/Tribe), then
+browse it in a local web UI.
+
+This uses the LOCAL PREBAKE path (no blockchain / no Fangorn publishing). It is
+the fastest way to a working demo. The on-chain `quickbeam build` path exists too
+(see docs/LOCAL_DISCOVERY_GUIDE.md) but is not needed here.
+
+Pipeline at a glance:
+  scrape (Stage A)  ->  raw->graph (Stage B)  ->  schema+embed+bake (Stage C)  ->  demo (Stage D)
+  Google Places +        placespg /                schemagen / prebake /             cdn serve +
+  Eventbrite             eventspg                  cdn bake                          examples app
+
+Only Stage A costs money. Everything downstream reprocesses the local cache for
+free, so you can iterate the model and re-bake without re-paying Google.
+
+Run everything from the repo root unless noted.
+
+--------------------------------------------------------------------------------
+PREREQUISITES
+--------------------------------------------------------------------------------
+- Docker (for Qdrant + Postgres)
+- Python 3.12 + the repo venv  (developed on 3.12.3)
+- Node 18+  (developed on Node 22) — for the demo UI in examples/
+- A Google Cloud API key with "Places API (new)" enabled AND billing on.
+  >> Do NOT paste your real key into this file or any committed file. Export it
+     in your shell only. Treat a leaked key as compromised and rotate it.
+
+Install the CLI once (from repo root):
+  python -m venv venv
+  source venv/bin/activate
+  pip install -e ".[gpu]"     # CUDA build; or ".[cpu]" for CPU-only
+  quickbeam --help
+
+--------------------------------------------------------------------------------
+STAGE 0 — ONE-TIME SETUP
+--------------------------------------------------------------------------------
+source venv/bin/activate
+
+# Secrets / config — set in your shell, never commit these.
+export GOOGLE_PLACES_API_KEY=AIza...                 # your key; billing on, Places API (new)
+export PLACES_PG_DSN=postgresql://places:places@localhost:5432/places_db
+export EVENTS_PG_DSN=postgresql://places:places@localhost:5432/places_db
+# (the places/places login is a local trust-auth dummy, not a real secret)
+
+# Qdrant (vector store) + Postgres (raw cache). Skip any already running.
+docker run -d -p 6333:6333 -p 6334:6334 --name qdrant-core qdrant/qdrant
+docker run -d --name places -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres
+
+# Create the role + database the DSN points at (the postgres image does NOT make
+# these for you). Safe to re-run; errors if they already exist are harmless.
+docker exec places psql -U postgres -c "CREATE ROLE places LOGIN PASSWORD 'places';"
+docker exec places psql -U postgres -c "CREATE DATABASE places_db OWNER places;"
+
+# Sanity check Qdrant is reachable:
+curl -s http://localhost:6333/collections        # -> {"result":{"collections":[...]},...}
+
+--------------------------------------------------------------------------------
+STAGE A — SCRAPE JACKSON  (the ONLY step that costs money)
+--------------------------------------------------------------------------------
+Jackson, MS downtown center: 32.2988,-90.1848
+
+There are TWO kinds of search and they behave differently:
+  * Nearby Search (--location/--radius/--sweep)  -> FILTERED by --types, capped
+    at 20 results per tile, ranked by Google's opaque "prominence".
+  * Text Search (--query)                         -> IGNORES --types entirely;
+    matches on name/relevance. This is how you catch niche, type-less places.
+
+----- A1. Places: a wide sweep PLUS text passes (recommended for full coverage) -
+
+# Wide, VALID Google type net (max 50 types per Nearby call). Adds the niche
+# subtypes that actually exist in Google's Table A (book_store, gift_shop,
+# thrift_store, art_gallery, museums, performing arts, etc.).
+TYPES="restaurant,cafe,coffee_shop,bar,pub,wine_bar,bakery,ice_cream_shop,meal_takeaway,fast_food_restaurant,store,book_store,clothing_store,shoe_store,jewelry_store,gift_shop,thrift_store,electronics_store,furniture_store,home_goods_store,hardware_store,sporting_goods_store,pet_store,liquor_store,convenience_store,grocery_store,supermarket,department_store,shopping_mall,florist,art_gallery,museum,art_museum,history_museum,cultural_center,performing_arts_theater,concert_hall,movie_theater,night_club,tourist_attraction,hair_care,beauty_salon,barber_shop,spa,gym,park"
+
+# ALWAYS dry-run first: runs only the free Search, reports billable Place Details
+# a real run WOULD make. Fetches/stores nothing.
+quickbeam data places-fetch --location 32.2988,-90.1848 --radius 12000 \
+  --types "$TYPES" --sweep --min-radius 250 --max-tiles 600 --max-details 500 --dry-run
+
+# Real run once the cost looks right. --max-details is your HARD spend ceiling.
+quickbeam data places-fetch --location 32.2988,-90.1848 --radius 12000 \
+  --types "$TYPES" --sweep --min-radius 250 --max-tiles 600 --max-details 500
+
+# Text passes catch the long tail Google has NO type for (record/vinyl shops,
+# antiques, tattoo, comic/hobby). Put the locality IN the query string.
+for q in "record stores in Jackson MS" \
+         "vintage and antique shops in Jackson MS" \
+         "art galleries in Jackson MS" \
+         "independent bookstores in Jackson MS" \
+         "live music venues in Jackson MS"; do
+  quickbeam data places-fetch --query "$q" --max-results 60
+done
+
+# Grab one known place directly by place_id (skips search; guaranteed include):
+#   quickbeam data places-fetch --details-only "ChIJ...."
+
+----- A2. Events: free, no API key -------------------------------------------
+
+# NOTE the "--bbox=" form (equals, no space). A leading "-" in the value makes
+# argparse think it's a flag otherwise ("expected one argument").
+# bbox order = "west_lng,south_lat,east_lng,north_lat".
+quickbeam data events-fetch --source eventbrite-location \
+  --bbox="-90.40,32.18,-89.97,32.42" --max-events 500
+
+# If you get a 405 "Human Verification" page, Eventbrite is anti-bot blocking the
+# scraper (not your command). Events are OPTIONAL — you can ship a businesses-only
+# shard and add events later. Workarounds: retry later / different network; or use
+# a The Events Calendar (Tribe) site if one exists for the area:
+#   quickbeam data events-fetch --source tribe --site https://<area-site> --max-events 500
+
+--------------------------------------------------------------------------------
+STAGE B — RAW STORE -> FANGORN GRAPH (one merged stage_volumes/)
+--------------------------------------------------------------------------------
+# stage_volumes/ is gitignored (a fresh clone starts empty). If it has leftover
+# data from a PRIOR locality, clear it first or your shard will mix cities:
+#   rm -f stage_volumes/volume_*.json
+
+quickbeam data placespg  --output-dir ./stage_volumes    # -> volume_1_* (Business/Review/Category/Reviewer/Locality)
+quickbeam data eventspg  --output-dir ./stage_volumes    # -> volume_2_* (Event/Organizer), linked to venues by coordinate
+
+# Quick locality sanity check (should be overwhelmingly Jackson, MS):
+python3 - <<'PY'
+import json
+d=json.load(open('stage_volumes/volume_1_businesses.json'))
+from collections import Counter
+print(len(d),'businesses')
+for loc,n in Counter(b['fields'].get('locality','?') for b in d).most_common(6): print(f'  {n:>4}  {loc}')
+PY
+
+--------------------------------------------------------------------------------
+STAGE C — SCHEMA + EMBEDDINGS + SHARD  (prebake path)
+--------------------------------------------------------------------------------
+
+# C1. Infer one bundle schema across BOTH volumes (--volume 0 = all volumes).
+quickbeam data schemagen --input-dir ./stage_volumes --volume 0 \
+  --prefix fangorn.places --bundle-name localcore --version v1
+
+# C2. CREATE THE QDRANT COLLECTION FIRST.
+# *** prebake does NOT create the collection — it only uploads into it. ***
+# Must match the embedding recipe: size 256, Cosine, on_disk (this is exactly
+# what `quickbeam build` creates). If you change --dim later, change size to match.
+curl -X PUT http://localhost:6333/collections/fangorn \
+  -H 'Content-Type: application/json' \
+  -d '{"vectors": {"size": 256, "distance": "Cosine", "on_disk": true}}'
+
+# C3. Embed BUSINESSES first (volume 1). They are the places themselves AND the
+# targets that --link-events folds event titles into, so they must exist before C4.
+quickbeam data prebake --input-dir ./stage_volumes --volume 1 --types Business --collection fangorn
+
+# C4. Embed EVENTS + organizers (volume 2). --link-events folds each event's title
+# into its venue's Business payload (payload-only; business vectors untouched).
+# Skip this step entirely if you have no events.
+quickbeam data prebake --input-dir ./stage_volumes --volume 2 \
+  --types Event,Organizer --collection fangorn --link-events
+
+# C5. Bake the static CDN shard. The "places" domain filter in domains.json keeps
+# entityType in {Business, Event}; other node types are dropped from the shard.
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+
+--------------------------------------------------------------------------------
+STAGE D — RUN THE DEMO LOCALLY
+--------------------------------------------------------------------------------
+Two terminals. The app downloads the baked shard from the local CDN and does all
+search in-browser (shards mode = same as the production static deploy).
+
+# Terminal 1 — serve the baked shards. --cors is REQUIRED for the browser fetch.
+quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
+
+# Terminal 2 — run the app pointed at the CDN, pinned to the places domain, with
+# Jackson chrome. (cd examples first; run `npm install` once if node_modules is missing.)
+cd examples
+VITE_DATA_SOURCE=shards VITE_CDN_URL=http://localhost:8090 VITE_DOMAIN=places \
+VITE_COMMUNITY_NAME="Jackson" VITE_COMMUNITY_REGION="Mississippi" \
+VITE_COMMUNITY_REGION_ABBR="MS" VITE_COMMUNITY_SLUG="jackson-ms" \
+npm run dev
+# Open the URL it prints — http://localhost:5173 (or 5174 if 5173 is already taken).
+
+# ALTERNATIVE (no CDN serve needed): query the live Qdrant collection directly via
+# the Vite dev proxy. Shows the full collection, not just the baked shard.
+#   cd examples && VITE_DATA_SOURCE=qdrant npm run dev
+
+# After re-baking (Stage C5), just RELOAD the browser — `cdn serve` serves the new
+# shard from disk; no restart needed.
+
+--------------------------------------------------------------------------------
+VERIFY
+--------------------------------------------------------------------------------
+# Points landed in Qdrant:
+curl -s http://localhost:6333/collections/fangorn | python3 -m json.tool   # status: green, points_count > 0
+# Events linked to venues (only if you ingested events):
+grep -c '"rel": "hostedAt"' stage_volumes/volume_2_edges.json              # > 0
+# Baked shard summary:
+python3 -c "import json;m=json.load(open('cdn/places/manifest.json'));print(m['count'],m['entity_types'])"
+# In the UI: search "coffee", "live music", a neighborhood name -> Jackson hits.
+
+--------------------------------------------------------------------------------
+REFRESHING / ADDING A SINGLE MISSING PLACE
+--------------------------------------------------------------------------------
+Everything upserts by id (place_id / event_key), so refreshes are incremental.
+Example — a specific shop the sweep missed:
+
+quickbeam data places-fetch --query "The End of All Music, Jackson MS" --max-results 5
+#   ...or: quickbeam data places-fetch --details-only "<place_id>"
+quickbeam data placespg --output-dir ./stage_volumes
+quickbeam data prebake --input-dir ./stage_volumes --volume 1 --types Business --collection fangorn
+quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+# reload the browser
+
+--------------------------------------------------------------------------------
+PITFALLS & GOTCHAS  (read this — it will save you an hour)
+--------------------------------------------------------------------------------
+1. prebake does NOT create the Qdrant collection. If the collection is missing
+   you get: NOT_FOUND: Collection `fangorn` doesn't exist!  -> do Stage C2 first.
+   (Its index-setup step swallows the same error and mislabels it "already
+   present", so the real failure only shows up at the upload step.)
+
+2. ORDER MATTERS in prebake: businesses (volume 1) BEFORE events (volume 2).
+   The volume-2 --link-events step writes into EXISTING Business points; run it
+   first and it has nothing to fold into. The guide's short example only shows the
+   volume-2 command — that alone gives you an events-only collection with no places.
+
+3. The CDN "places" domain filter keeps only entityType in {Business, Event}.
+   Organizer/Review/Category/Reviewer/Locality points are dropped at bake time.
+   Consequence of the PREBAKE path specifically: review text is NOT folded into
+   business documents (that folding only happens in the on-chain `build`
+   root-profiles path), so a review-only term ("tacos") may not surface its
+   business. Businesses are still searchable by name, type, locality, editorial
+   summary, rating, amenities.
+
+4. --bbox with a leading negative longitude needs the "=" form:
+   --bbox="-90.40,..."  (a space makes argparse treat the value as a flag).
+   Same trick for any flag whose value starts with "-".
+
+5. Eventbrite anti-bot: a 405 "Human Verification" HTML page means you were
+   blocked, not that your command was wrong (it will report "Saved 0 events").
+   Events are optional. Retry later / different network, try a Tribe site, or ship
+   businesses-only and add events later.
+
+6. Niche places & the type net:
+   - --types ONLY filters the Nearby sweep. Text Search (--query) ignores it.
+   - Google has NO record_store / vinyl / antique / tattoo / comic type — those
+     collapse to the generic "store". So a wider type net will NOT catch a record
+     shop; Text Search will. Use both.
+   - Nearby Search is capped at 20 results per tile, ranked by "prominence", so
+     low-prominence indie shops get dropped from dense tiles. --sweep subdivides
+     a tile only when it returns exactly 20, and stops at --min-radius. Lower
+     --min-radius (e.g. 250) and raise --max-tiles to dig deeper; raise
+     --max-details so the run isn't truncated. Coverage reaching a block does NOT
+     guarantee a given shop was returned.
+
+7. CUDA/GPU is optional. If you see
+   "libcudnn.so.9: cannot open shared object file" the embedder fell back to CPU —
+   harmless for a few hundred nodes (finishes in seconds). To use the GPU:
+     export LD_LIBRARY_PATH=$VIRTUAL_ENV/lib/python3.12/site-packages/nvidia/cudnn/lib:\
+   $VIRTUAL_ENV/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+     python -c "import onnxruntime as ort; print(ort.get_available_providers())"
+
+8. `cdn serve` MUST be started with --cors for the browser app (shards mode) to
+   fetch shards cross-origin; without it the UI shows a connection-error badge.
+
+9. Vite dev port: if 5173 is taken it silently moves to 5174 — use the URL it
+   prints. The browser TAB TITLE is hardcoded to "Eagle River" in
+   examples/index.html (static, not env-driven); the in-PAGE community name does
+   honor VITE_COMMUNITY_*.
+
+10. Localization: VITE_COMMUNITY_* overrides only the name/region labels. The
+    "vibe" quick-searches and microcopy still come from VITE_LOCALE
+    (default en-eagle-river — Northwoods flavor). For a true Jackson voice, copy
+    examples/src/lib/i18n/en-eagle-river.ts to an en-jackson profile, translate
+    the vibes/strings, register it in i18n/index.ts, and run with
+    VITE_LOCALE=en-jackson.
+
+11. cdn/ IS tracked in git (a fresh clone ships old music/places shards);
+    stage_volumes/ and db/ are gitignored. Re-baking overwrites cdn/places.
+
+12. The embedding model must match between embed and any later query path
+    (nomic-ai/nomic-embed-text-v1.5, dim 256). Don't mix dims: the collection
+    vector size, --dim at prebake, and the baked manifest must all agree.
+
+--------------------------------------------------------------------------------
+COST & BILLING SAFETY
+--------------------------------------------------------------------------------
+- FREE: all Search calls (Nearby + Text) use an IDs-only field mask = Google's
+  "Essentials (IDs Only)" SKU, billed at no cost. A --sweep multiplies only these
+  cheap calls.
+- BILLABLE: Place Details, once per UNIQUE business (dedup by place_id), at the
+  Enterprise + Atmosphere tier (full mask incl. reviews/ratings), ~$0.025 each
+  (~$25 / 1,000) at list price. 60 businesses ~= $1.50; a full Jackson can be a
+  few hundred (~$5-10 at list) — and is often $0 under Google's monthly free
+  allotment for that tier.
+- ALWAYS --dry-run first. --max-details is a per-run hard ceiling.
+- The ONLY thing that truly stops spend: a per-day QUOTA CAP in Google Cloud ->
+  APIs & Services -> Places API (new) -> Quotas. Over-limit calls are REJECTED,
+  not billed. Budget alerts only notify.
+- ToS: treat places_raw / events_raw as a short-lived prototype cache; store
+  metadata only, don't redistribute raw review text.
+
+--------------------------------------------------------------------------------
+CLEANUP / STOPPING
+--------------------------------------------------------------------------------
+pkill -f "quickbeam cdn serve"        # stop the CDN server
+pkill -f vite                         # stop the dev server(s)
+# Wipe the vector collection to rebuild from scratch:
+curl -X DELETE http://localhost:6333/collections/fangorn   # (then redo Stage C2)
+# Stop containers:
+docker stop qdrant-core places        # add `docker rm` to delete them
+
+  TYPES="store,book_store,gift_shop,thrift_store,jewelry_store,sporting_goods_st
+  ore,art_gallery,museum,cultural_center,performing_arts_theater,concert_hall,florist,pet_store,...,restaurant,bar,cafe"
+  quickbeam data places-fetch --location 32.2988,-90.1848 --radius 12000 \
+    --types "$TYPES" --sweep --min-radius 250 --max-tiles 600 --max-details 300
+  --dry-run
+
+
+
+
+
+  1. Scrape wider (dry-run first — this can get expensive)
+
+  LOC="32.2988,-90.1848"
+  SWEEP="--location $LOC --radius 12000 --sweep --min-radius 250 --max-tiles 800 --max-details 1500"
+
+  FOOD="restaurant,cafe,coffee_shop,coffee_roastery,bar,pub,wine_bar,cocktail_bar,sports_bar,brewery,brewpub,bakery,bistro,diner,deli,ice_cream_shop,dessert_shop,donut_shop,juice_shop,tea_house,bagel_shop,sandwich_shop,pizza_restaurant,hamburger_restaura
+  nt,steak_house,seafood_restaurant,sushi_restaurant,mexican_restaurant,italian_restaurant,chinese_restaurant,indian_restaurant,thai_restaurant,vietnamese_restaurant,mediterranean_restaurant,vegan_restaurant,vegetarian_restaurant,barbecue_restaurant,soul
+  _food_restaurant,fast_food_restaurant,food_court"
+
+  SHOP="store,book_store,clothing_store,womens_clothing_store,shoe_store,jewelry_store,gift_shop,thrift_store,flea_market,farmers_market,electronics_store,cell_phone_store,furniture_store,home_goods_store,home_improvement_store,hardware_store,building_ma
+  terials_store,garden_center,sporting_goods_store,sportswear_store,bicycle_store,auto_parts_store,toy_store,pet_store,cosmetics_store,liquor_store,convenience_store,grocery_store,asian_grocery_store,supermarket,discount_supermarket,hypermarket,departmen
+  t_store,discount_store,shopping_mall,market,general_store,health_food_store,butcher_shop,tea_store,warehouse_store,food_store,candy_store"
+     
+  CULTURE="art_gallery,art_museum,art_studio,museum,history_museum,cultural_landmark,historical_place,historical_landmark,monument,performing_arts_theater,concert_hall,opera_house,philharmonic_hall,live_music_venue,movie_theater,comedy_club,karaoke,dance
+  _hall,night_club,amphitheatre,auditorium,event_venue,wedding_venue,banquet_hall,convention_center,community_center,cultural_center,amusement_center,amusement_park,video_arcade,bowling_alley,casino,aquarium,zoo,planetarium,botanical_garden,garden,park,c
+  ity_park,state_park,national_park,plaza,tourist_attraction,visitor_center,marina,stadium,arena,gym"
+     
+  SERVICES="hair_care,hair_salon,barber_shop,beauty_salon,nail_salon,spa,massage,massage_spa,tanning_studio,yoga_studio,wellness_center,fitness_center,sports_club,florist,laundry,tailor,locksmith,veterinary_care,pet_care,real_estate_agency,travel_agency,
+  tour_agency,tourist_information_center,bank,atm,pharmacy,drugstore,dentist,doctor,medical_clinic,hospital,hotel,motel,inn,bed_and_breakfast,hostel,resort_hotel,guest_house,campground,gas_station,car_repair,car_wash,library,post_office,church"
+
+  # DRY-RUN every batch (free Search only; reports billable Place Details it WOULD make)
+  for T in "$FOOD" "$SHOP" "$CULTURE" "$SERVICES"; do
+    quickbeam data places-fetch $SWEEP --types "$T" --dry-run
+  done
+
+  LOC="32.2988,-90.1848"
+  SWEEP="--location $LOC --radius 12000 --sweep --min-radius 250 --max-tiles 800 --max-details 1500"
+
+  FOOD="restaurant,cafe,coffee_shop,coffee_roastery,bar,pub,wine_bar,cocktail_bar,sports_bar,brewery,brewpub,bakery,bistro,diner,deli,ice_cream_shop,dessert_shop,donut_shop,juice_shop,tea_house,bagel_shop,sandwich_shop,pizza_restaurant,hamburger_restaura
+  nt,steak_house,seafood_restaurant,sushi_restaurant,mexican_restaurant,italian_restaurant,chinese_restaurant,indian_restaurant,thai_restaurant,vietnamese_restaurant,mediterranean_restaurant,vegan_restaurant,vegetarian_restaurant,barbecue_restaurant,soul
+  _food_restaurant,fast_food_restaurant,food_court"
+
+  SHOP="store,book_store,clothing_store,womens_clothing_store,shoe_store,jewelry_store,gift_shop,thrift_store,flea_market,farmers_market,electronics_store,cell_phone_store,furniture_store,home_goods_store,home_improvement_store,hardware_store,building_ma
+  terials_store,garden_center,sporting_goods_store,sportswear_store,bicycle_store,auto_parts_store,toy_store,pet_store,cosmetics_store,liquor_store,convenience_store,grocery_store,asian_grocery_store,supermarket,discount_supermarket,hypermarket,departmen
+  t_store,discount_store,shopping_mall,market,general_store,health_food_store,butcher_shop,tea_store,warehouse_store,food_store,candy_store"
+     
+  CULTURE="art_gallery,art_museum,art_studio,museum,history_museum,cultural_landmark,historical_place,historical_landmark,monument,performing_arts_theater,concert_hall,opera_house,philharmonic_hall,live_music_venue,movie_theater,comedy_club,karaoke,dance
+  _hall,night_club,amphitheatre,auditorium,event_venue,wedding_venue,banquet_hall,convention_center,community_center,cultural_center,amusement_center,amusement_park,video_arcade,bowling_alley,casino,aquarium,zoo,planetarium,botanical_garden,garden,park,c
+  ity_park,state_park,national_park,plaza,tourist_attraction,visitor_center,marina,stadium,arena,gym"
+     
+  SERVICES="hair_care,hair_salon,barber_shop,beauty_salon,nail_salon,spa,massage,massage_spa,tanning_studio,yoga_studio,wellness_center,fitness_center,sports_club,florist,laundry,tailor,locksmith,veterinary_care,pet_care,real_estate_agency,travel_agency,
+  tour_agency,tourist_information_center,bank,atm,pharmacy,drugstore,dentist,doctor,medical_clinic,hospital,hotel,motel,inn,bed_and_breakfast,hostel,resort_hotel,guest_house,campground,gas_station,car_repair,car_wash,library,post_office,church"
+
+     
+  # REAL runs once the totals look acceptable. Overlap across batches is FREE
+  # (dedup by place_id); only genuinely new businesses bill.
+  for T in "$FOOD" "$SHOP" "$CULTURE" "$SERVICES"; do
+    quickbeam data places-fetch $SWEEP --types "$T"
+  done
+     
+  # Text passes for the long tail Google has NO type for
+  for q in "record stores in Jackson MS" "vintage and antique shops in Jackson MS" \
+           "art galleries in Jackson MS" "independent bookstores in Jackson MS" \
+           "live music venues in Jackson MS" "comic book and hobby shops in Jackson MS" \
+           "tattoo parlors in Jackson MS" "vinyl record shops in Jackson MS" \
+           "craft breweries and taprooms in Jackson MS" "boutiques in Jackson MS" \
+           "thrift and consignment stores in Jackson MS" "specialty coffee roasters in Jackson MS"; do
+    quickbeam data places-fetch --query "$q" --max-results 60
+  done
+
+  2–4. Re-shape, re-embed (no reset), re-bake
+
+  quickbeam data placespg --output-dir ./stage_volumes
+  quickbeam data eventspg --output-dir ./stage_volumes
+
+  quickbeam data prebake --input-dir ./stage_volumes --volume 1 --types Business --collection fangorn
+  quickbeam data prebake --input-dir ./stage_volumes --volume 2 --types Event,Organizer --collection fangorn --link-events
+
+  rm -rf cdn/places            # clears orphaned old shards; catalog + other domains untouched
+  quickbeam cdn bake --collection fangorn --domain places --cdn-dir ./cdn
+
+
