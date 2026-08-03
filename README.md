@@ -78,6 +78,14 @@ pip install -e ".[agent]"   # fastmcp + eth-account + httpx
 pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-suite)
 ```
 
+### Running the Audius demo
+
+Two sovereign publishers fused by a linkset, searched client-side in the browser.
+**[`audius-build/RUNBOOK.md`](audius-build/RUNBOOK.md)** takes it from a fresh clone to a
+running demo — Part 0 is setup, Part 1 rebuilds the graph with one command, Part 2 is
+the optional on-chain publish. The build outputs (220 MB) are gitignored and
+regenerated; only the crawl cache can't be reproduced byte-for-byte from the repo.
+
 ---
 
 ## Quickstart

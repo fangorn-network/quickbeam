@@ -1,5 +1,7 @@
+#!/usr/bin/env bash
 set -e
-cd /home/coleman/fangorn/quickbeam
+cd "$(dirname "$0")/.."
+# ponytail: harmless no-op on a CPU-only install — the dirs just don't exist.
 export LD_LIBRARY_PATH=$PWD/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
 rm -rf audius-build/stage
 venv/bin/python -m quickbeam.cli data audius --side A --cache-file ./audius-build/audius_cache.json \

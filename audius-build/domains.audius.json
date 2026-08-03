@@ -3,7 +3,7 @@
     "audius": {
       "description": "Audius — the platform's trending catalog and one artist's own sovereign graph, published by two independent wallets and fused by a linkset.",
       "filter": {},
-      "bundle_schema": "/home/coleman/fangorn/quickbeam/audius-build/audius.bundle.json",
+      "bundle_schema": "./audius-build/audius.bundle.json",
       "role_map": {
         "title": "title",
         "subtitle": "artist",

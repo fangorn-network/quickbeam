@@ -20,18 +20,96 @@ Types: Track 11,112 · Tag 8,925 · Artist 4,399 · Playlist 789 · Genre 124 ·
 over conference wifi. Tag is 8,925 of 25,372 points and every point costs about the
 same (the 256-float vector dominates), so excluding Tag as a *node type* would cut it
 to roughly 42 MB — at the price of the `taggedWith` relation. Tags stay searchable
-either way; they're already in each track's embedded text and `tags` field. Everything here runs from
-`/home/coleman/fangorn/quickbeam` (the editable `quickbeam` install is stale, so only
-the repo root resolves the import).
+either way; they're already in each track's embedded text and `tags` field.
+
+**Every command below runs from the repo root**, and paths are relative to it. Start
+each session with:
 
 ```sh
-cd /home/coleman/fangorn/quickbeam
+docker start qdrant     # or the `docker run` in Part 0 the first time
+```
+
+If you have a working CUDA install, also export the cuDNN/cuBLAS paths (`rebuild.sh`
+does this itself):
+
+```sh
 export LD_LIBRARY_PATH=$PWD/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:\
 $PWD/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
-docker start qdrant
 ```
 
 `MB=./audius-build` throughout.
+
+---
+
+## Part 0 — from a fresh clone
+
+Part 1 assumes the toolchain below. Nothing in Part 0 or 1 needs a wallet, a chain, a
+Pinata key or a GPU — the local demo runs on two placeholder publishers,
+`0x1111…1111` (the platform) and `0x2222…2222` (the artist), which is what the browser
+shows as the two roots. Part 2 is what replaces them with real registered wallets.
+
+**Prereqs:** Python 3.12, Node 22, Docker, ~2 GB free disk for the build outputs.
+
+```sh
+git clone git@github.com:fangorn-network/quickbeam.git
+cd quickbeam
+
+python3.12 -m venv venv
+venv/bin/pip install -e ".[cpu]"        # or ".[gpu]" — see the GPU note below
+venv/bin/pip install -e audius-source   # registers `quickbeam data audius` + `audius-link`
+
+docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
+```
+
+No volume mount on purpose: the `audius` collection is dropped and rebuilt by
+`rebuild.sh` every run, so there is nothing in Qdrant worth persisting.
+
+**The one file git can't give you.** `audius-build/audius_cache.json` is 104 MB of
+crawl output and is gitignored (as are `stage/`, `cdn/`, `edges_all.json`). It is the
+determinism boundary — everything after it is offline and reproducible. Two ways to
+get one:
+
+- **Copy it** from a machine that already has it → byte-identical demo, table above holds.
+- **Re-crawl** → same shape, different records. It reads Audius' live API and trending
+  moves daily, so the counts won't match exactly and the focus artist's catalog may differ.
+
+```sh
+venv/bin/python -m quickbeam.cli data audius --dry-run --side all \
+  --cache-file ./audius-build/audius_cache.json \
+  --max-artists 150 --max-trending 200 --max-playlists 60 \
+  --focus-playlists 250 --per-artist-tracks 30 --workers 4
+```
+
+**Then one command builds everything else** — stage both sides → linkset → recreate the
+collection → embed → bake → edges:
+
+```sh
+bash audius-build/rebuild.sh      # prints REBUILD DONE
+```
+
+It is idempotent: it drops the `audius` collection and rmtrees `audius-build/{stage,cdn}`
+on every run. Embedding ~25k points is the slow part — about 15 minutes here.
+
+**GPU is optional, and was not used for the numbers in the table above.** `.[gpu]`
+installs `fastembed-gpu`, but onnxruntime on this machine couldn't find `libcudnn.so.9`
+and fell back to CPU (visible at the top of `prebake.log`). `.[cpu]` is the honest
+default; the `LD_LIBRARY_PATH` export in `rebuild.sh` is a harmless no-op without CUDA.
+
+**Serve it** — two terminals, both from the repo root:
+
+```sh
+venv/bin/python -m quickbeam.cli cdn serve --cdn-dir ./audius-build/cdn --cors --port 8090
+cd audius-demo && npm install && npm run dev     # http://localhost:5180
+```
+
+`audius-demo/` is the app to show (`examples/` is the older one and freezes the main
+thread mid-search — see `audius-demo/README.md`). The dev server proxies `/cdn` to
+port 8090, so there is no CDN URL to configure and nothing else to expose through a
+tunnel.
+
+Sanity checks, once it's up: `cd audius-demo && npm run check` (needs Qdrant up —
+asserts the browser's query vector transform still matches the one used at ingest) and
+`npm run check:graph`.
 
 ---
 
