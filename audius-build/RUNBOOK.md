@@ -111,6 +111,19 @@ Sanity checks, once it's up: `cd audius-demo && npm run check` (needs Qdrant up 
 asserts the browser's query vector transform still matches the one used at ingest) and
 `npm run check:graph`.
 
+**Give an agent the same graph.** `.mcp.json` at the repo root registers the graph as an
+MCP server, so Claude Code can search and traverse it with the same tools the browser
+uses. It needs `pip install -e ".[agent]"` and **the `cdn serve` above already running** —
+the MCP server is a pull-client of that CDN, not a second copy of the data.
+
+```
+list_datasets → describe(audius) → search(…) → relations(id) → neighbors(id, rel=…)
+```
+
+Always `relations` before `neighbors`: it returns one row per relation with a count, so a
+hub like `audius:genre:electronic` (2,958 neighbours) costs 2 rows instead of 2,958
+records, and it flags which hops cross to the other publisher.
+
 ---
 
 ## Part 1 — local (already done; re-run to rebuild)

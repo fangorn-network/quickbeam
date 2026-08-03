@@ -376,3 +376,92 @@ async def test_underpayment_is_rejected(gated, agent):
                                   payment=header)
     assert out.get("payment_required") is True
     assert "below the required amount" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Relational axis — truncation honesty, dedupe, and the `relations` summary.
+#
+# A hub node can have thousands of edges (audius:genre:electronic has 2,958), so a
+# bare list of 25 neighbors is indistinguishable from a complete answer. `total`
+# and the `relations` summary are what let an agent tell those apart.
+# ---------------------------------------------------------------------------
+@pytest.mark.anyio
+async def test_neighbors_reports_total_beyond_limit():
+    out = await mcp_server.neighbors(dataset="robinhood", id="rh:asset:NVDA", limit=1)
+    assert len(out["neighbors"]) == 1
+    assert out["total"] == 2 and out["truncated"] is True
+
+    everything = await mcp_server.neighbors(dataset="robinhood", id="rh:asset:NVDA")
+    assert everything["total"] == 2 and everything["truncated"] is False
+
+    # limit=0 means none — it used to return one, because the cap was checked
+    # after the append rather than before it.
+    none = await mcp_server.neighbors(dataset="robinhood", id="rh:asset:NVDA", limit=0)
+    assert none["neighbors"] == [] and none["total"] == 2
+
+
+@pytest.mark.anyio
+async def test_neighbors_dedupes_repeated_edges(monkeypatch, tmp_path):
+    """The same (rel, direction, neighbor) twice is noise, not two neighbors."""
+    dupe = _EDGES + [dict(_EDGES[0])]
+    (tmp_path / "robinhood.json").write_text(json.dumps(dupe))
+    monkeypatch.setattr(mcp_server, "EDGES_PATH", str(tmp_path))
+    out = await mcp_server.neighbors(dataset="robinhood", id="rh:asset:NVDA")
+    assert out["total"] == 2
+    assert len(out["neighbors"]) == len({n["id"] for n in out["neighbors"]})
+
+
+@pytest.mark.anyio
+async def test_relations_summarises_without_materialising():
+    out = await mcp_server.relations(dataset="robinhood", id="rh:asset:NVDA")
+    assert out["degree"] == 2
+    assert {(g["rel"], g["direction"], g["count"]) for g in out["relations"]} == {
+        ("hasTransfer", "out", 1), ("hasAction", "out", 1)}
+    # A summary row carries no records — that is the point of calling it first.
+    assert all("fields" not in g for g in out["relations"])
+
+
+@pytest.mark.anyio
+async def test_relations_crosses_ignores_vocabulary_nodes(monkeypatch, tmp_path):
+    """Cross-publisher detection must skip shared-vocabulary nodes.
+
+    Both publishers derive a vocabulary node (a Genre, a sector) identically, so it
+    content-addresses to ONE record carrying ONE owner — and every edge into it then
+    looks like it crosses publishers. On the real audius graph that reports 12,657
+    crossings instead of the true 113.
+    """
+    rows = _ROWS + [{
+        "track_id": "rh:sector:semis", "owner": "0xA",
+        "fields": {"entityType": "Sector", "name": "Semiconductors", "vocabulary": True},
+        "embedding": [0.0, 0.0, 0.0, 1.0], "meta": {"manifestCid": "cidSEC"},
+    }]
+    manifest = dict(_MANIFEST, shards=[{"file": "shard-0000-abc.ndjson.gz",
+                                        "count": len(rows)}])
+
+    async def get_json(path):
+        return manifest if path.endswith("/manifest") else await _fake_get_json(path)
+
+    async def get_bytes(path):
+        return _shard_bytes(rows)
+
+    monkeypatch.setattr(mcp_server, "_get_json", get_json)
+    monkeypatch.setattr(mcp_server, "_get_bytes", get_bytes)
+    (tmp_path / "robinhood.json").write_text(json.dumps([
+        # NVDA (0xA) → COIN (0xB): a genuine cross-publisher assertion.
+        {"rel": "sameAs", "from": "rh:asset:NVDA", "to": "rh:asset:COIN",
+         "fromType": "Asset", "toType": "Business"},
+        # COIN (0xB) → the shared sector node (0xA): NOT a crossing.
+        {"rel": "inSector", "from": "rh:asset:COIN", "to": "rh:sector:semis",
+         "fromType": "Business", "toType": "Sector"},
+    ]))
+    monkeypatch.setattr(mcp_server, "EDGES_PATH", str(tmp_path))
+
+    nvda = await mcp_server.relations(dataset="robinhood", id="rh:asset:NVDA")
+    assert [(g["rel"], g["crosses"]) for g in nvda["relations"]] == [("sameAs", True)]
+
+    coin = await mcp_server.relations(dataset="robinhood", id="rh:asset:COIN")
+    by_rel = {g["rel"]: g["crosses"] for g in coin["relations"]}
+    assert by_rel["sameAs"] is True        # real crossing, both ends are records
+    assert by_rel["inSector"] is False     # vocabulary node — excluded
+    # Crossing groups sort first, so an agent sees the interesting hop up top.
+    assert coin["relations"][0]["rel"] == "sameAs"
