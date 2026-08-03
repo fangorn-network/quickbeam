@@ -13,3 +13,11 @@ node_modules/
 **/personal_notes/
 /cdn**
 /build
+# generated build output (audius demo) — recipe in audius-build/RUNBOOK.md
+audius-build/audius_cache.json
+audius-build/edges_all.json
+audius-build/cdn/
+audius-build/stage/
+audius-build/*.log
+**/.wrangler/
+**/*.tsbuildinfo
