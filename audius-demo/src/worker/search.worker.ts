@@ -10,7 +10,7 @@
 // thread is gone until it finishes. Keeping every model call and every scan over the
 // 25k×256 vector block behind postMessage makes that class of bug impossible rather
 // than merely fixed.
-import { Graph, type SignalKind } from '../lib/graph';
+import { Graph, type KernelPersist, type SignalKind } from '../lib/graph';
 
 interface Req { id: number; op: string; args?: Record<string, unknown>; }
 
@@ -42,6 +42,9 @@ ctx.onmessage = async (ev: MessageEvent<Req>) => {
         result = graph.sample(args.type as string, (args.limit as number) ?? 12,
                               args.owner as string | undefined);
         break;
+      case 'discovery':
+        result = graph.discovery(args.id as string, (args.k as number) ?? 12);
+        break;
       case 'stats':     result = graph.stats; break;
       // The kernel runs here too — it ranks over the same 25k×256 block, so it
       // belongs beside the vectors and off the main thread.
@@ -53,6 +56,15 @@ ctx.onmessage = async (ev: MessageEvent<Req>) => {
         break;
       case 'kernelSnapshot': result = graph.kernelSnapshot(); break;
       case 'kernelReset':    result = graph.kernelReset(); break;
+      // Persistence crosses the boundary because localStorage is main-thread-only.
+      case 'kernelExport':   result = graph.kernelExport(); break;
+      case 'kernelImport':
+        result = graph.kernelImport(args.state as KernelPersist);
+        break;
+      case 'onboardingOptions': result = graph.onboardingOptions(); break;
+      case 'kernelSeed':
+        result = graph.kernelSeed(args.genres as string[], args.artists as string[]);
+        break;
       default: throw new Error(`unknown op ${op}`);
     }
     ctx.postMessage({ type: 'result', id, result });

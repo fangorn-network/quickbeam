@@ -3,7 +3,11 @@
 // server rewrite rules.
 import { useEffect, useState } from 'react';
 
-export interface Route { view: 'home' | 'search' | 'entity'; q: string; id: string }
+export interface Route {
+  view: 'home' | 'search' | 'entity' | 'about' | 'privacy';
+  q: string;
+  id: string;
+}
 
 export function parse(hash: string): Route {
   const h = hash.replace(/^#\/?/, '');
@@ -12,6 +16,8 @@ export function parse(hash: string): Route {
   if (path === 'search') return { view: 'search', q: params.get('q') ?? '', id: '' };
   // Entity ids contain ':' and '/', so they ride as a query param, not a path segment.
   if (path === 'e') return { view: 'entity', q: '', id: params.get('id') ?? '' };
+  if (path === 'about') return { view: 'about', q: '', id: '' };
+  if (path === 'privacy') return { view: 'privacy', q: '', id: '' };
   return { view: 'home', q: '', id: '' };
 }
 
@@ -28,3 +34,5 @@ export function useRoute(): Route {
 export const goSearch = (q: string) => { location.hash = `#/search?q=${encodeURIComponent(q)}`; };
 export const goEntity = (id: string) => { location.hash = `#/e?id=${encodeURIComponent(id)}`; };
 export const goHome = () => { location.hash = '#/'; };
+export const goAbout = () => { location.hash = '#/about'; };
+export const goPrivacy = () => { location.hash = '#/privacy'; };

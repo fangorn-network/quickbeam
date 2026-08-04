@@ -16,6 +16,28 @@
  *              Re-baking them on a guess would be worse than leaving them
  *              honest and exposed.
  *
+ * tau_art: measured, and deliberately left alone
+ * ──────────────────────────────────────────────
+ * The recommendation rail once collapsed onto ONE artist — after three plays,
+ * 12 of 12 slots. Three of reweight's four terms correlate with "same artist":
+ * a catalogue clusters tightly so the distance term favours it, tau_cat adds
+ * that artist's genres and moods, and tau_art piles an explicit ≈2.97× bonus
+ * onto tracks already nearest by geometry. tau_art looks like the culprit.
+ *
+ * Lowering it was tried and REJECTED on measurement. With the per-artist display
+ * cap in lib/graph.ts (MAX_PER_ARTIST) in place, the rail holds 8 distinct
+ * artists out of 12 at tau_art 2.00, 1.50 and 1.00 alike — the cap saturates the
+ * diversity, so the model change buys nothing visible. It does cost: a followed
+ * artist with a thin catalogue falls from rail position 10 to rank 451, i.e. out
+ * of sight, so "follow three artists" stops showing you all three.
+ *
+ *     tau_art (with cap)   2.00 → 8/12, thin artist rank 10
+ *                          1.50 → 8/12, rank 57
+ *                          1.00 → 8/12, rank 451
+ *
+ * Fix concentration at the display layer, not here. Recorded so the next person
+ * to reach for this knob knows it was already measured.
+ *
  * Calibration notes
  * ─────────────────
  * lambda_max        Must exceed the radius of the largest cluster you want the

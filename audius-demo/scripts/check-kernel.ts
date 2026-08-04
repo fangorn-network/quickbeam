@@ -183,10 +183,14 @@ await check('a disliked neighbourhood recedes', () => {
 
 // ── 5. the claim the demo makes ─────────────────────────────────────────────
 await check('the publisher boundary is not a fence (crossing appears with depth)', () => {
-  // Measured, not assumed: seeded from the artist, the top ~20 are all theirs —
-  // `tau_art` correctly favours the artist you just played, and they have ~38
-  // unplayed tracks. Crossing begins once that neighbourhood thins out. Asserting
-  // crossing at k=12 would be asserting a WORSE recommender.
+  // Kept at depth 60 deliberately, even though crossing now appears at k=12.
+  //
+  // It used to be the ONLY place crossing showed: at sonder's tau_art=2.00 the
+  // top ~20 were all the seeded artist, and this check existed to prove the
+  // boundary was permeable *somewhere*. MAX_PER_ARTIST and tau_art=1.00 moved
+  // that up into the rail itself. Asserting the weaker property at depth still
+  // earns its place — it holds regardless of how the display cap is tuned, so it
+  // fails only if the graph itself has become fenced, which is what it is for.
   g.kernelReset();
   for (const t of artistTracks.slice(0, 3)) g.kernelSignal(t.id, 'play');
   const deep = g.kernelRecommend(60);
@@ -219,6 +223,193 @@ await check('the snapshot reports something a readout can render', () => {
   assert.ok(snap.spread > 0 && snap.entropy > 0, 'spread/entropy unset');
   console.log(`    speed=${snap.speed} spread=${snap.spread} entropy=${snap.entropy} ` +
     `top=${snap.topGenres.slice(0, 2).map(([k]) => k).join('/')}`);
+});
+
+// Persistence. The kernel is rebuilt from JSON in a *different* process than the one
+// that wrote it, so the only thing worth asserting is behavioural: a restored kernel
+// must recommend what the original did. Serialisation that drops a field typically
+// still parses and still ranks — just slightly worse, forever.
+await check('a kernel survives a save/load round trip intact', () => {
+  g.kernelReset();
+  for (const t of platformTracks.slice(0, 5)) g.kernelSignal(t.id, 'play');
+  for (const t of artistTracks.slice(0, 3)) g.kernelSignal(t.id, 'skip');
+  const before = g.kernelSnapshot();
+  const recsBefore = g.kernelRecommend(10).map((r) => r.id);
+
+  // Through a string, not just the object: catches anything JSON cannot carry
+  // (Float32Array, Set) that an in-memory structuredClone would quietly tolerate.
+  const wire = JSON.stringify({ dim: D, kernel: g.kernelExport() });
+  assert.equal(JSON.parse(wire).dim, D, 'dim guard would not match on reload');
+
+  g.kernelReset();
+  assert.equal(g.kernelSnapshot().timestep, 0, 'reset did not clear the kernel');
+
+  g.kernelImport(JSON.parse(wire).kernel);
+  const after = g.kernelSnapshot();
+  const recsAfter = g.kernelRecommend(10).map((r) => r.id);
+
+  assert.equal(after.timestep, before.timestep, 'timestep lost');
+  assert.equal(after.spread, before.spread, 'spread lost');
+  assert.equal(after.entropy, before.entropy, 'entropy lost');
+  assert.equal(after.nSkips, before.nSkips, 'skip buffer lost');
+  assert.deepEqual(after.topGenres, before.topGenres, 'taste weights lost');
+  assert.deepEqual(after.topArtists, before.topArtists, 'artist affinity lost');
+  assert.deepEqual(after.blacklisted, before.blacklisted, 'blacklist lost');
+  assert.deepEqual(recsAfter, recsBefore,
+    'restored kernel recommends different records than the one that was saved');
+  console.log(`    t=${after.timestep} spread=${after.spread}, ${recsAfter.length} recs identical`);
+});
+
+await check('session fatigue clears on reload, but suppression carries over', () => {
+  g.kernelReset();
+  // Play an artist twice so their EMA clears fatigue_threshold, then skip them:
+  // that routes to the `muted` path rather than the blacklist path.
+  const t = artistTracks[0];
+  g.kernelSignal(t.id, 'play');
+  g.kernelSignal(t.id, 'play');
+  g.kernelSignal(t.id, 'skip');
+  assert.ok(g.kernelSnapshot().muted.length > 0, 'no muted artist to test with');
+
+  const wire = JSON.parse(JSON.stringify(g.kernelExport()));
+  assert.ok(!('muted' in wire.state), 'muted leaked into the persisted kernel state');
+  assert.ok(wire.seen.includes(t.id), 'seen did not survive export');
+
+  g.kernelImport(wire);
+  const after = g.kernelSnapshot();
+  assert.equal(after.muted.length, 0,
+    'session fatigue survived a reload — it is meant to clear on every cold start');
+  assert.equal(after.signals, wire.seen.length, 'seen count did not restore');
+  console.log(`    muted clears; ${after.signals} seen + neg/blacklist carry over`);
+});
+
+// ── onboarding seed ─────────────────────────────────────────────────────────
+await check('the picker offers artists worth following', () => {
+  const { genres, artists } = g.onboardingOptions();
+  assert.ok(genres.length >= 8, `only ${genres.length} genres offered`);
+  assert.ok(artists.length >= 8, `only ${artists.length} artists offered`);
+  assert.ok(genres.every((x) => x.tracks > 0), 'a genre with no tracks would seed nothing');
+  // The filter that matters: ranking by raw catalogue size surfaces bulk uploaders
+  // with 600 tracks and 37 followers, which makes a picker of strangers.
+  assert.ok(artists.every((a) => a.tracks >= 3), 'an artist too thin to seed from got through');
+  assert.ok(artists.some((a) => a.owner.toLowerCase() === artist.owner.toLowerCase()),
+    'the sovereign artist is missing from the picker — the cross-publisher demo needs them');
+  console.log(`    ${genres.slice(0, 4).map((x) => x.title).join(', ')} … | ` +
+    `${artists.slice(0, 3).map((a) => `${a.name}(${a.tracks}t)`).join(', ')}`);
+});
+
+await check('a seeded kernel recommends without anyone having listened', () => {
+  const { genres, artists } = g.onboardingOptions();
+  g.kernelReset();
+  assert.equal(g.kernelRecommend(8).length, 0, 'a cold kernel should recommend nothing');
+
+  const gPicks = genres.slice(0, 3).map((x) => x.id);
+  const aPicks = artists.slice(0, 3).map((x) => x.id);
+  const snap = g.kernelSeed(gPicks, aPicks);
+  assert.ok(snap.timestep > 0, 'seed applied no plays');
+  assert.ok(snap.topGenres.length > 0, 'seed accumulated no taste');
+
+  const recs = g.kernelRecommend(12);
+  assert.ok(recs.length > 0, 'the rail would still be empty after onboarding');
+  console.log(`    t=${snap.timestep} → ${recs.length} recs, top taste ` +
+    `${snap.topGenres.slice(0, 3).map(([k]) => k).join('/')}`);
+});
+
+await check('following an artist registers as a preference, and fills the rail', () => {
+  const { genres, artists } = g.onboardingOptions();
+  const picks = artists.slice(0, 3);
+  g.kernelSeed(genres.slice(0, 3).map((x) => x.id), picks.map((x) => x.id));
+
+  // Seeding marks nothing `seen` — otherwise following an artist would be the one
+  // action guaranteed to hide their best tracks from you.
+  assert.equal(g.kernelSnapshot().signals, 0, 'seeded tracks were marked as already seen');
+
+  // Every artist picked must show up as affinity, whatever their catalogue size.
+  const ema = new Map(g.kernelSnapshot().topArtists);
+  for (const a of picks) {
+    const key = String(g.entity(a.id)?.fields.id ?? '');
+    assert.ok((ema.get(key) ?? 0) > 0, `${a.name} did not register as an affinity`);
+  }
+
+  // And the rail should be visibly theirs — without being ONLY theirs. Asserting
+  // a high count here would be asserting the overfit this cap exists to remove:
+  // with MAX_PER_ARTIST=2 and three picks, six is the arithmetic ceiling, so a
+  // `>= 6` bar would pass only in the perfect case and fail on any tuning. The
+  // property worth pinning is presence, not dominance.
+  const theirs = new Set(picks.flatMap(
+    (a) => g.neighbours(a.id, 'created', 'out', 60).records.map((r) => r.id)));
+  const rail = g.kernelRecommend(12);
+  const mine = rail.filter((r) => theirs.has(r.id)).length;
+  assert.ok(mine >= 3, `only ${mine}/12 of the opening rail is by a followed artist`);
+  assert.ok(mine < 12, 'the entire rail is followed artists — seeding has overfit');
+  console.log(`    ${mine}/12 of the rail from ${picks.map((p) => p.name).join(', ')}`);
+});
+
+await check('the rail does not collapse onto a single artist', () => {
+  // The regression test for the overfit. Before MAX_PER_ARTIST and tau_art=1.00,
+  // three plays of one artist returned 12/12 that same artist — a recommender
+  // that only ever answers "more of what you just played".
+  g.kernelReset();
+  for (const t of artistTracks.slice(0, 3)) g.kernelSignal(t.id, 'play');
+  const rail = g.kernelRecommend(12);
+  assert.equal(rail.length, 12, `rail returned ${rail.length} cards, not 12`);
+
+  const counts = new Map<string, number>();
+  for (const r of rail) {
+    const a = String(r.fields.artistId ?? r.id);
+    counts.set(a, (counts.get(a) ?? 0) + 1);
+  }
+  const worst = Math.max(...counts.values());
+  assert.ok(worst <= 2, `one artist took ${worst} of 12 slots (cap is 2)`);
+  assert.ok(counts.size >= 6, `only ${counts.size} distinct artists in 12 slots`);
+  console.log(`    ${counts.size} distinct artists, max ${worst} slots each`);
+});
+
+await check('the cap backfills rather than starving a thin publisher', () => {
+  // THE failure this design has to avoid. The artist publisher holds exactly one
+  // Artist record against 41 tracks, so a per-artist cap without backfill cuts
+  // the "…and from the other repo" rail from six cards to two and silently
+  // removes the cross-publisher demonstration. Nothing else would catch that.
+  const solo = artist.counts.Artist ?? 0;
+  assert.equal(solo, 1, `expected a single-artist publisher to test backfill, got ${solo}`);
+
+  g.kernelReset();
+  for (const t of artistTracks.slice(0, 3)) g.kernelSignal(t.id, 'play');
+  const filtered = g.kernelRecommend(6, artist.owner);
+  assert.equal(filtered.length, 6,
+    `owner-filtered rail rendered ${filtered.length}/6 — the cap starved it instead of backfilling`);
+  assert.ok(filtered.every((r) => (r.owner ?? '').toLowerCase() === artist.owner.toLowerCase()),
+    'backfill leaked records from the wrong publisher');
+  console.log(`    ${filtered.length}/6 cards from a publisher with ${solo} artist`);
+});
+
+await check('a thin-catalogue artist is still reachable past the shortlist', () => {
+  const { genres, artists } = g.onboardingOptions();
+  const picks = artists.slice(0, 3);
+  g.kernelSeed(genres.slice(0, 3).map((x) => x.id), picks.map((x) => x.id));
+
+  // kernelRecommend shortlists by RAW COSINE before reweighting, so an artist with
+  // three tracks against a labelmate's forty can fall outside the default pool of
+  // 600 and never collect their tau_art boost. That is the pool's doing, not the
+  // kernel's: widen it and they rank fine. Pinned because the rail's default depth
+  // is the thing that decides whether "follow" visibly means anything.
+  const thin = picks.reduce((a, b) => (a.tracks <= b.tracks ? a : b));
+  const theirs = new Set(g.neighbours(thin.id, 'created', 'out', 60).records.map((r) => r.id));
+  const deep = g.kernelRecommend(200, undefined, 25000);
+  const at = deep.findIndex((r) => theirs.has(r.id));
+  assert.ok(at >= 0, `nothing by ${thin.name} (${thin.tracks} tracks) ranks at all`);
+  console.log(`    ${thin.name} (${thin.tracks} tracks) first appears at rank ${at}`);
+});
+
+await check('following the sovereign artist reaches across the publisher split', () => {
+  const { genres } = g.onboardingOptions();
+  const disclosure = g.onboardingOptions().artists
+    .find((a) => a.owner.toLowerCase() === artist.owner.toLowerCase())!;
+  g.kernelSeed(genres.slice(0, 3).map((x) => x.id), [disclosure.id]);
+  const recs = g.kernelRecommend(60);
+  const crossed = recs.filter((r) => (r.owner ?? '').toLowerCase() === artist.owner.toLowerCase());
+  assert.ok(crossed.length > 0,
+    'seeding on the artist publisher produced no recommendations from it');
+  console.log(`    ${crossed.length}/${recs.length} from ${disclosure.name}'s own repo`);
 });
 
 if (failures) { console.error(`\n${failures} kernel check(s) failed`); process.exit(1); }

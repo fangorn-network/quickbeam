@@ -20,7 +20,7 @@ export default function Home({ stats }: { stats: Stats }) {
   const [a, b] = stats.publishers;
   const [platformTracks, setPlatformTracks] = useState<Rec[]>([]);
   const [artistTracks, setArtistTracks] = useState<Rec[]>([]);
-  const { version } = useKernel();
+  const { railVersion } = useKernel();
 
   useEffect(() => {
     if (a) void sample('Track', 6, a.owner).then(setPlatformTracks);
@@ -74,7 +74,7 @@ export default function Home({ stats }: { stats: Stats }) {
 
       {/* Recommendations first once the session has any signal — the page should
           answer what you've done, not repeat what it showed on load. */}
-      <KernelRail version={version} stats={stats} />
+      <KernelRail railVersion={railVersion} stats={stats} />
 
       {/* One row per root. Same grid, same cards — the only difference is which key
           signed them, which is exactly the point being made. */}

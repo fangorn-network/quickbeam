@@ -8,9 +8,85 @@ import { MATRYOSHKA_DIM, QUERY_PREFIX, matryoshka, topK } from './matryoshka.ts'
 import type { Edge, Rec, RelationGroup, Stats } from './types.ts';
 import { cosToDistance, toFeatures } from '../kernel/adapt.ts';
 import {
-  describe, emptyKernel, onPlay, onSkip, queryVector as kernelQuery, reweight,
+  describe, deserialiseState, emptyKernel, onPlay, onSkip,
+  queryVector as kernelQuery, reweight, serialiseState,
 } from '../kernel/SessionKernel.ts';
-import type { Hit, KernelState } from '../kernel/types.ts';
+import type { Hit, KernelState, KernelStateJSON, WeightedHit } from '../kernel/types.ts';
+
+/** What gets stored between visits. See `kernelExport`. */
+export interface KernelPersist {
+  state: KernelStateJSON;
+  /** Ids already signalled on; kept out of a returning visitor's recommendations. */
+  seen: string[];
+}
+
+/**
+ * Greedy per-artist cap, with backfill.
+ *
+ * Walks the reweighted list in weight order and admits a record only while its
+ * artist is under `per`; everything displaced goes to an overflow list, still in
+ * weight order.
+ *
+ * **Fails open, and that is load-bearing.** If the cap cannot fill `k`, the
+ * remainder is topped up from the overflow. The artist publisher in this dataset
+ * holds exactly ONE Artist record against 41 tracks, so the owner-filtered rail
+ * (`kernelRecommend(6, artistOwner)`) would otherwise render two cards and
+ * quietly gut the cross-publisher demonstration. Same instinct as
+ * `applySuppressionFilter`, which returns an unfiltered list rather than an
+ * empty one.
+ *
+ * Keyed on `metadata.artistId` rather than a display name: `toFeatures` falls
+ * back to the record's own id when a track has no artist, so every record has a
+ * non-colliding key and no undefined-guard is needed.
+ */
+const capPerArtist = (ranked: WeightedHit[], k: number, per: number): WeightedHit[] => {
+  const out: WeightedHit[] = [];
+  const overflow: WeightedHit[] = [];
+  const n = new Map<string, number>();
+  for (const h of ranked) {
+    const a = h.metadata?.artistId ?? h.id;
+    const c = n.get(a) ?? 0;
+    if (out.length < k && c < per) { n.set(a, c + 1); out.push(h); }
+    else overflow.push(h);
+  }
+  // `out` never exceeds k, so this covers both the capped and the backfilled case.
+  return out.concat(overflow).slice(0, k);
+};
+
+/** Choices offered on the first screen. See `onboardingOptions`. */
+export interface OnboardingOptions {
+  genres: { id: string; title: string; tracks: number }[];
+  artists: { id: string; name: string; owner: string; tracks: number; followers: number }[];
+}
+
+/**
+ * How many tracks each pick contributes to the seed.
+ *
+ * Kept small on purpose. Every seeded track is an `onPlay`, which advances the
+ * kernel's timestep, and the prior pull decays as k/t — seed too heavily and the
+ * kernel starts its first real session already convinced.
+ */
+const SEED_PER_ARTIST = 4;
+const SEED_PER_GENRE = 3;
+
+/**
+ * An artist needs at least this many tracks to be worth following at onboarding.
+ * Most of this corpus's famous names carry one or two tracks in the trending slice
+ * (Zedd has 1), and following them would seed almost nothing.
+ */
+const MIN_SEED_TRACKS = 3;
+
+/**
+ * Most slots one artist may hold in a rail, before backfill.
+ *
+ * A display constraint, deliberately NOT part of the kernel: `reweight` is
+ * sonder's and stays diffable against it, and the same weights still drive
+ * autoplay via `sampleHit`, where a cap would make no sense.
+ *
+ * 2 against k=12 guarantees at least six distinct artists. Raise to 3 (≥4
+ * artists) if the rail reads as too exploratory.
+ */
+const MAX_PER_ARTIST = 2;
 
 export type SignalKind = 'play' | 'skip' | 'like' | 'dislike';
 
@@ -34,11 +110,21 @@ export class Graph {
   private platform = '';
   private _stats: Stats | null = null;
   private _embed: Promise<Embed> | null = null;
+  private _onboarding: OnboardingOptions | null = null;
 
-  // The session kernel lives here, next to the vectors it ranks over. Session-only:
-  // no persistence, so every demo starts from a clean state.
+  // The session kernel lives here, next to the vectors it ranks over. It starts
+  // empty; the main thread rehydrates it via kernelImport() when a returning
+  // visitor has saved state, because a worker cannot reach localStorage itself.
   private kernel: KernelState = emptyKernel();
-  /** Records already signalled on — excluded from recommendations. */
+  /**
+   * Records already signalled on — excluded from recommendations.
+   *
+   * Persisted alongside the kernel, unlike `muted`. It is not a preference, but
+   * dropping it makes a restored session recommend the very tracks it just
+   * watched you play, which reads as the recommender echoing your history back.
+   * The cost is a candidate pool that shrinks by everything you have ever
+   * touched; against 25k records and demo-scale interaction that is noise.
+   */
   private seen = new Set<string>();
 
   get stats(): Stats | null { return this._stats; }
@@ -349,6 +435,263 @@ export class Graph {
   }
 
   /**
+   * Everything a returning visitor needs. `state` is sonder's own serialisation
+   * (which omits `muted` by design — session fatigue clears on a cold start);
+   * `seen` rides alongside it because it lives here, not in the kernel.
+   */
+  kernelExport(): KernelPersist {
+    return { state: serialiseState(this.kernel), seen: [...this.seen] };
+  }
+
+  /**
+   * Adopt previously-saved state. Safe to call before `load()` resolves — the
+   * kernel is self-contained and touches none of the shard-derived fields.
+   */
+  kernelImport(p: KernelPersist): ReturnType<typeof describe> {
+    this.kernel = deserialiseState(p.state);
+    this.seen = new Set(p.seen ?? []);
+    return describe(this.kernel);
+  }
+
+  /**
+   * Take records in the given order, at most `per` from any one artist.
+   *
+   * Every derived rail in this file needs it, for the reason the recommendation
+   * rail did: an artist's catalogue clusters tightly, so the nearest N of
+   * anything is otherwise one artist repeated. `ranked` is [recordIndex, score].
+   */
+  private capByArtist(ranked: Array<[number, number]>, k: number, per = 2): Rec[] {
+    const seen = new Map<string, number>();
+    const out: Rec[] = [];
+    for (const [i, score] of ranked) {
+      const a = String(this.recs[i].fields.artistId ?? this.recs[i].id);
+      const n = seen.get(a) ?? 0;
+      if (n >= per) continue;
+      seen.set(a, n + 1);
+      out.push(this.toRec(i, score));
+      if (out.length >= k) break;
+    }
+    return out;
+  }
+
+  /** Edges of one relation leaving/entering a node, as record indices. */
+  private linked(id: string, rel: string, dir: 'out' | 'in'): number[] {
+    const es = (dir === 'out' ? this.outAdj : this.inAdj).get(id) ?? [];
+    const out: number[] = [];
+    for (const e of es) {
+      if (e.rel !== rel) continue;
+      const i = this.indexById.get(dir === 'out' ? e.to : e.from);
+      if (i !== undefined) out.push(i);
+    }
+    return out;
+  }
+
+  /**
+   * What the first screen offers. Computed once and cached — it walks every Genre
+   * and Artist record, which is cheap against adjacency maps but pointless twice.
+   *
+   * Artists are ranked by followers among those holding enough tracks to seed with,
+   * NOT by track count: the most prolific accounts here are bulk uploaders nobody
+   * recognises (633 tracks, 37 followers), which makes for a picker of strangers.
+   */
+  onboardingOptions(genreN = 12, artistN = 12): OnboardingOptions {
+    if (this._onboarding) return this._onboarding;
+    const count = (id: string, rel: string, dir: 'out' | 'in') => this.linked(id, rel, dir).length;
+
+    const genres = this.recs
+      .filter((r) => r.entityType === 'Genre')
+      .map((r) => ({
+        id: r.id,
+        title: String(r.fields.title ?? r.fields.id ?? ''),
+        tracks: count(r.id, 'inGenre', 'in'),
+      }))
+      .filter((g) => g.tracks > 0 && g.title)
+      .sort((a, b) => b.tracks - a.tracks)
+      .slice(0, genreN);
+
+    const artists = this.recs
+      .filter((r) => r.entityType === 'Artist')
+      .map((r) => ({
+        id: r.id,
+        name: String(r.fields.artist ?? ''),
+        owner: r.owner ?? '',
+        tracks: count(r.id, 'created', 'out'),
+        followers: Number(r.fields.followerCount || 0),
+      }))
+      .filter((a) => a.tracks >= MIN_SEED_TRACKS && a.name)
+      .sort((a, b) => b.followers - a.followers)
+      .slice(0, artistN);
+
+    return (this._onboarding = { genres, artists });
+  }
+
+  /**
+   * Start a kernel from stated preferences rather than from listening.
+   *
+   * Each pick contributes its most-reposted tracks as `onPlay` transitions, so the
+   * kernel lands in exactly the state a real session would have reached — no new
+   * maths, and taste/artist-affinity/μ all move together as they normally do.
+   *
+   * Seeded tracks are deliberately NOT added to `seen`: you followed these artists,
+   * so their work is the first thing the rail should be allowed to recommend.
+   */
+  kernelSeed(genreIds: string[], artistIds: string[]): ReturnType<typeof describe> {
+    const byReposts = (a: number, b: number) =>
+      Number(this.recs[b].fields.repostCount || 0) - Number(this.recs[a].fields.repostCount || 0);
+    const pick = (id: string, rel: string, dir: 'out' | 'in', n: number) =>
+      this.linked(id, rel, dir)
+        .filter((i) => this.recs[i].entityType === 'Track')
+        .sort(byReposts)
+        .slice(0, n);
+
+    // ORDER IS LOAD-BEARING, and not obviously so.
+    //
+    // μ is an EMA, so the last plays decide where the kernel actually ends up. And
+    // `kernelRecommend` shortlists by raw cosine against μ *before* reweighting, so
+    // a followed artist whose tracks fall outside that shortlist never receives
+    // their tau_art boost at all — following them would do nothing.
+    //
+    // Genres are the backdrop and go first. The artists chosen explicitly go last,
+    // round-robined so the tail touches every one of them rather than whichever
+    // happened to be listed third.
+    const order: number[] = [];
+    const added = new Set<number>();
+    const push = (i: number) => { if (!added.has(i)) { added.add(i); order.push(i); } };
+
+    for (const g of genreIds) for (const i of pick(g, 'inGenre', 'in', SEED_PER_GENRE)) push(i);
+    const perArtist = artistIds.map((a) => pick(a, 'created', 'out', SEED_PER_ARTIST));
+    for (let n = 0; n < SEED_PER_ARTIST; n++) {
+      for (const list of perArtist) if (list[n] !== undefined) push(list[n]);
+    }
+
+    let k = emptyKernel();
+    for (const i of order) {
+      const vec = this.vectorOf(this.recs[i].id);
+      if (vec) k = onPlay(k, toFeatures(this.toRec(i), vec));
+    }
+    this.kernel = k;
+    this.seen.clear();
+    return describe(this.kernel);
+  }
+
+  /**
+   * Discovery rails for an artist page, along BOTH axes of the mesh.
+   *
+   * The graph has no `relatedTo` edge — nothing in the source data says two
+   * artists belong together — so relatedness has to be derived. Two independent
+   * derivations, kept separate rather than blended, because they are different
+   * claims and the page says so:
+   *
+   *   peers    RELATIONAL. Artists whose tracks share a playlist with this
+   *            artist's, ranked by how often. Real `contains` edges, walked. For
+   *            the sovereign artist every peer is a platform artist, because
+   *            their tracks sit in the platform's playlists — so this rail
+   *            crosses the publisher boundary by construction, which is the
+   *            demo's whole claim showing up as a discovery feature.
+   *            Only ~57% of artists have any: playlists are sparse here.
+   *
+   *   similar  SEMANTIC. Tracks nearest the centroid of this artist's own
+   *            catalogue. Always available, which is why it exists — it covers
+   *            the artists `peers` cannot reach.
+   *
+   * Note `similar` is built from TRACK vectors, never artist vectors. An Artist
+   * record embeds its bio ("…is an artist on Audius. Based in London, U.K.")
+   * so artist-to-artist similarity ranks press blurbs, not music: it puts Zedd
+   * near Skrillex by luck and returns noise for anyone with a thin bio. The
+   * track centroid describes what they actually sound like.
+   */
+  discovery(id: string, k = 12): { peers: Rec[]; similar: Rec[] } {
+    const rec = this.entity(id);
+    if (rec?.entityType === 'Artist') return this.artistDiscovery(id, k);
+    if (rec?.entityType === 'Track') return this.trackDiscovery(rec, k);
+    return { peers: [], similar: [] };
+  }
+
+  /**
+   * A track's two neighbourhoods.
+   *
+   *   peers    Tracks that share a playlist with this one, ranked by how many
+   *            playlists they share. Real `contains` edges — the same curatorial
+   *            signal the artist rail uses, one level down. Covers ~89% of
+   *            tracks, the widest relational reach in this graph (favourites
+   *            reach only ~14%, which is why they are not used).
+   *
+   *   similar  Nearest tracks by embedding. Covers everything, including the
+   *            ~11% that appear in no playlist at all.
+   */
+  private trackDiscovery(rec: Rec, k: number): { peers: Rec[]; similar: Rec[] } {
+    const self = this.indexById.get(rec.id);
+    if (self === undefined) return { peers: [], similar: [] };
+
+    const tally = new Map<number, number>();
+    for (const p of this.linked(rec.id, 'contains', 'in')) {
+      for (const s of this.linked(this.recs[p].id, 'contains', 'out')) {
+        if (s === self || this.recs[s].entityType !== 'Track') continue;
+        tally.set(s, (tally.get(s) ?? 0) + 1);
+      }
+    }
+    const peers = this.capByArtist([...tally.entries()].sort((a, b) => b[1] - a[1]), k);
+
+    const v = this.vectorOf(rec.id);
+    const similar = v
+      ? this.capByArtist(
+          topK(this.vectors, this.recs.length, v, k * 20,
+               (i) => this.recs[i].entityType === 'Track' && i !== self)
+            .map((h) => [h.index, h.score] as [number, number]),
+          k)
+      : [];
+
+    return { peers, similar };
+  }
+
+  private artistDiscovery(id: string, k: number): { peers: Rec[]; similar: Rec[] } {
+    const mine = this.linked(id, 'created', 'out')
+      .filter((i) => this.recs[i].entityType === 'Track');
+    if (!mine.length) return { peers: [], similar: [] };
+
+    // ── relational: playlist co-occurrence ────────────────────────────────
+    // Creator resolved by walking `created` back from each sibling rather than
+    // rebuilding an "audius:user:<id>" string — the edge is the source of truth.
+    const tally = new Map<number, number>();
+    for (const t of mine) {
+      for (const p of this.linked(this.recs[t].id, 'contains', 'in')) {
+        for (const s of this.linked(this.recs[p].id, 'contains', 'out')) {
+          if (this.recs[s].entityType !== 'Track') continue;
+          for (const a of this.linked(this.recs[s].id, 'created', 'in')) {
+            if (this.recs[a].id === id) continue;
+            tally.set(a, (tally.get(a) ?? 0) + 1);
+          }
+        }
+      }
+    }
+    const peers = [...tally.entries()]
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, k)
+      .map(([i, n]) => this.toRec(i, n));
+
+    // ── semantic: nearest tracks to this artist's centroid ────────────────
+    const d = MATRYOSHKA_DIM;
+    const c = new Float32Array(d);
+    for (const i of mine) {
+      const v = this.vectorOf(this.recs[i].id);
+      if (v) for (let j = 0; j < d; j++) c[j] += v[j];
+    }
+    let norm = 0;
+    for (let j = 0; j < d; j++) norm += c[j] * c[j];
+    norm = Math.sqrt(norm) || 1;
+    for (let j = 0; j < d; j++) c[j] /= norm;
+
+    const own = new Set(mine.map((i) => this.recs[i].id));
+    const similar = this.capByArtist(
+      topK(this.vectors, this.recs.length, c, k * 20,
+           (i) => this.recs[i].entityType === 'Track' && !own.has(this.recs[i].id))
+        .map((h) => [h.index, h.score] as [number, number]),
+      k);
+
+    return { peers, similar };
+  }
+
+  /**
    * Where the session is heading: rank the corpus by the kernel's query vector,
    * then let the kernel reweight the shortlist.
    *
@@ -360,13 +703,19 @@ export class Graph {
     const q = kernelQuery(this.kernel);
 
     // `owner` narrows the SAME ranking to one publisher — it does not re-rank.
+    // If it ranks nothing from over there, this returns nothing; the rail is
+    // simply absent rather than flattered into existence.
     //
-    // Needed because the kernel is a good recommender and therefore a boring
-    // demonstrator: `tau_art` rightly favours the artist you just played, so after
-    // three Disclosure tracks the top 12 are all Disclosure (they have ~38 more).
-    // Crossing only starts around k=40. Filtering the same weights to the other
-    // publisher shows the boundary isn't a fence without distorting the model —
-    // if it ranks nothing from over there, this returns nothing.
+    // This used to be the ONLY way the demo showed a crossing: `tau_art` made
+    // the top 12 all one artist and crossing began around k=40, so a rail-sized
+    // k never left the publisher you started on. MAX_PER_ARTIST changed that —
+    // the main rail now mixes publishers at k=12 on its own.
+    //
+    // Still worth keeping, for a reason worth stating: this publisher has ONE
+    // artist record, so the cap allows their repo at most MAX_PER_ARTIST slots
+    // in any mixed rail no matter how strong the affinity. This filtered rail is
+    // where their catalogue can actually be seen at depth, and it says "the same
+    // weights, narrowed" — which a mixed rail cannot state that directly.
     const want = owner?.toLowerCase();
     const accept = (i: number) => {
       const r = this.recs[i];
@@ -397,13 +746,11 @@ export class Graph {
       };
     });
 
-    return reweight(hits, this.kernel)
-      .sort((a, b) => b.weight - a.weight)
-      .slice(0, k)
-      .map((h) => {
-        const i = this.indexById.get(h.id)!;
-        return this.toRec(i, h.weight);
-      });
+    const ranked = reweight(hits, this.kernel).sort((a, b) => b.weight - a.weight);
+    return capPerArtist(ranked, k, MAX_PER_ARTIST).map((h) => {
+      const i = this.indexById.get(h.id)!;
+      return this.toRec(i, h.weight);
+    });
   }
 
   /**

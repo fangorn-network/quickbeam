@@ -1,6 +1,9 @@
 // Promise-RPC over the worker. The main thread's entire relationship with the data
 // is this file: send an op, await a result. It never touches a vector.
 import { CDN_DOMAIN, CDN_URL, PLATFORM_OWNER } from './config';
+import type { KernelPersist, OnboardingOptions } from './graph';
+
+export type { OnboardingOptions };
 import type { Rec, RelationGroup, Stats } from './types';
 
 export interface Progress { phase: string; pct: number; detail?: string }
@@ -47,6 +50,9 @@ export const neighbours = (id: string, rel: string, dir: 'out' | 'in', limit = 1
   call<{ records: Rec[]; total: number }>('neighbours', { id, rel, dir, limit });
 export const sample = (type: string, limit = 12, owner?: string) =>
   call<Rec[]>('sample', { type, limit, owner });
+/** Derived discovery rails for an artist page — see Graph.discovery. */
+export const discovery = (id: string, k = 12) =>
+  call<{ peers: Rec[]; similar: Rec[] }>('discovery', { id, k });
 
 // ── session kernel ──────────────────────────────────────────────────────────
 export type SignalKind = 'play' | 'skip' | 'like' | 'dislike';
@@ -77,3 +83,9 @@ export const kernelRecommend = (k = 12, owner?: string) =>
   call<Rec[]>('kernelRecommend', { k, owner });
 export const kernelSnapshot = () => call<KernelSnapshot>('kernelSnapshot');
 export const kernelReset = () => call<KernelSnapshot>('kernelReset');
+export const kernelExport = () => call<KernelPersist>('kernelExport');
+export const kernelImport = (state: KernelPersist) =>
+  call<KernelSnapshot>('kernelImport', { state });
+export const onboardingOptions = () => call<OnboardingOptions>('onboardingOptions');
+export const kernelSeed = (genres: string[], artists: string[]) =>
+  call<KernelSnapshot>('kernelSeed', { genres, artists });

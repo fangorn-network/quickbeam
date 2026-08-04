@@ -467,3 +467,134 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
   .entity-art { width: 148px; height: 148px; }
   .topbar .search { display: none; }
 }
+
+/* ── onboarding ─────────────────────────────────────────────────────────────
+   The first screen. Shares the hero's measure and rhythm so it reads as the
+   front of the app rather than a modal bolted over it. */
+.onboard { max-width: 860px; margin: 0 auto; padding: 40px 0 72px; }
+.onboard h1 { font-size: 44px; line-height: 1.1; margin: 8px 0 0; letter-spacing: -.02em; }
+.onboard h1 em {
+  font-style: normal;
+  background: var(--gradient);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.onboard-lede { color: var(--text-muted); max-width: 60ch; margin: 14px 0 0; line-height: 1.55; }
+
+.onboard-step { margin-top: 40px; }
+.onboard-step h2 {
+  font-size: 15px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); margin: 0 0 14px;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.onboard-step h2 .count { text-transform: none; letter-spacing: 0; font-size: 13px; }
+
+.onboard-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.onboard-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: var(--r-pill);
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--text); font: inherit; font-size: 14px; cursor: pointer;
+  transition: background .12s, border-color .12s, transform .12s;
+}
+.onboard-chip:hover { background: var(--surface-2); }
+.onboard-chip:active { transform: scale(.97); }
+.onboard-chip.is-on { background: var(--gradient); border-color: transparent; }
+.onboard-chip-n { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.onboard-chip.is-on .onboard-chip-n { color: rgba(255, 255, 255, .75); }
+
+.onboard-artists {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.onboard-artist {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 14px; border-radius: var(--r-l);
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  transition: background .12s, border-color .12s, transform .12s;
+}
+.onboard-artist:hover:not(:disabled) { background: var(--surface-2); }
+.onboard-artist:active:not(:disabled) { transform: scale(.98); }
+.onboard-artist.is-on { border-color: var(--primary); background: var(--surface-2); }
+.onboard-artist:disabled { opacity: .4; cursor: not-allowed; }
+.onboard-artist-name { font-weight: 600; font-size: 15px; }
+.onboard-artist-meta { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.onboard-artist .chip { margin-top: 6px; }
+
+.onboard-go {
+  margin-top: 36px; padding: 14px 28px; border: 0; border-radius: var(--r-pill);
+  background: var(--gradient); color: #fff; font: inherit; font-size: 16px;
+  font-weight: 600; cursor: pointer; box-shadow: var(--shadow-mid);
+  transition: opacity .12s, transform .12s;
+}
+.onboard-go:active:not(:disabled) { transform: scale(.98); }
+.onboard-go:disabled { opacity: .35; cursor: not-allowed; box-shadow: none; }
+.onboard-hint { margin-top: 10px; color: var(--text-faint); font-size: 13px; }
+
+@media (max-width: 620px) {
+  .onboard h1 { font-size: 32px; }
+  .onboard-artists { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── about ──────────────────────────────────────────────────────────────────
+   Long-form reading, so it keeps a narrow measure and its own vertical rhythm
+   rather than borrowing the grid's. */
+.topnav { margin-left: auto; display: flex; gap: 4px; }
+.topnav-link {
+  background: none; border: 1px solid transparent; border-radius: var(--r-pill);
+  padding: 7px 15px; font: inherit; font-size: 14px; font-weight: 600;
+  color: var(--text-faint); cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.topnav-link:hover { color: var(--text); background: var(--surface); }
+.topnav-link.is-on { color: var(--text); border-color: var(--line); background: var(--surface); }
+
+.about { max-width: 720px; margin: 0 auto; padding: 40px 0 80px; }
+.about h1 { font-size: 42px; line-height: 1.1; margin: 8px 0 0; letter-spacing: -.02em; }
+.about h1 em {
+  font-style: normal;
+  background: var(--gradient);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.about h2 {
+  font-size: 15px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); margin: 44px 0 12px;
+  padding-top: 20px; border-top: 1px solid var(--line);
+}
+.about p { color: var(--text-muted); line-height: 1.65; margin: 0 0 14px; }
+.about-lede { font-size: 17px; margin-top: 16px !important; }
+.about b { color: var(--text); font-weight: 600; }
+.about em { color: var(--text); font-style: italic; }
+
+.about-defs { margin: 0 0 18px; }
+.about-defs dt {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-weight: 700; color: var(--text); margin-top: 18px;
+}
+.about-defs dd {
+  margin: 6px 0 0; padding-left: 14px;
+  border-left: 2px solid var(--line);
+  color: var(--text-muted); line-height: 1.6;
+}
+.about-addr { font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--text-faint); }
+
+.about-caveats { margin: 0; padding: 0; list-style: none; }
+.about-caveats li {
+  border: 1px solid var(--line); border-left: 3px solid var(--secondary);
+  background: var(--surface); border-radius: var(--r-m);
+  padding: 14px 16px; margin-bottom: 10px;
+  color: var(--text-muted); font-size: 14px; line-height: 1.6;
+}
+
+@media (max-width: 620px) { .about h1 { font-size: 30px; } }
+
+/* Provenance note on a derived rail — says how the records were arrived at, since
+   "related" is a computed claim here, not an edge in the source data. */
+.rail-note { font-size: 12px; color: var(--text-faint); font-style: italic; }
+.rail-more {
+  margin-top: 14px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-pill); padding: 9px 18px; font: inherit; font-size: 14px;
+  color: var(--text-muted); cursor: pointer;
+}
+.rail-more:hover { border-color: var(--secondary); color: var(--text); }
+

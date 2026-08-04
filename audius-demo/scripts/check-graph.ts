@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Graph } from '../src/lib/graph.ts';
+import { isPlaceholderWallet } from '../src/lib/format.ts';
 
 const CDN = process.env.VITE_CDN_URL ?? 'http://localhost:8090';
 const DOMAIN = process.env.VITE_DOMAIN ?? 'audius';
@@ -141,6 +142,158 @@ await check('the convergence count is real, not just "all vocabulary nodes"', ()
   assert.ok(stats.converged > 0, 'no vertices reached by both publishers');
   assert.ok(stats.converged < vocabTotal,
     `converged (${stats.converged}) should be a subset of ${vocabTotal} vocabulary nodes`);
+});
+
+await check('a track page reads in attribution-then-classification order', () => {
+  // Entity.orderRails overrides Graph.relations' cross-publisher-first sort for
+  // tracks. Pinned because the two now disagree deliberately, and a future change
+  // to either could silently restore the old order.
+  const WANT = ['in:created', 'in:contains', 'out:inGenre', 'out:hasMood'];
+  const LAST = 'out:taggedWith';
+  const rank = (g: { rel: string; dir: string }) => {
+    const k = `${g.dir}:${g.rel}`;
+    if (k === LAST) return WANT.length + 1;
+    const i = WANT.indexOf(k);
+    return i === -1 ? WANT.length : i;
+  };
+
+  const full = g.sample('Track', 400)
+    .map((t) => g.relations(t.id))
+    .filter((rs) => [...WANT, LAST].every((k) => rs.some((r) => `${r.dir}:${r.rel}` === k)));
+  assert.ok(full.length > 0, 'no track carries all five relations to order');
+
+  for (const rs of full) {
+    const keys = [...rs].sort((a, b) => rank(a) - rank(b)).map((r) => `${r.dir}:${r.dir === 'in' ? r.rel : r.rel}`);
+    assert.deepEqual(keys.slice(0, 4), WANT, 'the first four rails are out of order');
+    assert.equal(keys[keys.length - 1], LAST, 'tags are not the final rail');
+  }
+  console.log(`    ${full.length} tracks carry all five; order holds on every one`);
+});
+
+await check("an artist's Audius trackCount is not the catalogue this graph holds", () => {
+  // The bug this pins: the page printed Audius' own `trackCount` as if it were
+  // the catalogue, so an artist read "103 tracks" above a rail of 9. The crawl is
+  // bounded by design (crawl.py: --max-artists profiles at --per-artist-tracks
+  // each, on volunteer-run infrastructure), so the two numbers legitimately
+  // differ for most artists and the UI has to show both.
+  const held = (a: string) =>
+    g.relations(a).find((r) => r.rel === 'created' && r.dir === 'out')?.count ?? 0;
+
+  const sampled = g.sample('Artist', 400).filter((a) => Number(a.fields.trackCount ?? 0) > 0);
+  const partial = sampled.filter((a) => Number(a.fields.trackCount) > held(a.id));
+  assert.ok(partial.length > sampled.length / 2,
+    `expected most artists to be partially crawled, got ${partial.length}/${sampled.length}`);
+
+  // The focus artist is the exception `_seed_focus` promises: fetched complete,
+  // so their page must NOT show a "partial catalogue" caveat.
+  const focus = artist.labelId!;
+  const focusRec = g.entity(focus)!;
+  assert.equal(held(focus), Number(focusRec.fields.trackCount),
+    'the focus artist is supposed to be crawled complete — no caveat should render');
+  console.log(`    ${partial.length}/${sampled.length} artists partially crawled; ` +
+    `focus artist complete at ${held(focus)}`);
+});
+
+await check('an artist page can discover along both axes', () => {
+  const sovereign = artist.labelId!;
+  const d = g.discovery(sovereign);
+
+  // Semantic axis must always answer — it is what covers the ~43% of artists
+  // with no playlist co-occurrence at all.
+  assert.ok(d.similar.length > 0, 'no similar tracks for the sovereign artist');
+  assert.ok(d.similar.every((r) => r.entityType === 'Track'), 'similar returned non-tracks');
+
+  // Never the artist's own catalogue — "sounds similar" that returns you to
+  // yourself is the overfit the recommendation rail already had to be fixed for.
+  const own = new Set(g.neighbours(sovereign, 'created', 'out', 60).records.map((r) => r.id));
+  assert.ok(!d.similar.some((r) => own.has(r.id)), 'similar returned the artist to themselves');
+
+  const perArtist = new Map<string, number>();
+  for (const r of d.similar) {
+    const a = String(r.fields.artistId ?? r.id);
+    perArtist.set(a, (perArtist.get(a) ?? 0) + 1);
+  }
+  assert.ok(Math.max(...perArtist.values()) <= 2,
+    'one artist dominates "sounds similar" — the per-artist cap is not applied');
+
+  // Relational axis, and the demo moment: this artist's tracks live in the
+  // PLATFORM's playlists, so their playlist peers are all on the other wallet.
+  assert.ok(d.peers.length > 0, 'no playlist peers for the sovereign artist');
+  assert.ok(d.peers.every((r) => r.entityType === 'Artist'), 'peers returned non-artists');
+  const crossing = d.peers.filter(
+    (r) => (r.owner ?? '').toLowerCase() !== artist.owner.toLowerCase());
+  assert.equal(crossing.length, d.peers.length,
+    'expected every playlist peer of the sovereign artist to be on the other publisher');
+  console.log(`    ${d.peers.length} playlist peers (all cross-publisher), ` +
+    `${d.similar.length} similar tracks, max ${Math.max(...perArtist.values())}/artist`);
+});
+
+await check('discovery is inert for records that are neither artist nor track', () => {
+  for (const type of ['Genre', 'Playlist', 'Tag']) {
+    const r = g.sample(type, 1)[0];
+    if (!r) continue;
+    assert.deepEqual(g.discovery(r.id), { peers: [], similar: [] },
+      `discovery ran on a ${type}`);
+  }
+
+  // Playlist co-occurrence covers only ~57% of artists. The rail must be absent
+  // for the rest, not wrong — an empty peers list is a correct answer here.
+  const sampled = g.sample('Artist', 120);
+  const withPeers = sampled.filter((a) => g.discovery(a.id, 6).peers.length > 0).length;
+  assert.ok(withPeers > 0 && withPeers < sampled.length,
+    `expected partial playlist coverage, got ${withPeers}/${sampled.length}`);
+  console.log(`    ${withPeers}/${sampled.length} artists have playlist peers; the rest render no rail`);
+});
+
+await check("a track's two discovery rails cover it and never return itself", () => {
+  const sampled = g.sample('Track', 200);
+  let withPeers = 0, withSimilar = 0;
+
+  for (const t of sampled) {
+    const d = g.discovery(t.id, 12);
+    if (d.peers.length) withPeers++;
+    if (d.similar.length) withSimilar++;
+
+    // Self-recommendation is the obvious failure and the easy one to ship.
+    assert.ok(!d.peers.some((r) => r.id === t.id), 'a track was its own playlist peer');
+    assert.ok(!d.similar.some((r) => r.id === t.id), 'a track was its own nearest neighbour');
+    assert.ok([...d.peers, ...d.similar].every((r) => r.entityType === 'Track'),
+      'a track rail returned something that is not a track');
+
+    for (const set of [d.peers, d.similar]) {
+      const per = new Map<string, number>();
+      for (const r of set) {
+        const a = String(r.fields.artistId ?? r.id);
+        per.set(a, (per.get(a) ?? 0) + 1);
+      }
+      if (per.size) {
+        assert.ok(Math.max(...per.values()) <= 2,
+          'one artist dominates a track rail — the per-artist cap is not applied');
+      }
+    }
+  }
+
+  // The semantic rail is what justifies its own existence: it must reach the
+  // tracks the playlist rail cannot.
+  assert.ok(withSimilar > withPeers,
+    `semantic rail (${withSimilar}) should cover more than the playlist rail (${withPeers})`);
+  assert.ok(withPeers / sampled.length > 0.6,
+    `playlist coverage collapsed to ${withPeers}/${sampled.length}`);
+  console.log(`    of ${sampled.length} tracks: ${withPeers} have playlist peers, ` +
+    `${withSimilar} have similar tracks`);
+});
+
+await check('the About page tells the truth about publication state', () => {
+  // This predicate decides whether the page claims settlement or disclaims it, so
+  // it must not silently invert — in either direction — when the wallets change.
+  assert.ok(isPlaceholderWallet('0x1111111111111111111111111111111111111111'));
+  assert.ok(isPlaceholderWallet('0x2222222222222222222222222222222222222222'));
+  assert.ok(!isPlaceholderWallet('0x9dfa1680e682e0fc79c5904ab453c04c7252572c'));
+  assert.ok(!isPlaceholderWallet(''), 'a missing owner must not read as a placeholder');
+
+  const seeded = stats.publishers.some((p) => isPlaceholderWallet(p.owner));
+  console.log(`    this dataset: ${seeded ? 'placeholder wallets → caveat shown'
+    : 'real publishers → caveat withdrawn'}`);
 });
 
 console.log(

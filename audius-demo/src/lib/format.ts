@@ -1,10 +1,23 @@
-import { CONTENT_NODE, PLATFORM_OWNER } from './config';
-import type { Rec } from './types';
+// Explicit .ts extensions: the node-side checks load this module through
+// --experimental-strip-types, whose ESM resolver does no extension guessing.
+// Same reason graph.ts spells its imports out.
+import { CONTENT_NODE, PLATFORM_OWNER } from './config.ts';
+import type { Rec } from './types.ts';
 
 export const isPlatform = (owner?: string) => (owner ?? '').toLowerCase() === PLATFORM_OWNER;
 
 export const shortAddr = (a?: string) =>
   !a ? '' : a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
+
+/**
+ * A seed wallet the demo ships with, as opposed to a real publisher.
+ *
+ * The About page's "not yet settled on-chain" caveat is driven by this, so it
+ * withdraws itself once these become real addresses. Worth getting right in both
+ * directions: claiming settlement that never happened is the worse failure, but a
+ * page still disclaiming after publication is its own kind of wrong.
+ */
+export const isPlaceholderWallet = (a?: string) => /^0x(0+|1+|2+)$/i.test(a ?? '');
 
 /** Artwork resolves from the CID stored in the graph — not a baked-in mirror URL. */
 export function artUrl(cid?: string, size: 150 | 480 | 1000 = 480): string | null {

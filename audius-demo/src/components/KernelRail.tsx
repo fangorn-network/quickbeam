@@ -17,17 +17,19 @@ import Card from './Card';
  * the other repo, the rail is simply absent.
  */
 export default function KernelRail({
-  version, stats,
-}: { version: number; stats: Stats }) {
+  railVersion, stats,
+}: { railVersion: number; stats: Stats }) {
   const [recs, setRecs] = useState<Rec[]>([]);
   const [other, setOther] = useState<Rec[]>([]);
   const [otherOwner, setOtherOwner] = useState<string>('');
 
+  // Keyed on railVersion, not version: starting a track feeds the kernel but must
+  // not re-rank the grid under the click that started it. See KernelCtx.
   useEffect(() => {
     let live = true;
     void kernelRecommend(12).then((r) => { if (live) setRecs(r); });
     return () => { live = false; };
-  }, [version]);
+  }, [railVersion]);
 
   // Whichever publisher the top picks came from, show the other one's best.
   useEffect(() => {
@@ -47,7 +49,7 @@ export default function KernelRail({
     <>
       <div className="section-head">
         <h2>Where you're heading</h2>
-        <span className="count">from what you've played, computed in your browser</span>
+        <span className="count">from what you've finished and rated, computed in your browser</span>
       </div>
       <div className="grid">
         {recs.map((r) => <Card key={r.id} rec={r} queue={recs} />)}

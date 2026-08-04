@@ -123,6 +123,9 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       // Consumed by `start` on the next track, which is why it's set before step().
       naturalEndRef.current = true;
       setPlaying(false);
+      // Hearing a track out is the settled evidence the recommendation rail waits
+      // for — the kernel already took the play signal when this track started.
+      kernel.settle();
       step(1);
     };
     const onError = () => {
@@ -146,7 +149,7 @@ export function PlayerProvider({ children }: { children: React.ReactNode }) {
       a.removeEventListener('ended', onEnded);
       a.removeEventListener('error', onError);
     };
-  }, [step]);
+  }, [step, kernel]);
 
   const toggle = useCallback((rec?: Rec) => {
     const a = audioRef.current;
