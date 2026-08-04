@@ -19,8 +19,12 @@ venv/bin/python -m quickbeam.cli data prebake --input-dir ./audius-build/stage -
   --collection audius --dim 256 --role-map-file ./audius-build/role_map.json \
   --owner 0x2222222222222222222222222222222222222222
 rm -rf audius-build/cdn
+# --shard-size 5000: Cloudflare Pages REJECTS any file over 25 MiB, and the default
+# (50k points = every record in one file) produces a 63.7 MiB shard that cannot be
+# deployed. At ~2.57 KiB/point this yields 6 shards of ~10.6 MiB. The client already
+# loops over manifest.shards, so nothing downstream changes.
 venv/bin/python -m quickbeam.cli cdn bake --config ./audius-build/domains.audius.json \
-  --domain audius --collection audius --cdn-dir ./audius-build/cdn
+  --domain audius --collection audius --cdn-dir ./audius-build/cdn --shard-size 5000
 venv/bin/python - <<'PY'
 import json
 e=[]

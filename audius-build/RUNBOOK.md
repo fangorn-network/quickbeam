@@ -179,6 +179,38 @@ them as unresolved, which is the signal to raise the limit).
 
 ---
 
+## Part 1b — deploy the site (Cloudflare Pages)
+
+`dist/` is self-contained: app + snapshot, no backend. Full detail in
+`audius-demo/README.md`; the short form:
+
+```sh
+cd audius-demo
+npm run build:static                       # stage ../audius-build/cdn → public/cdn, build
+npx wrangler@latest pages deploy dist --project-name audius-demo
+```
+
+Then Custom domains in the dashboard → `audius.fangorn.network`.
+
+**The bake must use `--shard-size 5000`** (already in `rebuild.sh`). Pages rejects files
+over 25 MiB and the default bake makes one 63.7 MiB shard. Check before uploading:
+
+```sh
+ls -la audius-build/cdn/audius/          # every file well under 25 MiB
+```
+
+Verify the built tree as a static site — this is production behaviour, not the dev proxy:
+
+```sh
+(cd audius-demo/dist && python3 -m http.server 8099) &
+cd audius-demo && VITE_CDN_URL=http://localhost:8099/cdn npm run check:graph
+```
+
+First load is ~98 MB (65 MB of it the vector shards). That is the cost of "the whole
+graph comes to your browser"; after it, everything is instant and offline.
+
+---
+
 ## Part 2 — on-chain (you run this; two wallets)
 
 The demo only *proves* sovereignty if the two graphs settle to **two different
