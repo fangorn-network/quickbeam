@@ -32,7 +32,7 @@ search touches the network. Nothing about that first minute is observable.
 against a *codebook* you downloaded, and only a *bucket* number is sent. Candidates come
 back with their vectors and are re-ranked here against your real query. (If "codebook"
 and "bucket" mean nothing to you yet, [the next section defines
-them](#first-the-three-words-this-rests-on) from scratch — they are the whole mechanism.)
+them](#first-the-four-words-this-rests-on) from scratch — they are the whole mechanism.)
 
 **Records outside the bootstrap are first-class.** Click a search result and it opens
 with real relation rails, plays, and feeds the recommender — served by
@@ -45,11 +45,10 @@ architecture most obviously invites.
 The design goal is narrow and worth stating precisely: **we cannot tell what you
 searched for, and we should not be able to even if you do trust us.**
 
-### First, the three words this rests on
+### First, the four words this rests on
 
 If you have not worked with embeddings, the rest of this section is unreadable without
-these. Nothing here is specific to us — the first two are standard, only the third is
-ours.
+these. The first three are standard terms from vector search; only the fourth is ours.
 
 **A vector (or embedding)** is what a piece of text becomes when a model reads it: a
 fixed-length list of numbers, 256 of them here. The useful property is that *similar
@@ -62,11 +61,29 @@ Searching means turning your words into a vector and finding the nearest track v
 **A cell** is a cluster of nearby vectors. At build time we ran k-means — a standard
 clustering algorithm — over all 1.9M track vectors and told it to produce **3,719
 groups**. Each group is a cell, and each cell has a *centroid*: the average position of
-everything in it, one more 256-number vector that acts as that cell's address. Because
-clustering puts similar things together, a cell ends up being a coherent slice of the
-catalogue: one might be mostly deep house, another mostly acoustic folk. The list of all
-3,719 centroids is called the **codebook**, and it is a 952 KB file
-(`index/codebook.i8`) your browser downloads once.
+everything in it, one more 256-number vector that serves as that cell's address.
+Because clustering puts similar things together, a cell ends up being a coherent slice
+of the catalogue: one might be mostly deep house, another mostly acoustic folk.
+
+**The codebook** is the list of all 3,719 of those centroids — nothing more than an
+array of 3,719 × 256 numbers, shipped as a **952 KB file** (`index/codebook.i8`) that
+your browser downloads once and keeps.
+
+It exists so you can work out which cell your query belongs to *without asking anyone*.
+Finding your cell means comparing your query vector against 3,719 centroids and taking
+the nearest — arithmetic over a file you already hold, no network involved. That is the
+step that would otherwise have to happen on a server, and having it happen in your tab
+is the difference between sending your query and sending a number.
+
+The name is borrowed from vector quantisation, where a codebook is the fixed set of
+reference values you round a signal to. Same idea here: your query gets rounded to the
+nearest of 3,719 reference points, and only that choice is expressed.
+
+**It is public on purpose, and that is not a compromise.** Every visitor downloads the
+same codebook, and anyone can fetch it and read it. The privacy of the scheme never
+rested on it being secret — it rests on the *bucket* below, and on the routing
+happening locally. A secret codebook would be worse: you could not verify what your
+browser was routing against.
 
 **A bucket** is our addition: a fixed group of **8 cells that are deliberately not
 related to each other**. The 3,719 cells are shuffled and dealt out like cards into 464
