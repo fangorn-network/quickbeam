@@ -24,6 +24,32 @@ appears in both has the same id, the same fields and the same vector. That is wh
 a search hit dedupe against the resident copy instead of showing you the same track
 twice.
 
+### What is actually served to you
+
+```mermaid
+flowchart LR
+    subgraph browser["YOUR BROWSER — downloaded once, identical for every visitor"]
+        direction TB
+        BS["<b>bootstrap graph</b><br/>41,424 records + vectors<br/>9 shards, ~120 MB"]
+        ED["<b>edges</b><br/>608,287 relations<br/>4.1 MB gzipped"]
+        CB["<b>codebook</b><br/>3,719 centroids<br/>930 KB"]
+        LO["<b>bucket layout</b><br/>which cell is in which bucket<br/>35 KB"]
+    end
+
+    subgraph server["SERVER — never sent to you, queried a bucket at a time"]
+        direction TB
+        QD["<b>Qdrant</b><br/>1,904,468 vectors<br/>each tagged with its cell"]
+        SQ["<b>edges.sqlite</b><br/>25,891,026 relations<br/>for entity pages"]
+    end
+
+    browser -. "one bucket number per uncached query" .-> server
+    server -. "~4,000 records + their vectors" .-> browser
+```
+
+The top box is everything the home page needs — it renders with no server involved at
+all. The bottom box is what searching reaches, and the only thing that ever travels up
+that dotted line is an integer.
+
 **The landing page is unchanged in character.** The hero ledger, onboarding, the
 publisher grids and every relation rail render from the bootstrap alone, before any
 search touches the network. Nothing about that first minute is observable.
@@ -91,6 +117,37 @@ buckets, so one bucket might hold a deep-house cell, a gospel cell, a K-pop cell
 five others with nothing in common. Which cells go in which bucket is fixed, public,
 and the same for every visitor.
 
+### How cells and buckets get built
+
+All of this happens once, at build time, on the server. Nothing here runs in a browser.
+
+```mermaid
+flowchart TB
+    R["<b>1,904,468 records</b><br/>title, artist, genre, mood, tags"]
+    V["<b>1,904,468 vectors</b><br/>256 numbers each<br/>similar meaning → nearby numbers"]
+    K["<b>k-means</b><br/>k = records / 512"]
+    C["<b>3,719 cells</b><br/>~512 similar records each<br/>e.g. a mostly-deep-house cell"]
+
+    CB["<b>codebook</b> — index/codebook.i8<br/>the 3,719 cell centroids<br/>930 KB, shipped to every browser"]
+    TAG["<b>cell id per record</b><br/>written into Qdrant as a payload field<br/>so a bucket can be fetched by filter"]
+
+    SH["<b>shuffle, then deal round-robin</b><br/>so neighbours land in DIFFERENT buckets"]
+    B["<b>464 buckets × 8 cells</b><br/>index/layout.json<br/>each bucket semantically incoherent"]
+
+    R -->|"embed<br/>nomic-embed-text-v1.5"| V
+    V --> K --> C
+    C -->|"take each cell's average position"| CB
+    C -->|"record → its cell"| TAG
+    C --> SH --> B
+
+    style CB fill:#1f6feb,color:#fff
+    style B fill:#1f6feb,color:#fff
+```
+
+The two blue boxes are the published artifacts. **The shuffle is the whole privacy
+mechanism** — deal the cells in order and each bucket would hold eight neighbouring
+regions, i.e. one big coherent region, which is exactly what a bucket must not be.
+
 ### What actually happens when you search
 
 An embedding is not an opaque token — published work reconstructs short texts from
@@ -115,6 +172,46 @@ rainy night"*:
    best ten. The precise ranking happens where your query has always been: in the tab.
 
 The server's whole view of that search is the number **154**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant Tab as Your browser tab
+    participant API as Server
+
+    You->>Tab: "melancholy piano for a rainy night"
+
+    rect rgb(232, 244, 234)
+    Note over Tab: NOTHING LEAVES THE TAB IN THESE STEPS
+    Tab->>Tab: embed the words → a 256-number vector
+    Tab->>Tab: compare against the 3,719 centroids<br/>nearest is cell 2702
+    Tab->>Tab: layout lookup: cell 2702 lives in bucket 154
+    end
+
+    Tab->>API: GET /bucket/154
+    Note right of Tab: one integer. no query string,<br/>no vector, no request body
+
+    rect rgb(255, 244, 230)
+    Note over API: the server cannot tell which of the<br/>8 cells you wanted — you did not say
+    API->>API: expand 154 → its 8 cells
+    API->>API: fetch every record tagged with those cells
+    end
+
+    API-->>Tab: ~4,000 records, each with its vector
+
+    rect rgb(232, 244, 234)
+    Tab->>Tab: rank all ~4,000 against the TRUE query vector
+    end
+    Tab-->>You: top 10
+
+    Note over Tab,API: a repeat search in the same region is served<br/>from cache — no request at all
+```
+
+Green is your machine, amber is ours. The only arrow that crosses carries the number
+**154** in one direction and records in the other. Your query vector is used twice —
+once to pick the cell, once to rank the results — and both times it stays in step 2's
+green box.
 
 **The expansion is server-side, and that matters.** `GET /bucket/{id}` accepts an
 integer and nothing else — there is no parameter for "just cell 2702". A client cannot
