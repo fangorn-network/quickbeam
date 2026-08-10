@@ -33,7 +33,7 @@ import uvicorn
 
 from qdrant_client import QdrantClient, models as qmodels
 from fastembed import TextEmbedding
-from fastapi import FastAPI, Query, BackgroundTasks, Request, Response
+from fastapi import FastAPI, Query, BackgroundTasks, Request, Response, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -101,6 +101,24 @@ def parse_args():
              "Matryoshka-truncate query embeddings to match it.",
     )
     parser.add_argument("--searchable-fields", default="auto")
+    parser.add_argument(
+        "--adjacency-db", default=None, metavar="PATH",
+        help="SQLite edge store from the dump build. Enables GET /adjacency, which is "
+             "what lets an entity page render real relation rails for a record that "
+             "is not in the client's resident bootstrap. Without it the route is 501.",
+    )
+    parser.add_argument(
+        "--platform-owner", default="0x1111111111111111111111111111111111111111",
+        help="The platform wallet. Everything else is a sovereign publisher; used to "
+             "mark which relation rails cross a publisher boundary.",
+    )
+    parser.add_argument(
+        "--index-layout", default=None, metavar="PATH",
+        help="Baked index/layout.json from `quickbeam cdn index`. Enables "
+             "GET /bucket/{id}, the private-retrieval route: the client routes its "
+             "query against the public codebook locally and asks only for a bucket, "
+             "so no query vector is ever sent. Without this the route returns 501.",
+    )
     parser.add_argument("--host",            default="0.0.0.0")
     parser.add_argument("--port",            type=int, default=8080)
     parser.add_argument("--reset",           action="store_true", default=False)
@@ -155,6 +173,15 @@ qdrant_client:   QdrantClient | None = None
 embed_engine:    TextEmbedding | None = None
 debug_secondary: dict                 = {}
 role_map_global: dict | None          = None
+# Baked index/layout.json, when --index-layout is given. Holds the PUBLIC codebook
+# parameters and the cell->bucket map; GET /bucket/{id} is a 501 without it.
+_layout:         dict | None          = None
+# SQLite edge store + the set of node ids belonging to a non-platform publisher.
+# The second is what makes the `crosses` flag exact without an owner lookup per edge:
+# the sovereign side is tiny (79 nodes against 1.9M), so one filtered scroll at startup
+# is enough to answer "does this rail cross a publisher boundary" for any pair.
+_adj:            "sqlite3.Connection | None" = None
+_sovereign:      set                  = set()
 # Effective vector dimension, resolved at startup from the recovered collection
 # (or --dim / model default as a fallback). Query embeddings are truncated to it.
 vector_dim:      int | None           = None
@@ -876,7 +903,19 @@ def _hit_from_point(pt, score: float | None = None) -> dict:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global qdrant_client, embed_engine, vector_dim, _warm
+    global qdrant_client, embed_engine, vector_dim, _warm, _layout, _adj, _sovereign
+    if getattr(cfg, "adjacency_db", None):
+        import sqlite3 as _sq
+        # check_same_thread=False because reads run in the executor pool. Reads only —
+        # nothing here writes, so concurrent access is safe.
+        _adj = _sq.connect(cfg.adjacency_db, check_same_thread=False)
+        n = _adj.execute("SELECT count(*) FROM edge").fetchone()[0]
+        print(f"[server] adjacency: {n} edges from {cfg.adjacency_db}")
+    if getattr(cfg, "index_layout", None):
+        from quickbeam.index import load_layout
+        _layout = load_layout(cfg.index_layout)
+        print(f"[server] index layout: k={_layout.get('k')} "
+              f"buckets={_layout.get('nbuckets')} — GET /bucket/{{id}} enabled")
     # Silence the boot-poll access logs (main polls /ready every ~300ms until the
     # warmup below flips it to 200). Done here, after uvicorn has set up its
     # loggers, so the filter sticks.
@@ -957,6 +996,30 @@ async def lifespan(app: FastAPI):
         # Nothing to warm (empty / still-seeding collection) — don't gate boot on
         # a warmup that will never run.
         _warm = True
+
+    if _adj is not None and count > 0:
+        # Every node NOT owned by the platform. This exists so /adjacency can mark a
+        # rail as crossing a publisher boundary exactly, without an owner lookup per
+        # edge: the sovereign side is a handful of nodes against ~1.9M, so one filtered
+        # scroll answers it for every pair thereafter.
+        try:
+            cursor, seen = None, set()
+            while True:
+                batch, nxt = qdrant_client.scroll(
+                    collection_name=cfg.collection,
+                    scroll_filter=qmodels.Filter(must_not=[qmodels.FieldCondition(
+                        key="owner", match=qmodels.MatchValue(value=cfg.platform_owner))]),
+                    limit=1000, offset=cursor, with_payload=True, with_vectors=False)
+                for pt in batch:
+                    if (pt.payload or {}).get("id"):
+                        seen.add(pt.payload["id"])
+                if nxt is None:
+                    break
+                cursor = nxt
+            _sovereign = seen
+            print(f"[server] sovereign nodes (non-platform owner): {len(_sovereign)}")
+        except Exception as e:  # noqa: BLE001 — a missing owner index must not stop boot
+            print(f"[server] could not load sovereign set ({e}); `crosses` will read false")
 
     yield
 
@@ -1066,6 +1129,153 @@ async def search(
         ),
     )
     return {"results": [_hit_from_point(pt, pt.score) for pt in resp.points]}
+
+@app.get("/records")
+async def records_by_id(ids: str = Query(..., description="Comma-separated node ids.")):
+    """Fetch specific records by id, with vectors.
+
+    Exists so a COLD entity page works: land on #/e?id=… by deep link or a refresh and
+    the client has no bucket cached, so without this it renders "Not in this snapshot"
+    for a record that plainly exists. Discloses which records you asked for — the same
+    disclosure /adjacency already makes, and the same one artwork fetches have always
+    made. Search is the private path; browsing is not."""
+    want = [i for i in (ids or "").split(",") if i]
+    if not want:
+        return {"records": []}
+    if len(want) > 200:
+        raise HTTPException(status_code=413, detail="too many ids (max 200)")
+
+    def _fetch():
+        pts = qdrant_client.retrieve(
+            collection_name=cfg.collection, ids=[_str_to_uuid(i) for i in want],
+            with_payload=True, with_vectors=True)
+        by_id = {p.payload.get("id"): p for p in pts if p.payload}
+        return [_hit_from_point(by_id[i]) for i in want if i in by_id]
+
+    loop = asyncio.get_event_loop()
+    return {"records": await loop.run_in_executor(None, _fetch)}
+
+
+@app.get("/adjacency")
+async def adjacency(
+    id: str = Query(..., description="Node id, e.g. audius:track:17zad"),
+    rel: str | None = Query(default=None),
+    dir: str | None = Query(default=None, description="'out' or 'in'"),
+    limit: int = Query(default=60),
+):
+    """A record's relations, for entity pages over records the client does not hold.
+
+    Two modes, one route, because `Graph.relations` and `Graph.neighbours` are the two
+    halves of the same question:
+      no rel/dir  -> the relation GROUPS (rel, dir, count, crosses)
+      rel + dir   -> the neighbour RECORDS, joined out of Qdrant
+
+    DISCLOSURE. This tells the server which record you are looking at. That is not a
+    new leak: `Privacy.tsx:73-78` already documents that artwork is fetched per record
+    from Audius' content node, so browsing has always been visible. SEARCH is the thing
+    that stays private (see /bucket) — browsing never was, and saying otherwise would
+    be the misleading kind of true.
+    """
+    if _adj is None:
+        raise HTTPException(status_code=501,
+                            detail="no adjacency db — start with --adjacency-db")
+
+    def _crosses(a: str, b: str) -> bool:
+        return (a in _sovereign) != (b in _sovereign)
+
+    def _groups():
+        rows = _adj.execute(
+            "SELECT rel,'out' AS d,dst FROM edge WHERE src=? "
+            "UNION ALL SELECT rel,'in',src FROM edge WHERE dst=?", (id, id))
+        agg: dict = {}
+        for r, d, other in rows:
+            g = agg.setdefault((r, d), {"rel": r, "dir": d, "count": 0, "crosses": False})
+            g["count"] += 1
+            if _crosses(id, other):
+                g["crosses"] = True
+        # Crossing rails first, then by size — the same ordering Graph.relations uses,
+        # so a non-resident record's page reads like a resident one.
+        return sorted(agg.values(), key=lambda g: (not g["crosses"], -g["count"]))
+
+    def _neighbours():
+        col = "dst" if dir == "out" else "src"
+        where = "src" if dir == "out" else "dst"
+        ids = [r[0] for r in _adj.execute(
+            f"SELECT {col} FROM edge WHERE {where}=? AND rel=? LIMIT ?",
+            (id, rel, max(1, limit)))]
+        if not ids:
+            return []
+        pts = qdrant_client.retrieve(
+            collection_name=cfg.collection, ids=[_str_to_uuid(i) for i in ids],
+            with_payload=True, with_vectors=True)
+        by_id = {p.payload.get("id"): p for p in pts if p.payload}
+        # Preserve the edge order rather than Qdrant's return order.
+        return [_hit_from_point(by_id[i]) for i in ids if i in by_id]
+
+    loop = asyncio.get_event_loop()
+    if rel and dir:
+        recs = await loop.run_in_executor(None, _neighbours)
+        return {"id": id, "rel": rel, "dir": dir, "records": recs}
+    groups = await loop.run_in_executor(None, _groups)
+    return {"id": id, "groups": groups}
+
+
+@app.get("/bucket/{bucket}")
+async def bucket(
+    bucket: int,
+    owner: str | None = Query(default=None, description="Scope to one publisher."),
+    limit: int        = Query(default=0,    description="Max points. 0 = the whole bucket."),
+):
+    """Return every point in a bucket. The private-retrieval route.
+
+    This takes NO vector and does NO ranking. The client embeds its query locally,
+    finds its nearest centroid in the public codebook, and asks for the bucket that
+    cell falls into; the ranking happens back on the client against the true query.
+    So the most this route ever learns is one integer — and because the server does
+    the bucket->cells expansion, a caller cannot ask for a single cell and opt out of
+    its own anonymity set.
+
+    A GET with the bucket in the path so it is cacheable: repeat searches in a region
+    the client already holds send nothing at all, which is what stops per-query
+    disclosure accumulating over a session.
+    """
+    if _layout is None:
+        raise HTTPException(status_code=501,
+                            detail="no index layout loaded — start with --index-layout")
+    from quickbeam.index import cells_in_bucket
+    cells = cells_in_bucket(_layout, bucket)
+    if not cells:
+        raise HTTPException(status_code=404, detail=f"unknown bucket {bucket}")
+
+    must = [qmodels.FieldCondition(key="cell", match=qmodels.MatchAny(any=cells))]
+    if owner:
+        must.append(qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner)))
+    scroll_filter = qmodels.Filter(must=must)
+
+    def _fetch():
+        rows, cursor = [], None
+        while True:
+            batch, nxt = qdrant_client.scroll(
+                collection_name=cfg.collection,
+                scroll_filter=scroll_filter,
+                limit=1000,
+                offset=cursor,
+                with_payload=True,
+                with_vectors=True,
+            )
+            rows.extend(_hit_from_point(pt) for pt in batch)
+            if limit and len(rows) >= limit:
+                return rows[:limit]
+            # `next_page_offset` is an opaque point-id cursor, not a skip count —
+            # /browse treats it as the latter and is wrong; /bundle/export is right.
+            if nxt is None:
+                return rows
+            cursor = nxt
+
+    loop = asyncio.get_event_loop()
+    rows = await loop.run_in_executor(None, _fetch)
+    return {"bucket": bucket, "cells": cells, "count": len(rows), "results": rows}
+
 
 @app.post("/search/vector")
 async def search_vector(body: VectorSearchRequest):

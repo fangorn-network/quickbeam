@@ -225,12 +225,19 @@ await check("an artist's Audius trackCount is not the catalogue this graph holds
   assert.ok(partial.length > sampled.length / 2,
     `expected most artists to be partially crawled, got ${partial.length}/${sampled.length}`);
 
-  // The focus artist is the exception `_seed_focus` promises: fetched complete,
-  // so their page must NOT show a "partial catalogue" caveat.
+  // The focus artist is complete here, but "complete" means something different from
+  // the API crawl this check was written for. That crawl fetched exactly `trackCount`
+  // tracks, so held === trackCount. This corpus comes from the pg_dump and holds every
+  // current/public/available track the artist has — which is MORE than Audius'
+  // aggregate claims: measured 71 held against a trackCount of 41. `aggregate_user`
+  // counts differently (and can be stale), so the invariant is >=, not ==.
+  // The UI consequence is the opposite of the original bug: no "partial catalogue"
+  // caveat should render, because nothing is missing.
   const focus = artist.labelId!;
   const focusRec = g.entity(focus)!;
-  assert.equal(held(focus), Number(focusRec.fields.trackCount),
-    'the focus artist is supposed to be crawled complete — no caveat should render');
+  assert.ok(held(focus) >= Number(focusRec.fields.trackCount),
+    `focus artist should hold at least Audius' count; held ${held(focus)} ` +
+    `vs trackCount ${focusRec.fields.trackCount}`);
   console.log(`    ${partial.length}/${sampled.length} artists partially crawled; ` +
     `focus artist complete at ${held(focus)}`);
 });

@@ -149,6 +149,10 @@ def ensure_indexes(qdrant, collection):
         # this is schizo
         ("fields.content",  models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("fields.filename", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        # Codebook cell for private retrieval (`cdn index --push-cells` backfills it).
+        # The bucket endpoint's whole cost model is a filtered scroll on this field,
+        # so without the index every bucket fetch is a full-collection scan.
+        ("cell", models.IntegerIndexParams(type="integer")),
     ]
     for field, schema in specs:
         try:

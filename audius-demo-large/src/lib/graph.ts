@@ -5,6 +5,9 @@
 // Explicit .ts extension: node's ESM resolver requires it, and this module is
 // imported directly by the node-side checks as well as bundled by vite.
 import { MATRYOSHKA_DIM, QUERY_PREFIX, matryoshka, topK } from './matryoshka.ts';
+import * as store from './store.ts';
+import * as route from './route.ts';
+import { API_URL, INDEX_DOMAIN, NPROBE } from './config.ts';
 import type { Edge, Rec, RelationGroup, Stats } from './types.ts';
 import { cosToDistance, toFeatures } from '../kernel/adapt.ts';
 import {
@@ -112,6 +115,17 @@ export class Graph {
   private _embed: Promise<Embed> | null = null;
   private _onboarding: OnboardingOptions | null = null;
   /** Baked Home rows, keyed `${entityType}|${owner.toLowerCase()}`. */
+  // ── the non-resident half ───────────────────────────────────────────────────
+  // The bootstrap is a slice; search reaches the whole catalogue. Records that
+  // arrive from a bucket or an adjacency rail live here instead of in `recs`,
+  // because `recs`/`vectors` are a packed parallel array whose indices the kernel
+  // and topK depend on — growing it per fetch would mean reallocating both.
+  // Every read path (entity/relations/neighbours/vectorOf) consults this second.
+  private remote = new Map<string, Rec>();
+  private remoteVec = new Map<string, Float32Array>();
+  private codebook: Int8Array | null = null;
+  private layout: import('./route.ts').Layout | null = null;
+
   private _samples: Record<string, Rec[]> | null = null;
   private _sampleLimit = 0;
   private _edges: Edge[] = [];
@@ -181,6 +195,7 @@ export class Graph {
       dim: number;
       shards: Array<{ file: string }>;
       stats?: Stats;
+      catalogue?: Stats['catalogue'];
       onboarding?: OnboardingOptions;
       samples?: Record<string, Rec[]>;
       sampleLimit?: number;
@@ -244,11 +259,36 @@ export class Graph {
       let i = this.inAdj.get(e.to);    if (!i) { i = []; this.inAdj.set(e.to, i); }    i.push(e);
     }
 
+    // The public codebook, if this deployment has one. Fetched from the CDN beside the
+    // shards — it is public by design: the privacy of the scheme rests on the disclosed
+    // value being a deterministic public function, never on the codebook being secret.
+    // An auditor should be able to fetch exactly what the client routes against.
+    if (API_URL) {
+      try {
+        onProgress('index', 92, 'Reading the public codebook');
+        const [layout, codebook] = await Promise.all([
+          store.fetchLayout(CDN, INDEX_DOMAIN || DOMAIN),
+          store.fetchCodebook(CDN, INDEX_DOMAIN || DOMAIN),
+        ]);
+        this.layout = layout;
+        this.codebook = codebook;
+      } catch {
+        // No index served → search stays local. The app is still correct, just
+        // limited to what it downloaded, which is exactly audius-demo's behaviour.
+        this.layout = null;
+        this.codebook = null;
+      }
+    }
+
     onProgress('stats', 94, 'Summarising the publishers');
     this._edges = edges;
     // Prefer the baked value; buildStats stays reachable both as the fallback for an
     // un-precomputed domain and so check-graph can assert the two agree.
     this._stats = manifest.stats ?? this.buildStats(edges);
+    // The catalogue block is written by bootstrap.py and describes the FULL corpus,
+    // not the slice that was downloaded. Attached here so every consumer of `stats`
+    // can reach it without a second fetch.
+    if (this._stats && manifest.catalogue) this._stats.catalogue = manifest.catalogue;
     onProgress('ready', 100);
     return this._stats;
   }
@@ -368,16 +408,99 @@ export class Graph {
     return { id: r.id, entityType: r.entityType, owner: r.owner, fields: r.fields, score };
   }
 
-  async search(q: string, k: number, type?: string): Promise<Rec[]> {
-    const vec = await this.embedQuery(q);
-    const accept = type ? (i: number) => this.recs[i].entityType === type : undefined;
-    return topK(this.vectors, this.recs.length, vec, k, accept)
-      .map((h) => this.toRec(h.index, h.score));
+  /** Absorb rows fetched from a bucket or an adjacency rail. */
+  private absorb(rows: store.BucketRow[]): Rec[] {
+    const out: Rec[] = [];
+    for (const row of rows) {
+      const fields = (row.fields ?? {}) as Rec['fields'];
+      const rec: Rec = {
+        id: row.id,
+        entityType: (fields.entityType as string) ?? 'Unknown',
+        owner: typeof row.owner === 'string' ? row.owner : undefined,
+        fields,
+      };
+      // A record already resident wins: same id, same bytes, but the resident copy
+      // is the one topK and the kernel index against.
+      if (!this.indexById.has(rec.id)) {
+        this.remote.set(rec.id, rec);
+        if (Array.isArray(row.embedding)) {
+          this.remoteVec.set(rec.id, Float32Array.from(row.embedding));
+        }
+      }
+      out.push(rec);
+    }
+    return out;
   }
 
+  /**
+   * Search the WHOLE catalogue, not just what is resident.
+   *
+   * The query is embedded here, routed against the public codebook here, and only a
+   * bucket id crosses the network (see store.ts — the one file in this path that
+   * touches fetch). Candidates come back with vectors and are re-ranked against the
+   * true query locally, which is what makes the disclosed value one integer instead
+   * of the query itself.
+   *
+   * Falls back to the resident scan when the index is not configured, so the app
+   * still works against a bootstrap-only deployment.
+   */
+  async search(q: string, k: number, type?: string): Promise<Rec[]> {
+    const vec = await this.embedQuery(q);
+    const local = topK(this.vectors, this.recs.length, vec,
+                       k, type ? (i: number) => this.recs[i].entityType === type : undefined)
+      .map((h) => this.toRec(h.index, h.score));
+
+    if (!API_URL || !this.layout || !this.codebook) return local;
+
+    let rows: store.BucketRow[];
+    try {
+      rows = await store.fetchBuckets(API_URL,
+        route.bucketsFor(this.codebook, this.layout, vec, NPROBE));
+    } catch {
+      return local;   // a dead index must degrade to the bootstrap, not to nothing
+    }
+    const remote = this.absorb(rows);
+    const scale = this.layout.vector_scale;
+    const scored: Rec[] = [];
+    for (const r of remote) {
+      if (type && r.entityType !== type) continue;
+      const v = this.remoteVec.get(r.id) ?? this.vectorOf(r.id);
+      if (!v) continue;
+      let dot = 0;
+      for (let d = 0; d < vec.length; d++) dot += v[d] * vec[d];
+      scored.push({ ...r, score: dot });
+    }
+    // Merge with the resident hits and dedupe by id. Both sides carry the same
+    // vectors for the same records — the bootstrap is a slice of the same build —
+    // so a record present in both scores identically and the dedupe is safe.
+    const byId = new Map<string, Rec>();
+    for (const r of [...local, ...scored]) {
+      const prev = byId.get(r.id);
+      if (!prev || (r.score ?? 0) > (prev.score ?? 0)) byId.set(r.id, r);
+    }
+    void scale;
+    return [...byId.values()].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, k);
+  }
+
+  /** Resident first, then anything a bucket or rail has already handed us. */
   entity(id: string): Rec | null {
     const i = this.indexById.get(id);
-    return i === undefined ? null : this.toRec(i);
+    if (i !== undefined) return this.toRec(i);
+    return this.remote.get(id) ?? null;
+  }
+
+  /** Like `entity`, but will go and get it. Used by the entity view, where a cold
+   *  deep link or a refresh has nothing cached and would otherwise render
+   *  "Not in this snapshot" for a record that plainly exists. */
+  async entityAsync(id: string): Promise<Rec | null> {
+    const hit = this.entity(id);
+    if (hit || !API_URL) return hit;
+    try {
+      const rows = await store.fetchRecords(API_URL, [id]);
+      return this.absorb(rows)[0] ?? null;
+    } catch {
+      return null;
+    }
   }
 
   relations(id: string): RelationGroup[] {
@@ -400,6 +523,31 @@ export class Graph {
     // Cross-publisher rails first: they're the demonstration, not a footnote.
     return [...seen.values()]
       .sort((a, b) => Number(b.crosses) - Number(a.crosses) || b.count - a.count);
+  }
+
+  /** Relation groups, falling back to the adjacency service for a record whose
+   *  edges are not in the resident linkset. Without this a search result opens to
+   *  "No relations recorded for this node" even though the graph holds thousands. */
+  async relationsAsync(id: string): Promise<RelationGroup[]> {
+    const local = this.relations(id);
+    if (local.length || !API_URL) return local;
+    try {
+      return (await store.fetchRelations(API_URL, id)) as unknown as RelationGroup[];
+    } catch {
+      return local;
+    }
+  }
+
+  async neighboursAsync(id: string, rel: string, dir: 'out' | 'in', limit: number) {
+    const local = this.neighbours(id, rel, dir, limit);
+    if (local.records.length || !API_URL) return local;
+    try {
+      const rows = await store.fetchNeighbours(API_URL, id, rel, dir, limit);
+      const records = this.absorb(rows);
+      return { records, total: records.length };
+    } catch {
+      return local;
+    }
   }
 
   neighbours(id: string, rel: string, dir: 'out' | 'in', limit: number) {
@@ -425,9 +573,15 @@ export class Graph {
   /** A record's vector as a standalone Float32Array (a copy, not a view). */
   private vectorOf(id: string): Float32Array | null {
     const i = this.indexById.get(id);
-    if (i === undefined) return null;
-    const d = MATRYOSHKA_DIM;
-    return this.vectors.slice(i * d, (i + 1) * d);
+    if (i !== undefined) {
+      const d = MATRYOSHKA_DIM;
+      return this.vectors.slice(i * d, (i + 1) * d);
+    }
+    // Bucket and adjacency rows carry their vectors. Without this the kernel goes
+    // deaf the moment you play something you found by searching: kernelSignal
+    // no-ops when it cannot find a vector, so playback looks perfectly normal
+    // while the recommender learns nothing at all.
+    return this.remoteVec.get(id) ?? null;
   }
 
   /**

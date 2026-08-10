@@ -831,6 +831,366 @@ def edges_main():
 
 
 # ---------------------------------------------------------------------------
+# PRECOMPUTE — UI-shell summaries into the manifest (logic in quickbeam/shell.py)
+# ---------------------------------------------------------------------------
+def write_shell(cdn_dir: str, domain: str, platform: str, sample_types, sample_limit: int,
+                gzip_edges: bool = True) -> dict:
+    """Fold stats / onboarding / samples into `cdn/<domain>/manifest.json`.
+
+    Runs AFTER `cdn edges`, because the stats depend on the linkset — a domain baked
+    but not yet edged would report an empty linkset and zero convergence, which is
+    worse than absent (the client would believe it)."""
+    from quickbeam import shell
+
+    domain_dir = os.path.join(cdn_dir, domain)
+    manifest_path = os.path.join(domain_dir, "manifest.json")
+    if not os.path.exists(manifest_path):
+        raise SystemExit(f"[shell] domain {domain!r} not baked yet — run `cdn bake` first")
+    if not os.path.exists(os.path.join(domain_dir, "edges.json")):
+        raise SystemExit(f"[shell] domain {domain!r} has no edges.json — run `cdn edges` first")
+
+    recs = shell.load_records(domain_dir)
+    edges = shell.load_edges(domain_dir)
+    stats = shell.build_stats(recs, edges, platform)
+    onboarding = shell.onboarding_options(recs, edges)
+
+    owners = [p["owner"] for p in stats["publishers"]]
+    samples = {}
+    for t in sample_types:
+        for o in owners:
+            rows = shell.sample(recs, t, sample_limit, o)
+            if rows:
+                samples[f"{t}|{o.lower()}"] = rows
+
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    manifest["stats"] = stats
+    manifest["onboarding"] = onboarding
+    manifest["samples"] = samples
+    manifest["sampleLimit"] = sample_limit
+    tmp = manifest_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(manifest, f)
+    os.replace(tmp, manifest_path)
+
+    if gzip_edges:
+        # 12.5 MB -> ~800 KB, a 16x cut, and the client's shard reader already sniffs
+        # the gzip magic bytes so it needs no new branch to read it.
+        src = os.path.join(domain_dir, "edges.json")
+        dst = os.path.join(domain_dir, "edges.json.gz")
+        with open(src, "rb") as fin, gzip.GzipFile(dst + ".tmp", mode="wb", mtime=0) as fout:
+            shutil.copyfileobj(fin, fout)
+        os.replace(dst + ".tmp", dst)
+        print(f"[shell] edges.json.gz {os.path.getsize(src)/1e6:.1f} MB -> "
+              f"{os.path.getsize(dst)/1e6:.2f} MB")
+
+    print(f"[shell] {len(recs)} records, {len(edges)} edges; "
+          f"{len(stats['publishers'])} publishers, linkset {stats['linksetTotal']}, "
+          f"converged {stats['converged']}, {len(onboarding['genres'])} genres / "
+          f"{len(onboarding['artists'])} artists, {len(samples)} sample slices")
+    return manifest
+
+
+def _precompute_args():
+    p = argparse.ArgumentParser(
+        prog="quickbeam cdn precompute",
+        description="Fold the UI-shell summaries (stats, onboarding, samples) into "
+                    "the manifest so the browser stops scanning every record to "
+                    "render its first paint.")
+    p.add_argument("--cdn-dir", default="./cdn", help="Baked CDN directory.")
+    p.add_argument("--domain", required=True, help="Domain (must be baked AND edged).")
+    p.add_argument("--platform", default="",
+                   help="Platform wallet — sorts first in the publisher ledger. "
+                        "Matches the client's VITE_PLATFORM_OWNER.")
+    p.add_argument("--sample-types", default="Track",
+                   help="Comma-separated entity types to bake Home samples for.")
+    p.add_argument("--sample-limit", type=int, default=12,
+                   help="Rows per (type, owner) slice. The client may ask for fewer.")
+    p.add_argument("--no-gzip-edges", action="store_true",
+                   help="Skip writing edges.json.gz alongside edges.json.")
+    return p.parse_args()
+
+
+def precompute_main():
+    args = _precompute_args()
+    write_shell(args.cdn_dir, args.domain, args.platform,
+                [t.strip() for t in args.sample_types.split(",") if t.strip()],
+                args.sample_limit, gzip_edges=not args.no_gzip_edges)
+
+
+# ---------------------------------------------------------------------------
+# INDEX — public codebook for private retrieval (numerics live in quickbeam/index.py)
+# ---------------------------------------------------------------------------
+def write_index(cdn_dir: str, domain: str, C, bmap, labels, ids, scale: float,
+                salt: str) -> dict:
+    """Write the codebook artifacts under `cdn/<domain>/index/`.
+
+    A sidecar written AFTER the bake, exactly like `write_edges` — `_bake_domain`
+    rmtrees and replaces the domain directory, so anything written during a bake is
+    destroyed by the next one. Re-indexing also has a different cadence than
+    re-baking: K, the bucket count and k' get retuned many times against one bake.
+
+    Three artifacts, because three different parties need three different things:
+      codebook.i8  the client's, to route locally — this is what lets the query
+                   vector stay in the tab
+      layout.json  public parameters + the cell->bucket map, needed by client and
+                   server both, and the thing an auditor reads
+      cells.ndjson.gz  {id, cell} for upserting into the server's payloads
+    """
+    domain_dir = os.path.join(cdn_dir, domain)
+    if not os.path.exists(os.path.join(domain_dir, "manifest.json")):
+        raise SystemExit(f"[index] domain {domain!r} not baked yet — run `cdn bake` first")
+    out_dir = os.path.join(domain_dir, "index")
+    os.makedirs(out_dir, exist_ok=True)
+
+    from quickbeam.index import int8_encode
+    codes, cb_scale = int8_encode(C)
+    with open(os.path.join(out_dir, "codebook.i8"), "wb") as f:
+        f.write(codes.tobytes())
+
+    sizes = [int(n) for n in _np().bincount(labels, minlength=len(C))]
+    layout = {
+        "generated_at": int(time.time()), "count": len(ids),
+        "k": int(len(C)), "dim": int(C.shape[1]),
+        "nbuckets": int(bmap.max()) + 1, "salt": salt,
+        "codebook_scale": cb_scale, "vector_scale": scale,
+        "buckets": [int(b) for b in bmap], "cell_sizes": sizes,
+    }
+    tmp = os.path.join(out_dir, "layout.json.tmp")
+    with open(tmp, "w") as f:
+        json.dump(layout, f)
+    os.replace(tmp, os.path.join(out_dir, "layout.json"))
+
+    with gzip.GzipFile(os.path.join(out_dir, "cells.ndjson.gz"), mode="wb", mtime=0) as f:
+        for tid, cell in zip(ids, labels):
+            f.write((json.dumps({"id": tid, "cell": int(cell)},
+                                separators=(",", ":")) + "\n").encode("utf-8"))
+
+    print(f"[index] domain {domain!r}: k={len(C)} buckets={layout['nbuckets']} "
+          f"cells {min(sizes)}/{max(sizes)} min/max")
+    return layout
+
+
+def _np():
+    import numpy as np
+    return np
+
+
+def push_cells(args, ids, labels, collection: str) -> int:
+    """Backfill each point's `cell` into its Qdrant payload.
+
+    Grouped BY CELL rather than per point: `set_payload` takes a list of point ids
+    for one shared value, so this is k calls of ~N/k ids each instead of N calls.
+    (`ingest/umap.py`'s px/py write-back is the per-point precedent; it needs one op
+    per point only because every point gets a different value.)
+
+    The join is `_str_to_uuid(track_id)` — the same derivation the embed path uses
+    to mint point ids, so a cell lands on the point it was computed from."""
+    from qdrant_client import models as qmodels
+
+    from quickbeam.ingest.embed import ensure_indexes
+    from quickbeam.ingest.identity import _str_to_uuid
+
+    client = make_qdrant(args)
+    ensure_indexes(client, collection)      # idempotent; creates the `cell` index
+
+    by_cell: dict[int, list[str]] = {}
+    for tid, cell in zip(ids, labels):
+        by_cell.setdefault(int(cell), []).append(_str_to_uuid(tid))
+
+    pushed = 0
+    for cell, points in sorted(by_cell.items()):
+        # Chunked: a cell can hold thousands of ids and the payload of a single
+        # request is bounded by the transport, not by the cell.
+        for i in range(0, len(points), 1000):
+            client.set_payload(collection_name=collection, payload={"cell": cell},
+                               points=points[i:i + 1000], wait=False)
+        pushed += len(points)
+    print(f"[index] pushed `cell` into {pushed} payloads across {len(by_cell)} cells")
+    return pushed
+
+
+def _index_args():
+    p = argparse.ArgumentParser(
+        prog="quickbeam cdn index",
+        description="Fit the public codebook that lets a client retrieve from a "
+                    "hosted corpus without disclosing its query vector.")
+    p.add_argument("--cdn-dir", default="./cdn", help="Baked CDN directory.")
+    p.add_argument("--domain", required=True, help="Domain to index (must be baked).")
+    p.add_argument("--k", default="0",
+                   help="Codebook size, or a comma-separated sweep in --report mode. "
+                        "0 = auto (N/512, clamped to [64, 65536]).")
+    p.add_argument("--buckets", type=int, default=0,
+                   help="Bucket count. 0 = auto (k/8, i.e. anonymity set b=8).")
+    p.add_argument("--kprime", default="1000",
+                   help="Candidates the server returns per query, or a sweep "
+                        "(centroid mode: the server ANNs on each cell's centroid).")
+    p.add_argument("--nprobe", default="1,4,8,16",
+                   help="Cells the client probes, or a sweep (cell mode: the server "
+                        "returns the members of every cell in the probed buckets).")
+    p.add_argument("--iters", type=int, default=25, help="k-means iterations.")
+    p.add_argument("--cap-factor", type=float, default=1.5,
+                   help="Cell size cap as a multiple of the mean (balancing).")
+    p.add_argument("--salt", default="quickbeam-v1",
+                   help="Bucket hash salt. Public; changing it reshuffles buckets.")
+    p.add_argument("--limit", type=int, default=0,
+                   help="Subsample the corpus (0 = all). Use for a fast gate run.")
+    p.add_argument("--queries", default=None, metavar="PATH",
+                   help="Text file, one real query per line. STRONGLY recommended: "
+                        "without it the report falls back to held-out documents as "
+                        "queries, which is optimistic (nomic is asymmetric).")
+    p.add_argument("--n-queries", type=int, default=200,
+                   help="Held-out documents to use when --queries is absent.")
+    p.add_argument("--report", action="store_true",
+                   help="Measure recall + disclosure and print the gate table.")
+    p.add_argument("--scale-sweep", default=None, metavar="N1,N2,N3",
+                   help="Corpus sizes to subsample, holding records-per-cell fixed. "
+                        "Measures the TREND with corpus size, which is the only part "
+                        "of a small-corpus measurement that extrapolates.")
+    p.add_argument("--records-per-cell", type=int, default=50,
+                   help="k = N / this, during --scale-sweep.")
+    p.add_argument("--dry-run", action="store_true", help="Measure but write nothing.")
+    p.add_argument("--emit-fixture", default=None, metavar="PATH",
+                   help="Write a quantization fixture for the TS cross-check.")
+    p.add_argument("--push-cells", action="store_true",
+                   help="Also write each point's cell into its Qdrant payload (and "
+                        "create the integer index on it), which is what makes the "
+                        "server's GET /bucket/{id} route possible. Opt-in: the rest "
+                        "of this command needs no live Qdrant.")
+    p.add_argument("--collection", default="fangorn",
+                   help="Qdrant collection to backfill (with --push-cells).")
+    _add_qdrant_args(p)
+    return p.parse_args()
+
+
+def index_main():
+    import numpy as np
+
+    from quickbeam import index as ix
+
+    args = _index_args()
+    domain_dir = os.path.join(args.cdn_dir, args.domain)
+    ids, X, fields = ix.load_corpus(domain_dir, limit=args.limit)
+    n, dim = X.shape
+    print(f"[index] loaded {n} vectors x {dim}d from {domain_dir}")
+
+    ks = [int(v) for v in str(args.k).split(",")]
+    ks = [(k if k > 0 else int(np.clip(n // 512, 64, 65536))) for k in ks]
+    kprimes = [int(v) for v in str(args.kprime).split(",")]
+
+    fixture = None
+    if args.emit_fixture:
+        # 100 vectors, plus a row containing an exact zero so the sign(0)=+1 tie is
+        # pinned by the fixture rather than by agreement between two readings of it.
+        sample = X[:100].copy()
+        sample[0, 0] = 0.0
+        codes, scale = ix.int8_encode(sample)
+        fixture = {"scale": scale, "dim": int(dim),
+                   "vectors": sample.tolist(),
+                   "int8": codes.tolist(),
+                   "sign": ix.sign_encode(sample).tolist()}
+
+    # Queries. The report is only honest against real query embeddings; say so loudly
+    # when falling back, because doc-as-query is the optimistic case and the whole
+    # point of the gate is to not be optimistic.
+    if args.queries:
+        with open(args.queries) as f:
+            texts = [ln.strip() for ln in f if ln.strip()]
+        print(f"[index] embedding {len(texts)} real queries")
+        Q = ix.embed_queries(texts, dim)
+    else:
+        rng = np.random.default_rng(0)
+        Q = X[rng.choice(n, size=min(args.n_queries, n), replace=False)]
+        print(f"[index] WARNING: no --queries; using {len(Q)} held-out DOCUMENTS as "
+              f"queries. nomic is asymmetric, so real queries sit off the document "
+              f"manifold — these numbers are an upper bound, not the gate.")
+
+    results = []
+    for k in ks:
+        nbuckets = args.buckets or max(1, k // 8)
+        print(f"[index] fitting k={k} ({args.iters} iters)...")
+        C = ix.spherical_kmeans(X, k, iters=args.iters)
+        labels, counts = ix.assign_balanced(X, C, cap_factor=args.cap_factor)
+        bmap = ix.bucket_map(k, nbuckets, salt=args.salt)
+
+        if args.report:
+            for kp in kprimes:
+                r = ix.recall_report(X, C, labels, bmap, Q, kp)
+                r.update(k=k, kprime=kp, nbuckets=nbuckets, mode="centroid",
+                         cell_max=int(counts.max()), cell_min=int(counts.min()))
+                results.append(r)
+            for np_ in [int(v) for v in str(args.nprobe).split(",")]:
+                r = ix.recall_report_cells(X, C, labels, bmap, Q, np_)
+                r.update(k=k, kprime=np_, nbuckets=nbuckets, mode="cell",
+                         cell_max=int(counts.max()), cell_min=int(counts.min()))
+                results.append(r)
+        if k == ks[-1] and fixture is not None:
+            # Routing cases. The expected cell is computed against the INT8 codebook,
+            # not the float one, because int8 is what the client actually holds — the
+            # contract being pinned is "given these bytes and this query, that cell".
+            cb, cb_scale = ix.int8_encode(C)
+            probes = X[:20]
+            fixture["codebook_scale"] = cb_scale
+            fixture["k"] = int(len(C))
+            fixture["codebook"] = cb.reshape(-1).tolist()
+            fixture["buckets"] = [int(b) for b in bmap]
+            fixture["routing"] = [
+                {"query": q.tolist(),
+                 "cell": int(np.argmax(cb.astype(np.int32) @ q)),
+                 "bucket": int(bmap[int(np.argmax(cb.astype(np.int32) @ q))])}
+                for q in probes
+            ]
+            with open(args.emit_fixture, "w") as f:
+                json.dump(fixture, f)
+            print(f"[index] fixture -> {args.emit_fixture} "
+                  f"({len(fixture['routing'])} routing cases)")
+
+        if not args.dry_run and k == ks[-1]:
+            _, scale = ix.int8_encode(X)
+            write_index(args.cdn_dir, args.domain, C, bmap, labels, ids, scale, args.salt)
+            if args.push_cells:
+                push_cells(args, ids, labels, args.collection)
+
+    if args.report:
+        print("\n=== RECALL (private path vs exhaustive fp32) ===")
+        print(f"{'mode':>9} {'k':>6} {'b':>3} {'budget':>7} {'cands':>7} {'scan%':>6} "
+              f"{'R@10':>7} {'R@1':>7}")
+        for r in results:
+            frac = 100.0 * r["mean_candidates"] / len(X)
+            print(f"{r['mode']:>9} {r['k']:>6} {r['bucket_size']:>3} "
+                  f"{r['kprime']:>7} {r['mean_candidates']:>7.0f} {frac:>6.1f} "
+                  f"{r['r_at_10']:>7.3f} {r['r_at_1']:>7.3f}")
+        print("  budget = k' (candidates the server returns) for centroid mode,")
+        print("           nprobe (cells the client probes) for cell mode.")
+
+        print("\n=== DISCLOSURE (what a bucket tells the server) ===")
+        for key in ("entityType", "genre"):
+            p = ix.purity_report(labels, bmap, fields, key)
+            print(f"  {p['field']:<12} classes={p['classes']:<5} "
+                  f"baseline={p['majority_baseline']:.3f}  "
+                  f"cell={p['cell_purity']:.3f}  bucket={p['bucket_purity']:.3f}")
+        print("\n  cell = what a contiguous-cell disclosure would leak.")
+        print("  bucket = what actually goes on the wire. The gap is the scatter.")
+
+    if args.scale_sweep:
+        sizes = [int(v) for v in args.scale_sweep.split(",")]
+        for mode, budget in (("centroid", kprimes[-1]),
+                             ("cell", int(str(args.nprobe).split(",")[-1]))):
+            print(f"\n=== SCALE TREND — {mode} mode "
+                  f"(k = N/{args.records_per_cell}, budget={budget}, b=8) ===")
+            print(f"{'N':>9} {'k':>7} {'cands':>7} {'scan%':>6} {'R@10':>7} {'R@1':>7}")
+            for r in ix.scale_sweep(X, sizes, args.records_per_cell, budget,
+                                    args.n_queries, args.cap_factor, args.iters,
+                                    mode=mode):
+                frac = 100.0 * r["mean_candidates"] / r["n"]
+                print(f"{r['n']:>9} {r['k']:>7} {r['mean_candidates']:>7.0f} "
+                      f"{frac:>6.1f} {r['r_at_10']:>7.3f} {r['r_at_1']:>7.3f}")
+        print("\n  Absolute levels here are degenerate at this corpus size; the SLOPE "
+              "is the transferable part. Watch scan% as well as recall — in cell mode "
+              "it FALLS with N at fixed nprobe, which is the whole question.")
+
+
+# ---------------------------------------------------------------------------
 # SERVE — static file CDN (FileResponse handles HTTP Range automatically)
 # ---------------------------------------------------------------------------
 def _serve_args():
@@ -913,12 +1273,43 @@ def build_app(cdn_dir: str, cors: bool = False):
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/domains/{name}/edges.gz")
+    def edges_gz(name: str):
+        # Same bytes as /edges, gzipped at bake time (12.5 MB -> ~800 KB). Served as
+        # application/gzip with no Content-Encoding, exactly like the shards, so the
+        # client's existing magic-byte sniff handles it and Cloudflare Pages behaves
+        # identically to `cdn serve`.
+        path = _safe(name, "edges.json.gz")
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"no gzipped edges for {name!r}")
+        return FileResponse(path, media_type="application/gzip", headers=_NO_CACHE)
+
+    _INDEX_FILES = {"codebook.i8", "layout.json", "cells.ndjson.gz"}
+
+    @app.get("/domains/{name}/index/{file}")
+    def index_artifact(name: str, file: str):
+        # Its own allowlist rather than loosening the shard check — these are a fixed,
+        # known set. The codebook and layout are what a client needs to route locally,
+        # so they are deliberately public: the privacy of this scheme rests on the
+        # disclosed value being a deterministic public function, not on the codebook
+        # being secret. An auditor should be able to fetch exactly what the client does.
+        if file not in _INDEX_FILES:
+            raise HTTPException(status_code=400, detail="invalid index artifact")
+        path = _safe(name, "index", file)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"no index for domain {name!r}")
+        # layout.json is a mutable pointer (a re-index rewrites it in place, like the
+        # manifest); the codebook and cell map are only ever read alongside it.
+        media = "application/json" if file.endswith(".json") else "application/octet-stream"
+        return FileResponse(path, media_type=media, headers=_NO_CACHE)
+
     @app.get("/")
     def root():
         return JSONResponse({"service": "fangorn-semantic-cdn",
                              "routes": ["/catalog", "/domains/{name}/manifest",
                                         "/domains/{name}/edges",
-                                        "/domains/{name}/shards/{file}", "/health"]})
+                                        "/domains/{name}/shards/{file}",
+                                        "/domains/{name}/index/{file}", "/health"]})
     return app
 
 

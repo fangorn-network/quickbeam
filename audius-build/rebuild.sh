@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 set -e
 cd "$(dirname "$0")/.."
-# ponytail: harmless no-op on a CPU-only install — the dirs just don't exist.
-export LD_LIBRARY_PATH=$PWD/venv/lib/python3.12/site-packages/nvidia/cudnn/lib:$PWD/venv/lib/python3.12/site-packages/nvidia/cublas/lib:$LD_LIBRARY_PATH
+# GPU libraries. Sourced rather than hardcoded: the old inline version pointed at
+# nvidia/cublas/lib, which has never existed for these wheels (cuBLAS ships under
+# nvidia/cu13/lib), so it silently left embedding on the CPU at ~1/10th speed.
+# Still a harmless no-op on a CPU-only install.
+source "$PWD/gpu-env.sh"
 rm -rf audius-build/stage
 venv/bin/python -m quickbeam.cli data audius --side A --cache-file ./audius-build/audius_cache.json \
   --output-dir ./audius-build/stage --volume 1
