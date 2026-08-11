@@ -42,6 +42,15 @@ def _build_text_embedding(args, cpu_only: bool = False):
         if os.path.isdir(snap) and not os.path.isfile(os.path.join(snap, "onnx", "model.onnx")):
             print(f"[Builder] Corrupt model cache at {snap!r}, removing for re-download...")
             shutil.rmtree(snap)
+    # Only ASK for CUDA if this build of onnxruntime actually has it. Requesting an
+    # unavailable provider is fatal at session construction (ValueError), and
+    # ResilientEmbedder's fallback only covers OOM *during* embedding — so without
+    # this check every CPU-only host (the deployment container, a laptop, CI) dies on
+    # startup with no way to opt out short of editing the source.
+    import onnxruntime as ort
+    if not cpu_only and "CUDAExecutionProvider" not in ort.get_available_providers():
+        print("[Builder] CUDAExecutionProvider unavailable — using CPU.")
+        cpu_only = True
     providers = ["CPUExecutionProvider"] if cpu_only else [
         ("CUDAExecutionProvider", {
             "device_id": 0,

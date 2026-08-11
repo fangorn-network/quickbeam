@@ -1,0 +1,7 @@
+# The build context is this whole directory, which holds a venv, node_modules, baked
+# CDN shards and a CUDA .deb. Only pyproject.toml + quickbeam/ are actually COPYed.
+*
+!pyproject.toml
+!quickbeam/
+quickbeam/**/__pycache__/
+quickbeam/**/*.pyc

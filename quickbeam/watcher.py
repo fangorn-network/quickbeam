@@ -103,6 +103,11 @@ def parse_args():
                     help="Domain config used to resolve the append scan filter.")
 
     # ── Shared with build ─────────────────────────────────────────────────────
+    p.add_argument("--qdrant-url", default=None, metavar="URL",
+                   help="Qdrant base URL, e.g. https://qdrant.example.com (overrides "
+                        "--qdrant-host/port). Use for a remote/authenticated Qdrant.")
+    p.add_argument("--qdrant-api-key", default=None,
+                   help="Qdrant API key (QDRANT__SERVICE__API_KEY on the server).")
     p.add_argument("--qdrant-host", default="localhost")
     p.add_argument("--qdrant-port", type=int, default=6333)
     p.add_argument("--qdrant-grpc-port", type=int, default=6334)
@@ -429,6 +434,21 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
         await asyncio.sleep(args.poll_interval)
 
 
+def _make_qdrant(args) -> QdrantClient:
+    """Qdrant connection: a remote URL (with optional API key) when given, else the
+    local host/port pair. Mirrors pull.py's helper of the same name.
+
+    ponytail: the URL branch does NOT set prefer_grpc. A remote Qdrant is typically
+    reached through an HTTPS reverse proxy on 443, which does not carry gRPC on 6334 —
+    forcing gRPC there fails to connect. REST is slower per upload and correct
+    everywhere; switch it on if a deployment actually exposes gRPC.
+    """
+    if args.qdrant_url:
+        return QdrantClient(url=args.qdrant_url, api_key=args.qdrant_api_key, timeout=600)
+    return QdrantClient(host=args.qdrant_host, port=args.qdrant_port,
+                        grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600)
+
+
 # ---------------------------------------------------------------------------
 # ENTRYPOINT
 # ---------------------------------------------------------------------------
@@ -446,10 +466,7 @@ async def main():
     print(f"[Watcher] Starting — sources: {', '.join(f'{o}:{n}' for o, n in sources)}")
     print(f"[Watcher] mode: push (fangorn subscribe); reconnect backoff {args.poll_interval}s")
 
-    qdrant = QdrantClient(
-        host=args.qdrant_host, port=args.qdrant_port,
-        grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600
-    )
+    qdrant = _make_qdrant(args)
 
     if not qdrant.collection_exists(args.collection):
         qdrant.create_collection(
