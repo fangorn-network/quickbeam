@@ -1,15 +1,12 @@
-# Deploying a Quickbeam instance
+# Deploying Quickbeam
 
-One watched namespace = one deployment. Given a publisher address and a namespace,
-this stack follows that publisher's on-chain head, embeds every commit as it lands,
-and exposes the result as a search API for websites and an MCP server for agents.
+**One shared instance serves every watched namespace.** You stand it up once. After
+that, adding a namespace is something a user does from the Fangorn website — no SSH,
+no compose edit, no new container.
 
 ---
 
 ## Topology
-
-The pieces are split by **state**, not by function. Three of them need a real disk, a
-shared filesystem and uninterrupted CPU; two are stateless request handlers.
 
 ```mermaid
 flowchart LR
@@ -19,44 +16,46 @@ flowchart LR
         IPFS["IPFS gateway<br/>(blocks + CARs)"]
     end
 
-    subgraph vm["GCE instance — docker compose"]
+    subgraph cf["Cloudflare"]
+        REG["<b>quickbeam-registry</b><br/>KV of watched sources<br/>+ HTTPS proxy"]
+    end
+
+    subgraph vm["One GCE instance — docker compose"]
         direction TB
-        W["<b>watch</b><br/>fangorn subscribe → embed"]
-        Q[("<b>qdrant</b><br/>vectors")]
-        C["<b>cdn serve</b><br/>static shards :8090"]
-        V[["shared volume<br/>/data/cdn"]]
+        W["<b>watch</b><br/>one task per namespace"]
+        Q[("<b>qdrant</b><br/>one collection")]
+        C["<b>cdn serve</b> :8090"]
+        S["<b>serve</b> :8080"]
+        M["<b>mcp</b> :8765"]
         W -->|upsert| Q
-        W -->|delta shards| V
-        V --> C
+        W -->|delta shards| C
+        S --> Q
+        M --> C
     end
 
-    subgraph cr["Cloud Run — scale to zero"]
-        direction TB
-        S["<b>serve</b><br/>GET /search :8080"]
-        M["<b>mcp</b><br/>/mcp :8765"]
-    end
-
-    DR -->|StateCommitted| W
+    Website["fangorn.network"] -->|"signed POST /monitor"| REG
+    REG -.->|"GET /sources (polled)"| W
+    DR --> W
     IPFS --> W
-    S -->|query vectors| Q
-    M -->|pull shards| C
-    Browser["website"] --> S
-    Agent["agent / LLM"] --> M
+    Browser["a website's search box"] --> REG
+    Agent["agent / LLM"] --> REG
+    REG -->|proxied| S
+    REG -->|proxied| C
+    REG -->|proxied| M
 
     style vm fill:#f6f6f8,stroke:#999
-    style cr fill:#eef4fb,stroke:#999
+    style cf fill:#eef4fb,stroke:#999
     style chain fill:#fff,stroke:#ccc
 ```
 
-**Why `watch` and `cdn serve` are together:** the watcher appends delta shards to the
-directory `cdn serve` reads. They are the only pair that needs a shared filesystem.
+**One collection, many namespaces.** Every point carries `owner` and `meta.namespace`,
+so `serve` scopes results with `?owner=&namespace=` and each namespace still bakes its
+own CDN domain. That is what makes one box serve everyone: the embedding model is
+loaded **once**, not per customer.
 
-**Why the watcher is not on Cloud Run:** it never binds a port (so it fails a
-service's startup probe), and outside a request Cloud Run throttles CPU to near zero
-unless you pay for always-allocated CPU with `min-instances=1`. On a VM it is just a
-container with a restart policy.
-
-**Why Qdrant is not on Cloud Run:** no persistent disk, and instances get recycled.
+**The worker proxies queries** because the instance speaks plain HTTP and a browser on
+HTTPS cannot call it (mixed content). Proxying supplies TLS with no per-namespace DNS
+record or certificate.
 
 ### What happens when a commit lands
 
@@ -72,69 +71,78 @@ sequenceDiagram
     W->>W: resolve commit → diff namespace
     W->>W: project + embed only the delta
     W->>Q: upsert new points, tombstone removed
-    W->>C: append delta shard + manifest
+    W->>C: append delta shard to that namespace's domain
 ```
 
 `quickbeam watch` is **push-based**. `--poll-interval` is the reconnect backoff for a
-dropped stream, *not* a polling timer.
+dropped stream, *not* a polling timer. `--sources-refresh` is the separate interval at
+which it re-reads the watch list.
 
 ---
 
-## 1. Run it locally first
+## 1. Run it locally
 
-Prove the image before any cloud is involved.
+Prove the image before any cloud is involved. Local runs don't need the worker — point
+`SOURCES_URL` at a file.
 
 ```sh
 cd quickbeam
-cp .env.example .env
-# edit .env: OWNER, NAMESPACE, ETH_PRIVATE_KEY, PINATA_GATEWAY, QDRANT_API_KEY
+cp .env.example .env      # set ETH_PRIVATE_KEY, PINATA_GATEWAY, QDRANT_API_KEY
 docker compose up -d --build
 ```
 
-The first build takes a few minutes — it installs Node, the `fangorn` CLI, and bakes
-the ONNX embedding model into the image (~2.5GB total).
+For a static list, write `sources.json` into the shared volume and set
+`SOURCES_URL=file:///data/sources.json`:
+
+```json
+[ "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood" ]
+```
+
+The list also accepts `[{"owner":"0x…","namespace":"…"}]` and either form wrapped in
+`{"sources": …}` — which is what the worker returns.
 
 Check it:
 
 ```sh
 docker compose logs -f watch
-#   [Watcher] <owner>:<ns>: subscribed (pid …)
-#   [Watcher] <owner>:<ns>: seeded — N new record(s) embedded
+#   [Watcher] + 0x…:robinhood — now watching 1 source(s)
+#   [Watcher] 0x…:robinhood: subscribed (pid …)
+#   [Watcher] 0x…:robinhood: seeded — N new record(s) embedded
 
-curl 'localhost:8080/search?q=<term>'          # the website path
-curl localhost:8090/catalog                     # the CDN the MCP pulls from
-curl localhost:8090/domains/$NAMESPACE/manifest
+curl 'localhost:8080/search?q=<term>&namespace=robinhood'
+curl localhost:8090/domains/robinhood/manifest
 ```
 
-A non-zero `N` in that seed line is the real proof: it means the Node CLI, the chain
-read, the IPFS fetch, the projection and the embed all worked.
+**Add a second entry to the file and watch a second task start with no restart.** That
+is the whole point of the design — if it needs a restart, something regressed.
 
-> **`seeded — no new records` / `head: null`?** The namespace has nothing settled
+A non-zero `N` in the seed line is the real proof: the Node CLI, the chain read, the
+IPFS fetch, the projection and the embed all worked.
+
+> **`seeded — no new records` / `head: null`?** That namespace has nothing settled
 > on-chain. Confirm with
-> `docker compose exec watch fangorn read $NAMESPACE --owner $OWNER` — if it returns
-> `"head":null` with empty arrays, that publisher has not pushed that namespace (or
-> the head was reset). Nothing to fix in the deployment; point it at a live namespace.
+> `docker compose exec watch fangorn read <ns> --owner <owner>` — if it returns
+> `"head":null` with empty arrays, nothing was ever pushed there. Not a deployment
+> fault.
 
 ### Configuration
 
 | Variable | Notes |
 |---|---|
-| `OWNER` | Publisher address whose head is followed. `fangorn status` prints it. |
-| `NAMESPACE` | Namespace key inside that publisher's root map. Also used as the Qdrant collection and CDN domain name. |
-| `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, needs no funding, no registration. |
-| `PINATA_GATEWAY` | Reads resolve every block by CID through this. The default is `ipfs.io`, which is DNS-filtered on many networks. |
-| `QDRANT_API_KEY` | Any random string. Qdrant enforces it on every request. |
-| `INTERVAL` | Reconnect backoff in seconds. Not a monitoring interval. |
-| `*_PORT` | Host ports, so several namespaces can share one box. |
+| `SOURCES_URL` | The registry worker's `/sources`. Namespaces are added there, never here. |
+| `SOURCES_REFRESH` | Seconds between watch-list polls. |
+| `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, no funding, no registration. |
+| `PINATA_GATEWAY` | Reads resolve every block by CID through this. The default is `ipfs.io`, DNS-filtered on many networks. |
+| `QDRANT_API_KEY` | Any random string; Qdrant enforces it on every request. |
+| `COLLECTION` | One collection for all namespaces. |
+| `INTERVAL` | Reconnect backoff. Not a monitoring interval. |
 
 Do **not** bake a `~/.fangorn/config.json` into the image. The CLI returns early when
 that file exists and ignores every environment variable above.
 
 ---
 
-## 2. The GCE instance
-
-Runs `qdrant`, `watch` and `cdn serve`.
+## 2. The instance
 
 ```sh
 gcloud compute instances create quickbeam-1 \
@@ -144,66 +152,43 @@ gcloud compute instances create quickbeam-1 \
   --image-family=debian-12 --image-project=debian-cloud
 
 # on the box
-sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 caddy git
+sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
 git clone <this repo> && cd fangorn/quickbeam
-cp .env.example .env   # fill in
-docker compose up -d --build qdrant watch cdn
+cp .env.example .env      # SOURCES_URL → the deployed worker
+docker compose up -d --build
 ```
 
-**Machine type.** Start on `e2-small` (2GB). If the initial seed OOMs, stop the
-instance, change the machine type to `e2-medium` (4GB) and start it again — the disk
-survives, so it costs a minute. `e2-micro` (1GB, free tier) is too small: the ONNX
-model plus the Node subscribe process plus Python will not fit.
+Open `8080`, `8090` and `8765` to the worker. Then set `SEARCH_URL`, `CDN_URL` and
+`MCP_URL` in `webworker/quickbeam-registry/wrangler.toml` to this instance and deploy
+the worker.
 
-**Do the initial backfill somewhere else.** E2 shared-core types are burstable
-(`e2-small` baselines at 0.5 vCPU) and a full seed embed is a sustained burn that
-exhausts burst credits. Build the collection on a GPU box and restore a snapshot here
-(see the Snapshots section in `README.md`); the instance then only handles deltas,
-which is what makes the small machine type viable.
+**Machine type.** Start on `e2-small` (2GB). If a seed OOMs, stop the instance, change
+the type to `e2-medium` (4GB) and start it again — the disk survives, so it costs a
+minute. `e2-micro` (1GB, free tier) is too small: the ONNX model plus one Node
+subscribe process per source will not fit.
 
-### Caddy
+**Do big backfills elsewhere.** E2 shared-core types are burstable (`e2-small`
+baselines at 0.5 vCPU) and a full seed embed is a sustained burn that exhausts burst
+credits. Build the collection on a GPU box and restore a snapshot here (see the
+Snapshots section in `README.md`); the instance then only handles deltas.
 
-Cloud Run has no static egress IP to firewall against, so TLS is the gate. Point two
-DNS A records at the instance, edit `deploy/Caddyfile` with those hostnames, then:
-
-```sh
-sudo cp deploy/Caddyfile /etc/caddy/Caddyfile && sudo systemctl reload caddy
-```
-
-Qdrant and the CDN are published on loopback only; Caddy is what exposes them.
-
-### A second namespace on the same box
-
-Copy the directory, give it its own `.env` with different `*_PORT` values, and
-`docker compose up -d`. The compose project name is derived from `NAMESPACE`, so the
-stacks stay independent.
+**What scales per namespace** is one `fangorn subscribe` Node process, not the model.
+Measure its RSS before promising a namespace count.
 
 ---
 
-## 3. Cloud Run
+## 3. Adding and removing a namespace
 
-Runs `serve` and `mcp`. Both are stateless and scale to zero.
+**Adding** is a user action: sign in at fangorn.network with an active storage
+subscription, enter a publisher and namespace in the Quickbeam panel, and press
+Monitor. The worker records it; this instance picks it up within `SOURCES_REFRESH` and
+logs `[Watcher] + owner:namespace`.
 
-```sh
-cd deploy/cloudrun
-NAMESPACE=robinhood \
-QDRANT_URL=https://qdrant.example.com \
-QDRANT_API_KEY=… \
-CDN_URL=https://cdn.example.com \
-./deploy.sh
-```
+**Removing** is a founder action — `POST /admin/remove` signed by a wallet in
+`ADMIN_WALLETS`. See `webworker/quickbeam-registry/README.md`. Nothing expires on its
+own, so a lapsed subscription keeps running until someone removes it.
 
-The script builds and pushes the image, renders the two service YAMLs with those
-values, applies them, and makes both services public. The rendered YAML holds the
-Qdrant API key, so it is written to a temp dir and deleted rather than committed.
-
-Then confirm the far side works end to end:
-
-```sh
-curl "https://qb-search-<ns>-….run.app/search?q=<term>"
-```
-
-`server.py` already sets permissive CORS, so a browser can call that directly.
+Neither touches this box.
 
 ---
 
@@ -211,22 +196,25 @@ curl "https://qb-search-<ns>-….run.app/search?q=<term>"
 
 - **The MCP endpoint is `/mcp`,** not `/`. A healthy server returns 404 on `/` and 400
   on `/mcp` for a request without a handshake.
-- **`cdn` restart-loops for a few seconds on first boot.** `cdn serve` exits if its
-  directory does not exist yet, and the watcher creates it during startup. The restart
-  policy covers the window.
+- **`cdn` restart-loops for a few seconds on first boot** — `cdn serve` exits if its
+  directory does not exist yet, and the watcher creates it when it bakes the first
+  domain. The restart policy covers the window.
+- **A registry blip does not tear down the fleet.** If the watch-list fetch fails, the
+  watcher keeps every running source rather than reading the failure as
+  "everyone unsubscribed".
 - **`Api key is used with an insecure connection`** is expected inside the compose
-  network (plain HTTP between containers). It matters only if you point a client at
-  Qdrant over the public internet without Caddy in front.
-- **The subscribe cursor lives at `/data/.fangorn/`.** That is why the working
-  directory is the mounted volume — an ephemeral one replays from scratch on every
-  restart.
-- **The embedding model is baked into the image.** If you change
-  `--embedding-model`, rebuild or the new model downloads at every container start.
+  network. It matters only if you expose Qdrant publicly.
+- **The subscribe cursor lives at `/data/.fangorn/`** — that is why the working
+  directory is the mounted volume; an ephemeral one replays from scratch on restart.
+- **The embedding model is baked into the image.** Changing `--embedding-model` means
+  rebuilding, or it downloads at every container start.
 - **CPU-only hosts work** because `_build_text_embedding()` asks onnxruntime which
   providers exist before requesting CUDA. A GPU box still selects CUDA automatically.
+- **`/browse` is not namespace-scoped.** It returns the whole collection. The search
+  routes are the scoped ones.
 
 ## Teardown
 
 ```sh
-docker compose down -v     # -v also drops the Qdrant data and CDN shards
+docker compose down -v     # -v also drops the Qdrant data and every CDN shard
 ```

@@ -25,10 +25,13 @@ Examples
 
 import argparse
 import asyncio
+import copy
 import json
 import os
+import re
 import shlex
 import sys
+import urllib.request
 
 from quickbeam.ingest.checkpoint import (
     _load_checkpoint, _save_checkpoint, _save_role_map)
@@ -64,6 +67,14 @@ def parse_args():
 
     p.add_argument("--source", action="append", dest="sources", default=[],
                    help="OWNER:NAMESPACE to watch, repeatable.")
+    p.add_argument("--sources-url", default=None, metavar="URL",
+                   help="Poll this URL for the watch list instead of fixed --source "
+                        "flags. Sources that appear start streaming and sources that "
+                        "vanish are cancelled, with no restart. Accepts "
+                        '["OWNER:NS", …], [{"owner":…,"namespace":…}, …], or either '
+                        'wrapped in {"sources": …}.')
+    p.add_argument("--sources-refresh", type=int, default=60,
+                   help="Seconds between --sources-url polls (default: 60).")
     p.add_argument("--fangorn-bin", default="fangorn",
                    help="How to invoke the fangorn CLI (may be a full command).")
 
@@ -192,7 +203,7 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
 # ---------------------------------------------------------------------------
 # LIVE CDN DELIVERY — ship a change's delta into the baked domain
 # ---------------------------------------------------------------------------
-def _deliver_cdn(args, qdrant, total_new, edges, tombstones):
+def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespace=None):
     """Mirror an ingested change into the delivered CDN domain: append the new points
     as a delta shard, ride removals on the manifest's tombstone list, and merge new
     edges into the served graph. Each step is isolated — a delivery failure never
@@ -203,8 +214,13 @@ def _deliver_cdn(args, qdrant, total_new, edges, tombstones):
     if total_new:
         try:
             from quickbeam.cdn import append_domain
+            # Scope the scan to this source. One collection can hold several watched
+            # namespaces, and an unfiltered append would pull every other namespace's
+            # points into this domain.
             append_domain(qdrant, args.collection, args.cdn_dir,
-                          args.cdn_domain, config_path=args.cdn_config)
+                          args.cdn_domain, config_path=args.cdn_config,
+                          owners=[owner] if owner else None,
+                          namespaces=[namespace] if namespace else None)
         except Exception as e:  # noqa: BLE001
             print(f"[Watcher] CDN append error: {e}", file=sys.stderr)
 
@@ -348,7 +364,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
                 edges_sink=seed_edges, tombstones_sink=seed_tombstones,
             )
             print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
-            _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
+            _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones, owner, namespace)
         else:
             print(f"[Watcher] {key}: reusing snapshot "
                   f"({len(vertices_by_cid)} vertices) — resuming stream")
@@ -397,7 +413,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
             print(f"[Watcher] {key}: change applied — {status}")
-            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones)
+            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones, owner, namespace)
 
         rc = await proc.wait()
         print(f"[Watcher] {key}: subscribe stream ended (rc={rc})", file=sys.stderr)
@@ -434,6 +450,100 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
         await asyncio.sleep(args.poll_interval)
 
 
+# ---------------------------------------------------------------------------
+# PER-SOURCE SCOPING — one process, many namespaces
+# ---------------------------------------------------------------------------
+def _slug(text: str) -> str:
+    """Filename-safe fragment of a namespace/owner."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", text).strip("-").lower() or "x"
+
+
+def _scoped_role_map(path: str, owner: str, namespace: str) -> str:
+    root, ext = os.path.splitext(path)
+    return f"{root}-{_slug(owner[2:10])}-{_slug(namespace)}{ext or '.json'}"
+
+
+def _source_args(args, owner: str, namespace: str, pin_domain: bool = False):
+    """A per-source view of `args`.
+
+    Two settings must NOT be shared once a process watches several namespaces:
+
+      cdn_domain     one domain per namespace, or their shards intermix.
+      role_map_file  _ingest_contents re-infers the role map whenever the loaded one
+                     doesn't fit the current records, then saves it — so two
+                     dissimilar corpora sharing one file overwrite each other on
+                     every single commit.
+
+    `collection` deliberately stays shared: every point carries `owner` and
+    `meta.namespace`, so one collection is still attributable and `serve` can filter
+    on it. `checkpoint_file` is shared too — its contents are already keyed
+    `sources["owner:namespace"]`.
+
+    `pin_domain` honours an explicit --cdn-domain, which only makes sense for a
+    single static source (the pre-existing single-namespace invocation).
+    """
+    scoped = copy.copy(args)
+    if not pin_domain:
+        scoped.cdn_domain = namespace if args.cdn_dir else None
+    scoped.role_map_file = _scoped_role_map(args.role_map_file, owner, namespace)
+    return scoped
+
+
+def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
+    """Bootstrap live CDN delivery for one source. append_domain can only EXTEND an
+    already-baked domain, so bake once here to give it a base manifest; `cdn serve`
+    then works immediately with no manual `cdn bake`.
+
+    The spec is forced to this source rather than resolved from domains.json: the
+    collection may hold other namespaces, and a bake-everything spec would pull them
+    into this domain.
+    """
+    if not (args.cdn_dir and args.cdn_domain):
+        return
+    manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
+    if os.path.exists(manifest_path):
+        print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
+        return
+    print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
+    try:
+        from quickbeam.cdn import bake_domain
+        entry = bake_domain(
+            qdrant, args.collection, args.cdn_dir, args.cdn_domain,
+            spec={"filter": {"owner": [owner], "namespace": [namespace]}},
+            config_path=args.cdn_config, model=args.embedding_model)
+        print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
+              f"{args.cdn_dir}/{args.cdn_domain}")
+    except Exception as e:  # noqa: BLE001 — delivery must never block ingest
+        print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+
+
+def _fetch_sources(url: str) -> set:
+    """GET the watch list. Liberal about shape: a bare list or {"sources": [...]},
+    holding either "OWNER:NAMESPACE" strings or {owner, namespace} objects.
+
+    ponytail: urllib in a thread rather than adding an async HTTP client for one
+    poll every --sources-refresh seconds.
+    """
+    with urllib.request.urlopen(url, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict):
+        data = data.get("sources", [])
+    out = set()
+    for item in data:
+        if isinstance(item, str):
+            owner, sep, namespace = item.partition(":")
+            if not sep:
+                continue
+        elif isinstance(item, dict):
+            owner, namespace = item.get("owner", ""), item.get("namespace", "")
+        else:
+            continue
+        owner, namespace = owner.strip(), namespace.strip()
+        if owner and namespace:
+            out.add((owner, namespace))
+    return out
+
+
 def _make_qdrant(args) -> QdrantClient:
     """Qdrant connection: a remote URL (with optional API key) when given, else the
     local host/port pair. Mirrors pull.py's helper of the same name.
@@ -456,14 +566,18 @@ async def main():
     args = parse_args()
 
     sources = parse_sources(args.sources)
-    if not sources:
-        sys.exit("[Watcher] pass at least one --source OWNER:NAMESPACE.")
+    if not sources and not args.sources_url:
+        sys.exit("[Watcher] pass at least one --source OWNER:NAMESPACE, or --sources-url.")
 
     model_dim = MODEL_DIM_MAP.get(args.embedding_model, 768)
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
 
-    print(f"[Watcher] Starting — sources: {', '.join(f'{o}:{n}' for o, n in sources)}")
+    if args.sources_url:
+        print(f"[Watcher] Starting — watch list from {args.sources_url} "
+              f"(refreshed every {args.sources_refresh}s)")
+    else:
+        print(f"[Watcher] Starting — sources: {', '.join(f'{o}:{n}' for o, n in sources)}")
     print(f"[Watcher] mode: push (fangorn subscribe); reconnect backoff {args.poll_interval}s")
 
     qdrant = _make_qdrant(args)
@@ -479,40 +593,56 @@ async def main():
     embed_engine = _init_embed_engine(args)
     print(f"[Watcher] model dim={model_dim}, output dim={dim} (truncate={truncate})")
 
-    # Load existing role map; inferred on first real batch if absent.
-    role_map_ref = [{}]
-    if os.path.exists(args.role_map_file):
-        with open(args.role_map_file) as f:
-            role_map_ref[0] = json.load(f)
-
     checkpoint = _load_checkpoint(args.checkpoint_file)
 
-    # Bootstrap live CDN delivery. The per-change delta path (append_domain) can only
-    # EXTEND an already-baked domain, so if a delivery target is set but not yet baked,
-    # bake it once now from whatever the collection already holds. This makes `cdn serve`
-    # start immediately (no manual `cdn bake`) and gives append_domain the base manifest
-    # it grows per change. Domains need no domains.json entry — a missing spec bakes all.
-    if args.cdn_dir and args.cdn_domain:
-        manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
-        if os.path.exists(manifest_path):
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
-        else:
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
-            try:
-                from quickbeam.cdn import bake_domain
-                entry = bake_domain(qdrant, args.collection, args.cdn_dir, args.cdn_domain,
-                                    config_path=args.cdn_config, model=args.embedding_model)
-                print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
-                      f"{args.cdn_dir}/{args.cdn_domain}")
-            except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+    # One independent task per source. Each gets its own scoped args and its own role
+    # map (see _source_args); the CDN domain is baked once at task start.
+    tasks: dict[tuple, asyncio.Task] = {}
 
-    # One independent subscription per source, all live concurrently.
-    await asyncio.gather(*(
-        _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                       checkpoint, owner, namespace)
-        for owner, namespace in sources
-    ))
+    def start(owner, namespace, pin_domain=False):
+        scoped = _source_args(args, owner, namespace, pin_domain=pin_domain)
+        _bake_initial(scoped, qdrant, owner, namespace)
+        return asyncio.create_task(
+            _stream_source(scoped, qdrant, embed_engine, [{}], dim, truncate,
+                           checkpoint, owner, namespace))
+
+    # Static mode: fixed --source flags, exactly as before.
+    if not args.sources_url:
+        pin = bool(args.cdn_domain) and len(sources) == 1
+        for owner, namespace in sources:
+            tasks[(owner, namespace)] = start(owner, namespace, pin_domain=pin)
+        await asyncio.gather(*tasks.values())
+        return
+
+    # Dynamic mode: converge on whatever the registry lists, forever.
+    while True:
+        try:
+            wanted = _fetch_sources(args.sources_url)
+        except Exception as e:  # noqa: BLE001
+            # Keep every running source. A blip at the registry must never look like
+            # "everyone unsubscribed" and tear the whole fleet down.
+            print(f"[Watcher] sources fetch failed ({e}) — keeping current set",
+                  file=sys.stderr)
+            wanted = None
+
+        if wanted is not None:
+            for key in sorted(wanted - set(tasks)):
+                tasks[key] = start(*key)
+                print(f"[Watcher] + {key[0]}:{key[1]} — now watching {len(tasks)} source(s)")
+            for key in sorted(set(tasks) - wanted):
+                tasks.pop(key).cancel()
+                print(f"[Watcher] - {key[0]}:{key[1]} — now watching {len(tasks)} source(s)")
+
+        # Surface a task that died of something _stream_source's own retry loop could
+        # not absorb, instead of losing it silently.
+        for key, task in list(tasks.items()):
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                print(f"[Watcher] {key[0]}:{key[1]} stopped ({exc!r}) — restarting",
+                      file=sys.stderr)
+                tasks[key] = start(*key)
+
+        await asyncio.sleep(args.sources_refresh)
 
 
 if __name__ == "__main__":

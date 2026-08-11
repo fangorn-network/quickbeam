@@ -209,6 +209,28 @@ Note this loads the embedding model twice (once in each process), so plan VRAM a
 
 ---
 
+## Deployment
+
+For running Quickbeam as a service rather than from a shell, see
+**[`DOCKER-README.md`](DOCKER-README.md)**.
+
+The short version: **one shared instance serves every watched namespace.** Docker
+Compose brings up `qdrant`, `watch`, `cdn serve`, `serve` and `mcp`; `watch` polls
+`--sources-url` for its watch list and starts or cancels a stream per namespace with
+no restart, so namespaces are added from the Fangorn website rather than by editing
+config here. Everything embeds into one collection — each point carries `owner` and
+`meta.namespace`, so the [search endpoints](#api) scope with those and each namespace
+still bakes its own CDN domain.
+
+That shape exists because the embedding model is the expensive resident: one process
+loads it once for every namespace it watches, where a container per namespace would
+load a copy each.
+
+`webworker/quickbeam-registry` serves the watch list, gates on the caller's
+subscription, and proxies queries so a browser reaches the instance over HTTPS.
+
+---
+
 ## Snapshots
 
 A snapshot is a portable copy of the populated Qdrant collection. It lets you seed a new instance — including one without a GPU — from a pinned IPFS artifact.
@@ -657,10 +679,15 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 | Flag | Default | Description |
 |---|---|---|
 | `--bundle` | required | `NAME=0x...` bundle schema to watch |
+| `--source` | | `OWNER:NAMESPACE` to watch, repeatable — the git-native path |
+| `--sources-url` | `None` | Poll this URL for the watch list instead of fixed `--source` flags. Sources that appear start streaming and sources that vanish are cancelled, **with no restart**. See [Deployment](#deployment). |
+| `--sources-refresh` | `60` | Seconds between `--sources-url` polls |
 | `--root-profile` | required | Named projection to emit, repeatable. e.g. `--root-profile asset --root-profile transfer` |
 | `--owner` | | Filter to this publisher address. Repeatable. |
 | `--dataset` | | Filter to these dataset names. Accepts multiple values. |
-| `--poll-interval` | `60` | Seconds between subgraph polls |
+| `--poll-interval` | `60` | Reconnect backoff for a dropped subscribe stream — **not** a monitoring interval (`watch` is push-based). Seconds between subgraph polls in the legacy `--bundle` mode. |
+| `--qdrant-url` | `None` | Qdrant base URL — overrides `--qdrant-host`/`--qdrant-port` |
+| `--qdrant-api-key` | `None` | Qdrant API key |
 | `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
 | `--graph-api-key` | `""` | The Graph gateway API key |
 | `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway |
@@ -796,23 +823,29 @@ All endpoints return JSON. Hits are shaped as `{ id, fields, owner, meta, score?
 
 > When `--x402-pay-to` is set, `/search`, `/search/vector`, and `/search/text` require an `X-PAYMENT` header — see [x402 payment gating](#x402-payment-gating).
 
+> **Scoping.** The three search endpoints take `owner` and `namespace` filters. One
+> collection can hold every watched namespace (see [Deployment](#deployment)) — each
+> point carries `owner` at the payload top level and `meta.namespace` nested — so pass
+> `namespace` whenever the collection is shared. `/browse` is **not** scoped: it
+> returns the whole collection.
+
 ### `GET /browse`
 Paginated browse. `?limit=20&offset=0`
 
 ### `GET /search`
 Semantic search by text — embeds the query server-side.
-`?q=late+night+driving&n_results=10&owner=0x...`
+`?q=late+night+driving&n_results=10&owner=0x...&namespace=robinhood`
 
 ### `POST /search/vector`
 Query by raw embedding vector.
 ```json
-{ "embedding": [...], "n_results": 20, "owner": "0x..." }
+{ "embedding": [...], "n_results": 20, "owner": "0x...", "namespace": "robinhood" }
 ```
 
 ### `POST /search/text`
 Lexical search over an in-memory index of title, subtitle, and tag fields. Faster than semantic search for exact name lookups.
 ```json
-{ "q": "arctic monkeys", "limit": 20, "owner": "0x..." }
+{ "q": "arctic monkeys", "limit": 20, "owner": "0x...", "namespace": "robinhood" }
 ```
 
 ### `POST /embed`

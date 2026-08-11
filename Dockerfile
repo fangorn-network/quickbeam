@@ -28,6 +28,11 @@ COPY quickbeam ./quickbeam
 # agent: fastmcp, which `quickbeam mcp` imports
 RUN pip install --no-cache-dir -e ".[cpu,agent]"
 
+# Python block-buffers stdout when it isn't a TTY, so a long-running container's
+# progress (every `print` in the watcher) sits invisible in a buffer while stderr
+# streams — which reads as "it stopped working". Line-buffer it.
+ENV PYTHONUNBUFFERED=1
+
 # Bake the ONNX model into the image. Left to run time it downloads into
 # /tmp/fastembed_cache (ingest/embed.py) on every single container start.
 ENV FASTEMBED_CACHE_PATH=/opt/fastembed_cache

@@ -524,6 +524,9 @@ def _build_text_index_sync() -> list[dict]:
         out.append({
             "id":       str(pt_id),
             "owner":    owner,
+            # Carried so a shared collection's lexical search can be scoped to one
+            # namespace, the same way the vector routes filter on meta.namespace.
+            "namespace": (payload.get("meta") or {}).get("namespace"),
             "fields":   fields,
             "_sub_l":   subtitle.lower(),
             "_title_l": title.lower(),
@@ -565,11 +568,16 @@ def _ensure_text_index() -> list[dict]:
                 _text_index = _build_text_index_sync()
     return _text_index
 
-def _search_text_sync(q: str, limit: int, owner: str | None) -> list[dict]:
+def _search_text_sync(q: str, limit: int, owner: str | None,
+                      namespace: str | None = None) -> list[dict]:
     index  = _ensure_text_index()
     q_l    = q.strip().lower()
     tokens = [tok for tok in q_l.split() if tok]
-    recs   = index if not owner else [r for r in index if r.get("owner") == owner]
+    recs   = index
+    if owner:
+        recs = [r for r in recs if r.get("owner") == owner]
+    if namespace:
+        recs = [r for r in recs if r.get("namespace") == namespace]
     scored = [(s, r) for r in recs if (s := _score_rec(r, q_l, tokens)) > 0]
     scored.sort(key=lambda x: (-x[0], x[1]["_sort"]))
     return [{"id": r["id"], "fields": r["fields"], "owner": r.get("owner")}
@@ -638,11 +646,13 @@ class VectorSearchRequest(BaseModel):
     embedding: list[float]
     n_results: int        = 20
     owner:     str | None = None
+    namespace: str | None = None
 
 class TextSearchRequest(BaseModel):
     q:     str
     limit: int        = 60
     owner: str | None = None
+    namespace: str | None = None
 
 class BundlePoint(BaseModel):
     """A single pre-embedded point from a client bundle download."""
@@ -1021,6 +1031,22 @@ app.add_middleware(
 # ROUTES
 # ---------------------------------------------------------------------------
 
+def _scope_filter(owner: str | None, namespace: str | None):
+    """Restrict a query to one publisher and/or one namespace, or None for no filter.
+
+    One collection can hold every watched namespace (the shared-instance deployment):
+    points carry `owner` at the payload top level and `meta.namespace` nested, so a
+    caller scopes with these rather than needing a collection per namespace.
+    """
+    must = []
+    if owner:
+        must.append(qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner)))
+    if namespace:
+        must.append(qmodels.FieldCondition(key="meta.namespace",
+                                           match=qmodels.MatchValue(value=namespace)))
+    return qmodels.Filter(must=must) if must else None
+
+
 @app.get("/browse")
 async def browse(limit: int = Query(20), offset: int = Query(0)):
     loop = asyncio.get_event_loop()
@@ -1043,6 +1069,7 @@ async def search(
     q:         str        = Query(...),
     n_results: int        = Query(10),
     owner:     str | None = Query(None),
+    namespace: str | None = Query(None),
 ):
     loop = asyncio.get_event_loop()
 
@@ -1050,9 +1077,7 @@ async def search(
     vectors = await loop.run_in_executor(None, lambda: _embed_texts([q], prefix="search_query"))
     query_vec = vectors[0]
 
-    query_filter = qmodels.Filter(
-        must=[qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner))]
-    ) if owner else None
+    query_filter = _scope_filter(owner, namespace)
 
     resp = await loop.run_in_executor(
         None,
@@ -1070,9 +1095,7 @@ async def search(
 @app.post("/search/vector")
 async def search_vector(body: VectorSearchRequest):
     loop         = asyncio.get_event_loop()
-    query_filter = qmodels.Filter(
-        must=[qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=body.owner))]
-    ) if body.owner else None
+    query_filter = _scope_filter(body.owner, body.namespace)
     resp = await loop.run_in_executor(
         None,
         lambda: qdrant_client.query_points(
@@ -1089,7 +1112,8 @@ async def search_vector(body: VectorSearchRequest):
 @app.post("/search/text")
 async def search_text(body: TextSearchRequest):
     loop    = asyncio.get_event_loop()
-    results = await loop.run_in_executor(None, _search_text_sync, body.q, body.limit, body.owner)
+    results = await loop.run_in_executor(None, _search_text_sync, body.q, body.limit,
+                                         body.owner, body.namespace)
     results = await loop.run_in_executor(None, _attach_embeddings, results)
     return {"results": results}
 

@@ -152,6 +152,9 @@ def ensure_indexes(qdrant, collection):
         ("fields.locality",   models.KeywordIndexParams(type="keyword")),
         # Event records (merged in via events_pg): browse upcoming/past + by source,
         # and look up the events a given Business hosts (fields.hostBusinessId).
+        # One collection can hold every watched namespace, so this is the filter the
+        # search routes and the CDN bake scope on — index it or they full-scan.
+        ("meta.namespace",        models.KeywordIndexParams(type="keyword")),
         ("fields.source",         models.KeywordIndexParams(type="keyword")),
         ("fields.isPast",         models.BoolIndexParams(type="bool")),
         ("fields.hostBusinessId", models.KeywordIndexParams(type="keyword")),
