@@ -54,10 +54,11 @@ flowchart LR
 sources, so a namespace is watched while at least one view references it and drops off
 when the last one goes — no refcount needed.
 
-**Nothing MCP-shaped is provisioned per requester.** `quickbeam mcp` is a local
-pull-client whose entire universe is whatever `/catalog` its `--cdn-url` returns, so
-the worker filtering that catalog to a view's domains *is* the per-user MCP. The user
-runs the client themselves.
+**The per-view MCP is a filtered catalog.** `quickbeam mcp` is a pull-client whose
+entire universe is whatever `/catalog` its `--cdn-url` returns, so the worker filtering
+that catalog to a view's domains is what scopes it. By default the user runs the client
+themselves; ticking "host an MCP for me" makes the worker create one **Cloud Run**
+service per view instead — stateless, scale-to-zero, and nothing to do with this box.
 
 **The worker proxies queries** because the instance speaks plain HTTP and a browser on
 HTTPS cannot call it (mixed content). Proxying supplies TLS with no per-namespace DNS
