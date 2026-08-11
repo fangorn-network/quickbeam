@@ -214,20 +214,23 @@ Note this loads the embedding model twice (once in each process), so plan VRAM a
 For running Quickbeam as a service rather than from a shell, see
 **[`DOCKER-README.md`](DOCKER-README.md)**.
 
-The short version: **one shared instance serves every watched namespace.** Docker
-Compose brings up `qdrant`, `watch`, `cdn serve`, `serve` and `mcp`; `watch` polls
-`--sources-url` for its watch list and starts or cancels a stream per namespace with
-no restart, so namespaces are added from the Fangorn website rather than by editing
-config here. Everything embeds into one collection — each point carries `owner` and
-`meta.namespace`, so the [search endpoints](#api) scope with those and each namespace
-still bakes its own CDN domain.
+The short version: **one shared instance, and each namespace is embedded exactly
+once.** Docker Compose brings up `qdrant`, `watch`, `cdn serve`, `serve` and `mcp`;
+`watch` polls `--sources-url` for its watch list and starts or cancels a stream per
+namespace with no restart, so namespaces arrive from the Fangorn website rather than
+by editing config here.
 
-That shape exists because the embedding model is the expensive resident: one process
-loads it once for every namespace it watches, where a container per namespace would
-load a copy each.
+Users get a **view** — a named set of namespaces with its own search URL and MCP
+catalog. A view is a [`scope` filter](#api) over the one shared collection, never a
+copy of the vectors, so a second requester asking for an already-watched namespace
+costs no extra indexing. `webworker/quickbeam-registry` holds the views, serves the
+**deduplicated union** of their sources as the watch list, gates writes on the
+caller's subscription, and proxies queries so a browser reaches the instance over
+HTTPS.
 
-`webworker/quickbeam-registry` serves the watch list, gates on the caller's
-subscription, and proxies queries so a browser reaches the instance over HTTPS.
+That shape exists because the embedding model and the embedding work are the expensive
+residents: one process loads the model once for every namespace it watches, where a
+container per namespace would load a copy each and re-embed identical content.
 
 ---
 
@@ -823,29 +826,36 @@ All endpoints return JSON. Hits are shaped as `{ id, fields, owner, meta, score?
 
 > When `--x402-pay-to` is set, `/search`, `/search/vector`, and `/search/text` require an `X-PAYMENT` header — see [x402 payment gating](#x402-payment-gating).
 
-> **Scoping.** The three search endpoints take `owner` and `namespace` filters. One
-> collection can hold every watched namespace (see [Deployment](#deployment)) — each
-> point carries `owner` at the payload top level and `meta.namespace` nested — so pass
-> `namespace` whenever the collection is shared. `/browse` is **not** scoped: it
-> returns the whole collection.
+> **Scoping.** The three search endpoints take `owner`, `namespace`, and the
+> repeatable `scope=OWNER:NAMESPACE`. One collection holds every watched namespace
+> (see [Deployment](#deployment)) — each point carries `owner` at the payload top
+> level and `meta.namespace` nested — and embeddings are **not** duplicated per
+> caller, so a caller's slice of the corpus is a filter.
+>
+> Several `scope` pairs OR together, each pair AND-ing its own halves, which is what
+> lets one endpoint span several namespaces:
+> `?scope=0xA:tracks&scope=0xB:reviews`. Either half may be empty (`0xA:`, `:tracks`)
+> to leave it unconstrained. `scope` takes precedence over `owner`/`namespace`.
+>
+> `/browse` is **not** scoped: it returns the whole collection.
 
 ### `GET /browse`
 Paginated browse. `?limit=20&offset=0`
 
 ### `GET /search`
 Semantic search by text — embeds the query server-side.
-`?q=late+night+driving&n_results=10&owner=0x...&namespace=robinhood`
+`?q=late+night+driving&n_results=10&scope=0xA:robinhood&scope=0xB:music`
 
 ### `POST /search/vector`
 Query by raw embedding vector.
 ```json
-{ "embedding": [...], "n_results": 20, "owner": "0x...", "namespace": "robinhood" }
+{ "embedding": [...], "n_results": 20, "scope": ["0xA:robinhood", "0xB:music"] }
 ```
 
 ### `POST /search/text`
 Lexical search over an in-memory index of title, subtitle, and tag fields. Faster than semantic search for exact name lookups.
 ```json
-{ "q": "arctic monkeys", "limit": 20, "owner": "0x...", "namespace": "robinhood" }
+{ "q": "arctic monkeys", "limit": 20, "scope": ["0xA:robinhood"] }
 ```
 
 ### `POST /embed`

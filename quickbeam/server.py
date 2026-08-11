@@ -569,15 +569,23 @@ def _ensure_text_index() -> list[dict]:
     return _text_index
 
 def _search_text_sync(q: str, limit: int, owner: str | None,
-                      namespace: str | None = None) -> list[dict]:
+                      namespace: str | None = None,
+                      scope: list[str] | None = None) -> list[dict]:
     index  = _ensure_text_index()
     q_l    = q.strip().lower()
     tokens = [tok for tok in q_l.split() if tok]
     recs   = index
-    if owner:
-        recs = [r for r in recs if r.get("owner") == owner]
-    if namespace:
-        recs = [r for r in recs if r.get("namespace") == namespace]
+    pairs  = _parse_scope(scope)
+    if pairs:
+        # Mirrors _scope_filter: pairs OR together, each pair's halves AND.
+        recs = [r for r in recs
+                if any((not o or r.get("owner") == o) and (not n or r.get("namespace") == n)
+                       for o, n in pairs)]
+    else:
+        if owner:
+            recs = [r for r in recs if r.get("owner") == owner]
+        if namespace:
+            recs = [r for r in recs if r.get("namespace") == namespace]
     scored = [(s, r) for r in recs if (s := _score_rec(r, q_l, tokens)) > 0]
     scored.sort(key=lambda x: (-x[0], x[1]["_sort"]))
     return [{"id": r["id"], "fields": r["fields"], "owner": r.get("owner")}
@@ -647,12 +655,14 @@ class VectorSearchRequest(BaseModel):
     n_results: int        = 20
     owner:     str | None = None
     namespace: str | None = None
+    scope:     list[str] | None = None   # ["OWNER:NAMESPACE", …] — ORed
 
 class TextSearchRequest(BaseModel):
     q:     str
     limit: int        = 60
     owner: str | None = None
     namespace: str | None = None
+    scope: list[str] | None = None
 
 class BundlePoint(BaseModel):
     """A single pre-embedded point from a client bundle download."""
@@ -1031,19 +1041,47 @@ app.add_middleware(
 # ROUTES
 # ---------------------------------------------------------------------------
 
-def _scope_filter(owner: str | None, namespace: str | None):
-    """Restrict a query to one publisher and/or one namespace, or None for no filter.
-
-    One collection can hold every watched namespace (the shared-instance deployment):
-    points carry `owner` at the payload top level and `meta.namespace` nested, so a
-    caller scopes with these rather than needing a collection per namespace.
-    """
-    must = []
+def _pair_conditions(owner: str | None, namespace: str | None) -> list:
+    out = []
     if owner:
-        must.append(qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner)))
+        out.append(qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner)))
     if namespace:
-        must.append(qmodels.FieldCondition(key="meta.namespace",
-                                           match=qmodels.MatchValue(value=namespace)))
+        out.append(qmodels.FieldCondition(key="meta.namespace",
+                                          match=qmodels.MatchValue(value=namespace)))
+    return out
+
+
+def _parse_scope(scope: list[str] | None) -> list[tuple[str | None, str | None]]:
+    """`scope=OWNER:NAMESPACE`, repeatable. Either side may be empty (`:ns`, `0xA:`)
+    to leave that half unconstrained."""
+    pairs = []
+    for item in scope or []:
+        owner, sep, namespace = (item or "").partition(":")
+        if not sep:
+            continue
+        owner, namespace = owner.strip(), namespace.strip()
+        if owner or namespace:
+            pairs.append((owner or None, namespace or None))
+    return pairs
+
+
+def _scope_filter(owner: str | None, namespace: str | None, scope: list[str] | None = None):
+    """Restrict a query to one or more (publisher, namespace) pairs; None = no filter.
+
+    One collection holds every watched namespace (the shared-instance deployment) and
+    embeddings are NOT duplicated per requester — points carry `owner` at the payload
+    top level and `meta.namespace` nested, so a caller's slice of the corpus is a
+    filter rather than a collection of its own.
+
+    Several pairs OR together (`should`), each pair AND-ing its own halves (`must`),
+    which is what lets one endpoint span several namespaces.
+    """
+    pairs = _parse_scope(scope)
+    if pairs:
+        return qmodels.Filter(should=[
+            qmodels.Filter(must=_pair_conditions(o, n)) for o, n in pairs
+        ])
+    must = _pair_conditions(owner, namespace)
     return qmodels.Filter(must=must) if must else None
 
 
@@ -1070,6 +1108,7 @@ async def search(
     n_results: int        = Query(10),
     owner:     str | None = Query(None),
     namespace: str | None = Query(None),
+    scope:     list[str] | None = Query(None),
 ):
     loop = asyncio.get_event_loop()
 
@@ -1077,7 +1116,7 @@ async def search(
     vectors = await loop.run_in_executor(None, lambda: _embed_texts([q], prefix="search_query"))
     query_vec = vectors[0]
 
-    query_filter = _scope_filter(owner, namespace)
+    query_filter = _scope_filter(owner, namespace, scope)
 
     resp = await loop.run_in_executor(
         None,
@@ -1095,7 +1134,7 @@ async def search(
 @app.post("/search/vector")
 async def search_vector(body: VectorSearchRequest):
     loop         = asyncio.get_event_loop()
-    query_filter = _scope_filter(body.owner, body.namespace)
+    query_filter = _scope_filter(body.owner, body.namespace, body.scope)
     resp = await loop.run_in_executor(
         None,
         lambda: qdrant_client.query_points(
@@ -1113,7 +1152,7 @@ async def search_vector(body: VectorSearchRequest):
 async def search_text(body: TextSearchRequest):
     loop    = asyncio.get_event_loop()
     results = await loop.run_in_executor(None, _search_text_sync, body.q, body.limit,
-                                         body.owner, body.namespace)
+                                         body.owner, body.namespace, body.scope)
     results = await loop.run_in_executor(None, _attach_embeddings, results)
     return {"results": results}
 

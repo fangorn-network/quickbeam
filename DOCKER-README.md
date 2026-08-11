@@ -1,8 +1,13 @@
 # Deploying Quickbeam
 
-**One shared instance serves every watched namespace.** You stand it up once. After
-that, adding a namespace is something a user does from the Fangorn website — no SSH,
-no compose edit, no new container.
+**One shared instance serves everyone, and each namespace is embedded exactly once.**
+You stand it up once. After that, a user creates a *view* from the Fangorn website —
+no SSH, no compose edit, no new container.
+
+A **view** is a named set of namespaces belonging to one requester. It gets its own
+search URL and its own MCP catalog, but it is a *filter* over the shared collection,
+never a copy of the vectors. Two people asking for the same namespace get the same
+points, and the second one costs no indexing work at all.
 
 ---
 
@@ -17,45 +22,53 @@ flowchart LR
     end
 
     subgraph cf["Cloudflare"]
-        REG["<b>quickbeam-registry</b><br/>KV of watched sources<br/>+ HTTPS proxy"]
+        REG["<b>quickbeam-registry</b><br/>views in KV<br/>watchlist = union of sources<br/>+ scoped HTTPS proxy"]
     end
 
     subgraph vm["One GCE instance — docker compose"]
         direction TB
         W["<b>watch</b><br/>one task per namespace"]
         Q[("<b>qdrant</b><br/>one collection")]
-        C["<b>cdn serve</b> :8090"]
+        C["<b>cdn serve</b> :8090<br/>one domain per source"]
         S["<b>serve</b> :8080"]
-        M["<b>mcp</b> :8765"]
         W -->|upsert| Q
         W -->|delta shards| C
         S --> Q
-        M --> C
     end
 
-    Website["fangorn.network"] -->|"signed POST /monitor"| REG
-    REG -.->|"GET /sources (polled)"| W
+    Website["fangorn.network"] -->|"signed POST /views"| REG
+    REG -.->|"GET /watchlist (polled)"| W
     DR --> W
     IPFS --> W
-    Browser["a website's search box"] --> REG
-    Agent["agent / LLM"] --> REG
-    REG -->|proxied| S
-    REG -->|proxied| C
-    REG -->|proxied| M
+    Browser["a website's search box"] -->|"/q/{view}/search"| REG
+    Agent["quickbeam mcp<br/>(the user's own client)"] -->|"--cdn-url /q/{view}/cdn"| REG
+    REG -->|"scope injected"| S
+    REG -->|"catalog filtered"| C
 
     style vm fill:#f6f6f8,stroke:#999
     style cf fill:#eef4fb,stroke:#999
     style chain fill:#fff,stroke:#ccc
 ```
 
-**One collection, many namespaces.** Every point carries `owner` and `meta.namespace`,
-so `serve` scopes results with `?owner=&namespace=` and each namespace still bakes its
-own CDN domain. That is what makes one box serve everyone: the embedding model is
-loaded **once**, not per customer.
+**Embed once, view many.** The watchlist is the deduplicated union of every view's
+sources, so a namespace is watched while at least one view references it and drops off
+when the last one goes — no refcount needed.
+
+**Nothing MCP-shaped is provisioned per requester.** `quickbeam mcp` is a local
+pull-client whose entire universe is whatever `/catalog` its `--cdn-url` returns, so
+the worker filtering that catalog to a view's domains *is* the per-user MCP. The user
+runs the client themselves.
 
 **The worker proxies queries** because the instance speaks plain HTTP and a browser on
 HTTPS cannot call it (mixed content). Proxying supplies TLS with no per-namespace DNS
-record or certificate.
+record or certificate, and it injects the view's `scope` so a view URL always means
+that view's namespaces.
+
+**Naming rule, shared by two codebases:** a source's CDN domain is
+`{owner[2:10]}-{namespace}` — `_domain_for()` in `quickbeam/watcher.py` names the
+directory, `domainFor()` in the worker names it back to filter a catalog. Namespace
+alone is not enough: two publishers both calling a namespace `music` would intermix
+their shards in one domain.
 
 ### What happens when a commit lands
 
@@ -99,7 +112,7 @@ For a static list, write `sources.json` into the shared volume and set
 ```
 
 The list also accepts `[{"owner":"0x…","namespace":"…"}]` and either form wrapped in
-`{"sources": …}` — which is what the worker returns.
+`{"sources": …}` — which is the shape the worker's `/watchlist` returns.
 
 Check it:
 
@@ -109,8 +122,8 @@ docker compose logs -f watch
 #   [Watcher] 0x…:robinhood: subscribed (pid …)
 #   [Watcher] 0x…:robinhood: seeded — N new record(s) embedded
 
-curl 'localhost:8080/search?q=<term>&namespace=robinhood'
-curl localhost:8090/domains/robinhood/manifest
+curl 'localhost:8080/search?q=<term>&scope=0x147c24c5…:robinhood'
+curl localhost:8090/domains/147c24c5-robinhood/manifest   # {owner8}-{namespace}
 ```
 
 **Add a second entry to the file and watch a second task start with no restart.** That
@@ -129,7 +142,7 @@ IPFS fetch, the projection and the embed all worked.
 
 | Variable | Notes |
 |---|---|
-| `SOURCES_URL` | The registry worker's `/sources`. Namespaces are added there, never here. |
+| `SOURCES_URL` | The registry worker's `/watchlist` — the deduplicated union of every view's sources. Namespaces arrive there, never here. |
 | `SOURCES_REFRESH` | Seconds between watch-list polls. |
 | `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, no funding, no registration. |
 | `PINATA_GATEWAY` | Reads resolve every block by CID through this. The default is `ipfs.io`, DNS-filtered on many networks. |
@@ -158,9 +171,10 @@ cp .env.example .env      # SOURCES_URL → the deployed worker
 docker compose up -d --build
 ```
 
-Open `8080`, `8090` and `8765` to the worker. Then set `SEARCH_URL`, `CDN_URL` and
-`MCP_URL` in `webworker/quickbeam-registry/wrangler.toml` to this instance and deploy
-the worker.
+Open `8080` and `8090` to the worker, then set `SEARCH_URL` and `CDN_URL` in
+`webworker/quickbeam-registry/wrangler.toml` to this instance and deploy the worker.
+There is no `MCP_URL`: a user's MCP is their own `quickbeam mcp` client pointed at
+`/q/{viewId}/cdn`.
 
 **Machine type.** Start on `e2-small` (2GB). If a seed OOMs, stop the instance, change
 the type to `e2-medium` (4GB) and start it again — the disk survives, so it costs a
@@ -177,15 +191,19 @@ Measure its RSS before promising a namespace count.
 
 ---
 
-## 3. Adding and removing a namespace
+## 3. Adding and removing views
 
 **Adding** is a user action: sign in at fangorn.network with an active storage
-subscription, enter a publisher and namespace in the Quickbeam panel, and press
-Monitor. The worker records it; this instance picks it up within `SOURCES_REFRESH` and
-logs `[Watcher] + owner:namespace`.
+subscription, name a view and give it a publisher + namespace, and press Create. The
+worker stores the view and its sources join the watchlist; this instance picks up any
+*new* namespace within `SOURCES_REFRESH` and logs `[Watcher] + owner:namespace`.
 
-**Removing** is a founder action — `POST /admin/remove` signed by a wallet in
-`ADMIN_WALLETS`. See `webworker/quickbeam-registry/README.md`. Nothing expires on its
+A namespace another view already covers logs nothing at all — it is already embedded,
+and the new view queries the same points. That silence is the design working.
+
+**Removing** is a founder action — `POST /admin/remove` with the view id, signed by a
+wallet in `ADMIN_WALLETS`. See `webworker/quickbeam-registry/README.md`. A source stops
+being watched only when the **last** view referencing it goes; nothing expires on its
 own, so a lapsed subscription keeps running until someone removes it.
 
 Neither touches this box.
@@ -194,8 +212,13 @@ Neither touches this box.
 
 ## Gotchas
 
-- **The MCP endpoint is `/mcp`,** not `/`. A healthy server returns 404 on `/` and 400
-  on `/mcp` for a request without a handshake.
+- **The compose `mcp` service serves the whole corpus,** not a view — it is bound to
+  one `--cdn-url` at startup. Per-view MCP is the user's own client pointed at
+  `/q/{viewId}/cdn`. Its endpoint is `/mcp`, not `/`: a healthy server returns 404 on
+  `/` and 400 on `/mcp` for a request without a handshake.
+- **The CDN domain rule is duplicated in two languages.** `_domain_for()` in
+  `watcher.py` and `domainFor()` in the registry worker must agree, or a view's catalog
+  comes back empty. If you change one, change the other.
 - **`cdn` restart-loops for a few seconds on first boot** — `cdn serve` exits if its
   directory does not exist yet, and the watcher creates it when it bakes the first
   domain. The restart policy covers the window.

@@ -458,6 +458,17 @@ def _slug(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", text).strip("-").lower() or "x"
 
 
+def _domain_for(owner: str, namespace: str) -> str:
+    """CDN domain name for one watched source.
+
+    Scoped by owner AND namespace: a bare namespace collides the moment two
+    publishers pick the same name (`music` is not rare), and their shards would then
+    intermix in one domain. The registry worker derives this same name to scope a
+    requester's catalog, so the rule has to stay in sync with `viewDomains()` there.
+    """
+    return f"{_slug(owner[2:10])}-{_slug(namespace)}"
+
+
 def _scoped_role_map(path: str, owner: str, namespace: str) -> str:
     root, ext = os.path.splitext(path)
     return f"{root}-{_slug(owner[2:10])}-{_slug(namespace)}{ext or '.json'}"
@@ -468,7 +479,7 @@ def _source_args(args, owner: str, namespace: str, pin_domain: bool = False):
 
     Two settings must NOT be shared once a process watches several namespaces:
 
-      cdn_domain     one domain per namespace, or their shards intermix.
+      cdn_domain     one domain per source, or their shards intermix.
       role_map_file  _ingest_contents re-infers the role map whenever the loaded one
                      doesn't fit the current records, then saves it — so two
                      dissimilar corpora sharing one file overwrite each other on
@@ -484,7 +495,7 @@ def _source_args(args, owner: str, namespace: str, pin_domain: bool = False):
     """
     scoped = copy.copy(args)
     if not pin_domain:
-        scoped.cdn_domain = namespace if args.cdn_dir else None
+        scoped.cdn_domain = _domain_for(owner, namespace) if args.cdn_dir else None
     scoped.role_map_file = _scoped_role_map(args.role_map_file, owner, namespace)
     return scoped
 
