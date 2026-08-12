@@ -57,12 +57,12 @@ Run
 
 Relational-axis delivery
 ------------------------
-The CDN currently delivers the semantic axis (embedded record shards) but not yet
-the linkset edges. Until it does, `neighbors` sources edges from a local linkset
-via ``QUICKBEAM_EDGES`` (a JSON file, or a directory holding ``<dataset>.json``);
-each file is a list of ``{rel, from, to, fromType, toType}`` edges — the exact
-shape linkgen/robinhood stage. When the CDN grows a ``/domains/{name}/edges``
-endpoint, this server picks it up automatically with no tool changes.
+The CDN serves the linkset at ``/domains/{name}/edges`` (``cdn.write_edges``), and
+that is the preferred source. A local linkset via ``QUICKBEAM_EDGES`` (a JSON file,
+or a directory holding ``<dataset>.json``) is the fallback for datasets whose CDN
+predates the endpoint; either way the payload is ``{rel, from, to, fromType, toType}``
+edges. Edges are indexed into per-endpoint adjacency maps on load, so `relations`
+and `neighbors` cost O(degree) rather than a scan of the whole linkset.
 """
 
 from __future__ import annotations
@@ -73,6 +73,7 @@ import gzip
 import hashlib
 import json
 import os
+import sys
 from datetime import datetime, timezone
 
 import httpx
@@ -156,7 +157,7 @@ async def _embed_query(model: str, dim: int, text: str) -> np.ndarray:
 # simplest and best here — no Qdrant server, no external process, nothing to leak.
 class _Dataset:
     __slots__ = ("name", "manifest", "model", "dim", "distance",
-                 "records", "_by_id", "vecs", "edges")
+                 "records", "_by_id", "vecs", "edges", "out_adj", "in_adj")
 
     def __init__(self, name: str, manifest: dict):
         self.name = name
@@ -168,6 +169,10 @@ class _Dataset:
         self._by_id: dict[str, dict] = {}
         self.vecs: np.ndarray | None = None
         self.edges: list[dict] | None = None  # None = not yet loaded
+        # Endpoint id → edges, built once when the linkset loads. Without this every
+        # expansion is a full scan of the edge list (107k for audius) per call.
+        self.out_adj: dict[str, list[dict]] = {}
+        self.in_adj: dict[str, list[dict]] = {}
 
     def add(self, row: dict) -> list[float] | None:
         """Ingest one shard row ({track_id, fields, embedding, owner, meta}).
@@ -187,6 +192,22 @@ class _Dataset:
         self.records.append(rec)
         self._by_id[tid] = rec
         return vec
+
+    def index_edges(self) -> None:
+        """Build the two adjacency maps from self.edges. Same structure the browser
+        client uses (audius-demo/src/lib/graph.ts) — whole edge objects under both
+        endpoints, so expansion is O(degree) instead of O(|E|)."""
+        self.out_adj, self.in_adj = {}, {}
+        for e in self.edges or ():
+            self.out_adj.setdefault(e["from"], []).append(e)
+            self.in_adj.setdefault(e["to"], []).append(e)
+
+    def is_vocab(self, node_id: str) -> bool:
+        """Shared-vocabulary node (Genre/Mood/Tag). Both publishers derive these
+        identically, so they content-address to ONE record carrying ONE owner —
+        counting them as cross-publisher inflates the real figure by ~100x."""
+        rec = self._by_id.get(node_id)
+        return bool(rec and (rec.get("fields") or {}).get("vocabulary"))
 
     def finalize(self, vectors: list[list[float]]) -> None:
         """Stack + L2-normalize the vectors so cosine reduces to a dot product."""
@@ -262,6 +283,7 @@ async def _ensure_edges(ds: _Dataset) -> list[dict]:
     if edges is None:
         edges = _load_local_edges(ds.name)
     ds.edges = edges or []
+    ds.index_edges()
     return ds.edges
 
 
@@ -521,7 +543,9 @@ async def list_datasets() -> dict:
     Each dataset is an on-chain-published corpus of records (e.g. tokenized
     assets, places, events). Returns, per dataset: `name` (pass it to the other
     tools), `description`, `count`, the `entity_types` it contains, embedding
-    `dim`, and the source `collection`. Free — no payment required.
+    `dim`, and — when the dataset has a relational axis — `edge_count` and the
+    `relations` vocabulary you can walk with `relations`/`neighbors`. Free — no
+    payment required.
     """
     try:
         catalog = await _get_json("/catalog")
@@ -533,6 +557,10 @@ async def list_datasets() -> dict:
         "count":        d.get("count", 0),
         "entity_types": d.get("entity_types", []),
         "dim":          d.get("dim"),
+        # The catalog already carries these; dropping them hid the graph entirely
+        # from an agent's first call.
+        "edge_count":   d.get("edge_count", 0),
+        "relations":    d.get("relations", []),
     } for d in catalog.get("domains", []) if d.get("count", 0) > 0]
     return {
         "datasets":  datasets,
@@ -701,17 +729,23 @@ async def neighbors(dataset: str, id: str, rel: str | None = None,
     its full `fields`; one that lives outside it comes back as an endpoint (id +
     type) you can still reason over.
 
+    Call `relations` FIRST on any node you don't already know the shape of. Hubs are
+    huge — a Genre can have thousands of in-edges — and an unfiltered expansion here
+    returns an arbitrary slice of them. `relations` tells you which `rel`/`direction`
+    is worth asking for.
+
     Args:
         dataset: The dataset name from `list_datasets`.
         id: The record/node id to expand (from `search`/`get`).
-        rel: Optional — only follow this relation (see `describe`.relations).
+        rel: Optional — only follow this relation (see `relations`, or `describe`.relations).
         direction: "out" (id → others), "in" (others → id), or "both" (default).
         limit: Maximum number of neighbors (default 25).
 
     Returns:
-        { "dataset", "id", "neighbors": [ {
+        { "dataset", "id", "total", "truncated", "neighbors": [ {
               "rel", "direction", "id", "entityType", "fields"?, "provenance"?
           } ... ] }
+        `total` counts every distinct neighbor, including those beyond `limit`.
     """
     settlement = None
     if _GATE is not None:
@@ -731,31 +765,93 @@ async def neighbors(dataset: str, id: str, rel: str | None = None,
                 "note": "relational layer not delivered for this dataset "
                         "(no linkset via CDN or QUICKBEAM_EDGES)"}
 
-    want_out = direction in ("out", "both")
-    want_in = direction in ("in", "both")
+    limit = max(0, limit)
     hits: list[dict] = []
-    for e in edges:
-        if rel is not None and e.get("rel") != rel:
+    seen: set[tuple[str, str, str]] = set()
+    total = 0
+    for d in ("out", "in"):
+        if direction not in (d, "both"):
             continue
-        if want_out and e.get("from") == id:
-            nid, ntype, d = e.get("to"), e.get("toType"), "out"
-        elif want_in and e.get("to") == id:
-            nid, ntype, d = e.get("from"), e.get("fromType"), "in"
-        else:
-            continue
-        entry = {"rel": e.get("rel"), "direction": d, "id": nid, "entityType": ntype}
-        neighbor = ds._by_id.get(nid)
-        if neighbor is not None:
-            entry["fields"] = neighbor.get("fields") or {}
-            entry["provenance"] = _provenance(neighbor)
-        hits.append(entry)
-        if len(hits) >= max(0, limit):
-            break
+        for e in (ds.out_adj if d == "out" else ds.in_adj).get(id, ()):
+            if rel is not None and e.get("rel") != rel:
+                continue
+            nid = e.get("to") if d == "out" else e.get("from")
+            ntype = e.get("toType") if d == "out" else e.get("fromType")
+            key = (e.get("rel"), d, nid)
+            if key in seen:      # multi-edges are real; the same neighbour twice is noise
+                continue
+            seen.add(key)
+            total += 1
+            if len(hits) >= limit:
+                continue         # keep counting so `total` stays honest
+            entry = {"rel": e.get("rel"), "direction": d, "id": nid, "entityType": ntype}
+            neighbor = ds._by_id.get(nid)
+            if neighbor is not None:
+                entry["fields"] = neighbor.get("fields") or {}
+                entry["provenance"] = _provenance(neighbor)
+            hits.append(entry)
 
-    out = {"dataset": dataset, "id": id, "neighbors": hits}
+    # `total` is the whole point: audius:genre:electronic has 2,958 neighbours, so a
+    # bare list of 25 is indistinguishable from a complete answer without it.
+    out = {"dataset": dataset, "id": id, "neighbors": hits,
+           "total": total, "truncated": total > len(hits)}
     if settlement is not None:
         out["payment"] = settlement
     return out
+
+
+@mcp.tool
+async def relations(dataset: str, id: str) -> dict:
+    """Summarise how `id` connects to the rest of the graph, WITHOUT materialising
+    the neighbors. Use this to decide what to expand before calling `neighbors`.
+
+    Returns one row per (relation, direction) with a count, so a node with 2,958
+    in-edges costs you ~10 rows instead of 2,958 records. `crosses` marks a group
+    that reaches a different publisher — the interesting hops in a multi-publisher
+    graph, since no single publisher could have authored them alone.
+
+    Args:
+        dataset: The dataset name from `list_datasets`.
+        id: The record/node id to inspect (from `search`/`get`/`neighbors`).
+
+    Returns:
+        { "dataset", "id", "entityType", "owner", "degree",
+          "relations": [ {"rel", "direction", "count", "crosses"} ... ] }
+        sorted crossing-first, then by count descending.
+    """
+    try:
+        ds = await _ensure_loaded(dataset)
+    except httpx.HTTPError as exc:
+        return {"error": "dataset_unavailable", "dataset": dataset, "detail": str(exc)}
+
+    edges = await _ensure_edges(ds)
+    if not edges:
+        return {"dataset": dataset, "id": id, "relations": [],
+                "note": "relational layer not delivered for this dataset "
+                        "(no linkset via CDN or QUICKBEAM_EDGES)"}
+
+    rec = ds._by_id.get(id)
+    owner = (rec or {}).get("owner")
+    groups: dict[tuple[str, str], dict] = {}
+    for d in ("out", "in"):
+        for e in (ds.out_adj if d == "out" else ds.in_adj).get(id, ()):
+            nid = e.get("to") if d == "out" else e.get("from")
+            g = groups.setdefault((e.get("rel"), d),
+                                  {"rel": e.get("rel"), "direction": d,
+                                   "count": 0, "crosses": False})
+            g["count"] += 1
+            # Vocabulary nodes are excluded from the cross-publisher test on purpose
+            # — see _Dataset.is_vocab. Without that, every shared Genre reads as a
+            # crossing and the signal disappears into the noise.
+            if owner and not ds.is_vocab(id) and not ds.is_vocab(nid):
+                neighbor = ds._by_id.get(nid)
+                if neighbor is not None and neighbor.get("owner") not in (None, owner):
+                    g["crosses"] = True
+
+    rows = sorted(groups.values(), key=lambda g: (not g["crosses"], -g["count"]))
+    return {"dataset": dataset, "id": id,
+            "entityType": (rec or {}).get("entityType"), "owner": owner,
+            "degree": sum(g["count"] for g in rows), "relations": rows}
 
 
 @mcp.tool
@@ -909,12 +1005,14 @@ def main() -> None:
             decimals=args.x402_decimals, facilitator_url=args.x402_facilitator,
         )
         print(f"[mcp] Phase 2 payments ENABLED — {args.x402_price} per gated call "
-              f"to {args.x402_pay_to}")
+              f"to {args.x402_pay_to}", file=sys.stderr)
     else:
-        print("[mcp] Phase 1 — tools are free (no --x402-pay-to)")
+        print("[mcp] Phase 1 — tools are free (no --x402-pay-to)", file=sys.stderr)
 
+    # stderr, not stdout: under --transport stdio, stdout IS the JSON-RPC channel and
+    # any stray line corrupts the stream before the client finishes initializing.
     print(f"[mcp] quickbeam MCP → CDN {CDN_URL} | edges={EDGES_PATH or '(none)'} "
-          f"| transport={args.transport}")
+          f"| transport={args.transport}", file=sys.stderr)
     transport = "http" if args.transport == "streamable-http" else args.transport
     if transport in ("http", "sse"):
         mcp.run(transport=transport, host=args.host, port=args.port)

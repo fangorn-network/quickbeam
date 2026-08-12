@@ -1,0 +1,5 @@
+node_modules
+dist
+
+# staged snapshot — a 77 MB build artifact, rebuilt by `npm run stage:cdn`
+public/cdn

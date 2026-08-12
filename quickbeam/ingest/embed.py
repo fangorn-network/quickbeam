@@ -161,13 +161,20 @@ def ensure_indexes(qdrant, collection):
         # this is schizo
         ("fields.content",  models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("fields.filename", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        # Codebook cell for private retrieval (`cdn index --push-cells` backfills it).
+        # The bucket endpoint's whole cost model is a filtered scroll on this field,
+        # so without the index every bucket fetch is a full-collection scan.
+        ("cell", models.IntegerIndexParams(type="integer")),
     ]
+    created = []
     for field, schema in specs:
         try:
             qdrant.create_payload_index(collection_name=collection, field_name=field, field_schema=schema)
-            print(f"[index] created {field}")
-        except Exception as e:
-            print(f"[index] {field} already present ({type(e).__name__})")
+            created.append(field)
+        except Exception:  # noqa: BLE001 — already present is the overwhelmingly common case
+            pass
+    if created:
+        print(f"[index] created {len(created)}/{len(specs)}: {', '.join(created)}")
 
 
 # ---------------------------------------------------------------------------

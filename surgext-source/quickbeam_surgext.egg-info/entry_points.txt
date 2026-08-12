@@ -1,0 +1,5 @@
+[console_scripts]
+surgext-ingest = quickbeam_surgext.source:run
+
+[quickbeam.sources]
+surgext = quickbeam_surgext.source:SurgeXTSource

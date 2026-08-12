@@ -1,0 +1,33 @@
+{
+  "name": "audius-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "check": "node --experimental-strip-types scripts/check-search.ts",
+    "check:graph": "node --experimental-strip-types scripts/check-graph.ts",
+    "check:stream": "node --experimental-strip-types scripts/check-stream.ts",
+    "check:kernel": "node --experimental-strip-types scripts/check-kernel.ts",
+    "stage:cdn": "node scripts/stage-cdn.mjs --src ../audius-build/cdn --dest public/cdn --domain audius",
+    "build:static": "npm run stage:cdn && npm run build",
+    "check:private": "node --experimental-strip-types scripts/check-private.ts",
+    "private-search": "node --experimental-strip-types scripts/private-search.ts",
+    "check:remote": "node --experimental-strip-types scripts/check-remote.ts"
+  },
+  "dependencies": {
+    "@fontsource-variable/figtree": "^5.1.1",
+    "@huggingface/transformers": "^3.3.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}

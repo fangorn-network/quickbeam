@@ -64,10 +64,10 @@ quickbeam data robinhood --with-transfers --watch --poll-interval 120 \
 #    OWNER is the publisher wallet address that step 2 published under — `fangorn repo
 #    init robinhood` prints it ("Owner: 0x…"), as does `fangorn status` in the repo dir.
 export OWNER=0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6
-quickbeam watch --source 0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood \
-  --collection robinhood \
+quickbeam watch --source 0x7a7849231cF7Ab1EA003BcF0063CB89704D7Cce9:sond3r.test.1 \
+  --collection sond3r \
   --cdn-dir ./cdn \
-  --cdn-domain robinhood
+  --cdn-domain sond3r
 quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
 # start the mcp 
 quickbeam mcp --cdn-url http://localhost:8090 --transport http --port 8765

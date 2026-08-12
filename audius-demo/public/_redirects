@@ -1,0 +1,8 @@
+# Static-host rules. The app uses a HASH router (#/search, #/e?id=…), so unknown
+# paths never reach the server in normal use — the catch-all is a safety net for a
+# stray link or a hand-typed path, not a requirement.
+#
+# The /cdn rule matters more: it keeps the baked snapshot served as real files
+# instead of being swallowed by the catch-all.
+/cdn/*  /cdn/:splat  200
+/*      /index.html  200
