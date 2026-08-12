@@ -12,6 +12,9 @@ stream goes live — a commit that lands during seeding is buffered by the
 subscription and applied afterwards idempotently (vertices are content-addressed
 and the checkpoint dedupes), so nothing is lost.
 
+A namespace is an `app:publisher:subspace` triple. `--source` carries the last two;
+the app comes from `--app` (or, unset, from the local fangorn client's config).
+
 Examples
 --------
   # Watch one source:
@@ -21,6 +24,9 @@ Examples
   # Watch several sources into the same collection (independently — no
   # cross-source identity fusion):
   quickbeam watch --source 0x147c...:robinhood --source 0x9a38...:music
+
+  # Watch an entire app — every publisher, every subspace in it:
+  quickbeam watch --app sond3r.test.1 --source '*:*'
 """
 
 import argparse
@@ -37,7 +43,7 @@ from quickbeam.ingest.embed import (
 from quickbeam.ingest.graph.projection import load_profiles, project_source
 from quickbeam.ingest.identity import _str_to_uuid
 from quickbeam.ingest.sources.fangorn import (
-    parse_sources, subscribe_cmd)
+    app_args, parse_sources, subscribe_cmd)
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from quickbeam.roles import infer_roles, role_map_applies
@@ -63,7 +69,25 @@ def parse_args():
     )
 
     p.add_argument("--source", action="append", dest="sources", default=[],
-                   help="OWNER:NAMESPACE to watch, repeatable.")
+                   help="OWNER:NAMESPACE to watch, repeatable. `*` on either side is a "
+                        "wildcard that widens the subscription to the app level: "
+                        "'0x..:*' (one publisher, every namespace), '*:docs' (that "
+                        "namespace across publishers), '*:*' (the whole app).")
+    p.add_argument("--app", default=None,
+                   help="App (global namespace) to watch — a name or a 32-byte app id. The "
+                        "app is the first part of the app:publisher:subspace triple and is "
+                        "NOT part of --source. Unset means whatever the local fangorn client "
+                        "is configured with (`fangorn set-app`, ~/.fangorn/config.json).")
+    p.add_argument("--from-block", type=int, default=None,
+                   help="Replay each source's commits from this block before going live. "
+                        "This is how an app-level (`*`) watch picks up namespaces published "
+                        "before it started — a wildcard source has no single namespace to "
+                        "seed with `fangorn read`. Catch-up is fetched in windows "
+                        "(FANGORN_LOG_WINDOW blocks each), so pick a block near the first "
+                        "publish, not genesis.")
+    p.add_argument("--from-start", action="store_true",
+                   help="Replay from genesis (ignored if --from-block is set). Only "
+                        "practical on a private RPC with a large log window.")
     p.add_argument("--fangorn-bin", default="fangorn",
                    help="How to invoke the fangorn CLI (may be a full command).")
 
@@ -129,6 +153,9 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
     change (the change is applied to an in-memory snapshot first, then re-projected
     here — projection is local CPU, so re-running it per change is cheap). Returns the
     number of new records embedded."""
+    # ponytail: checkpoint keys are publisher:subspace, not app:publisher:subspace —
+    # two watchers on different apps must not share a --checkpoint-file. Key on the app
+    # too if that ever happens.
     key = f"{owner}:{namespace}"
     src_ck = checkpoint.setdefault("sources", {}).setdefault(key, {})
 
@@ -247,7 +274,7 @@ async def _drain_stderr(key: str, stream):
 
 
 async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
-                           timeout: float) -> dict:
+                           timeout: float, app: str | None = None) -> dict:
     """Async, timeout-bounded `fangorn read <ns> --owner <owner>` for the startup seed.
 
     CRITICAL: the seed MUST NOT use the synchronous `read_source` (subprocess.run) —
@@ -258,7 +285,7 @@ async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
     its own child process we can wait on with a hard timeout and kill if it overruns, so
     a slow/hung read degrades to 'skip the seed, go live' instead of freezing."""
     proc = await asyncio.create_subprocess_exec(
-        *shlex.split(fangorn_bin), "read", namespace, "--owner", owner,
+        *shlex.split(fangorn_bin), *app_args(app), "read", namespace, "--owner", owner,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT,
     )
@@ -288,24 +315,72 @@ async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
     return data
 
 
+def _ns_state(snapshot, pair):
+    """The in-memory {vertices, edges} for one (owner, namespace) pair. A wildcard source
+    streams commits from many pairs, so state is per-pair, not per-subscription."""
+    return snapshot["ns"].setdefault(pair, {"vertices": {}, "edges": {}})
+
+
+async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                     checkpoint, owner, namespace, snapshot):
+    """Read one namespace's full on-chain state and embed it, so the existing corpus is
+    indexed before live diffs land on top. Bounded + off the event loop (see
+    _seed_read_async): a slow/hung read degrades to 'skip the seed, go live' instead of
+    freezing the watcher, and the pair stays unseeded so a later attempt retries it.
+
+    On failure we leave the prior snapshot ALONE and ingest nothing: projecting an empty
+    namespace would diff every already-embedded vertex as removed and tombstone the whole
+    source (the exact outcome the null-head guard in _seed_read_async exists to prevent)."""
+    key = f"{owner}:{namespace}"
+    try:
+        contents = await _seed_read_async(
+            args.fangorn_bin, owner, namespace, args.seed_timeout, args.app)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
+              f"stream, will retry seed on reconnect", file=sys.stderr)
+        return
+    snapshot["seeded"].add((owner, namespace))
+
+    state = _ns_state(snapshot, (owner, namespace))
+    state["vertices"] = {v["cid"]: v for v in contents.get("vertices", [])}
+    state["edges"] = {_edge_key(e): e for e in contents.get("edges", [])}
+
+    seed_edges: list = []
+    seed_tombstones: list = []
+    n = await _ingest_contents(
+        args, qdrant, embed_engine, role_map_ref, dim, truncate,
+        checkpoint, owner, namespace, contents,
+        edges_sink=seed_edges, tombstones_sink=seed_tombstones,
+    )
+    print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
+    _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
+
+
 async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, truncate,
                               checkpoint, owner, namespace, snapshot):
-    """Seed one owner:namespace source (once), then consume its `fangorn subscribe`
-    stream until it ends. Returns normally when the stream closes (caller resubscribes).
+    """Seed one source (once), then consume its `fangorn subscribe` stream until it ends.
+    Returns normally when the stream closes (caller resubscribes).
 
-    `snapshot` is the in-memory namespace state ({vertices, edges, seeded}), owned by the
-    caller so it PERSISTS across reconnects — we do the expensive full `fangorn read`
-    seed only until it succeeds once, then reconnects reuse the snapshot and rely on the
-    subscribe cursor replaying any commits missed while down. Re-reading the whole
-    namespace on every reconnect is what made a slow read freeze the watcher in a loop."""
-    key = f"{owner}:{namespace}"
+    `owner`/`namespace` may be None — a wildcard source (`*:*`, `0x..:*`, `*:ns`) that
+    subscribes at the app level and receives commits from many namespaces. Those can't be
+    seeded up front (there is no single namespace to read), so each pair is seeded lazily
+    the first time a commit for it arrives.
+
+    `snapshot` is the in-memory state ({seeded, ns}), owned by the caller so it PERSISTS
+    across reconnects — the expensive full `fangorn read` seed runs only until it succeeds
+    once per pair, then reconnects reuse the snapshot and rely on the subscribe cursor
+    replaying any commits missed while down. Re-reading the whole namespace on every
+    reconnect is what made a slow read freeze the watcher in a loop."""
+    key = f"{owner or '*'}:{namespace or '*'}"
+    app_mode = owner is None or namespace is None
 
     # Start the subscription FIRST so any commit that lands while we seed buffers in
     # the pipe. Applying such a buffered change after the seed is idempotent: vertices
     # are content-addressed (re-adding a cid the seed already has is a no-op) and the
     # checkpoint dedupes embeds — so the seed↔live gap loses nothing.
     proc = await asyncio.create_subprocess_exec(
-        *subscribe_cmd(args.fangorn_bin, owner, namespace),
+        *subscribe_cmd(args.fangorn_bin, owner, namespace, args.from_start,
+                       args.from_block, args.app),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT,
     )
@@ -313,40 +388,20 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
     stderr_task = asyncio.create_task(_drain_stderr(key, proc.stderr))
 
     try:
-        vertices_by_cid = snapshot["vertices"]
-        edges_by_key = snapshot["edges"]
-
-        # Seed current on-chain state ONCE so the existing corpus is embedded before we
-        # go live. Bounded + off the event loop (see _seed_read_async): a slow/hung read
-        # no longer freezes the watcher — it skips the seed, goes live, and retries the
-        # seed on the next reconnect until it lands. After a successful seed, reconnects
-        # reuse the persisted snapshot instead of re-reading the whole namespace.
-        if not snapshot["seeded"]:
-            try:
-                contents = await _seed_read_async(
-                    args.fangorn_bin, owner, namespace, args.seed_timeout)
-                snapshot["seeded"] = True
-            except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
-                      f"stream, will retry seed on reconnect", file=sys.stderr)
-                contents = {"vertices": [], "edges": []}
-            vertices_by_cid.clear()
-            vertices_by_cid.update({v["cid"]: v for v in contents.get("vertices", [])})
-            edges_by_key.clear()
-            edges_by_key.update({_edge_key(e): e for e in contents.get("edges", [])})
-
-            seed_edges: list = []
-            seed_tombstones: list = []
-            n = await _ingest_contents(
-                args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                checkpoint, owner, namespace, contents,
-                edges_sink=seed_edges, tombstones_sink=seed_tombstones,
-            )
-            print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
-            _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
-        else:
+        # Seed current on-chain state ONCE per namespace so the existing corpus is embedded
+        # before we go live. A pinned source seeds up front; a wildcard source has no single
+        # namespace to read, so its pairs seed lazily below, on first commit. `tried` bounds
+        # that to one attempt per pair per connection — a persistently failing read must not
+        # cost --seed-timeout on every incoming change.
+        tried: set = set()
+        if not app_mode and (owner, namespace) not in snapshot["seeded"]:
+            tried.add((owner, namespace))
+            await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                             checkpoint, owner, namespace, snapshot)
+        elif not app_mode:
             print(f"[Watcher] {key}: reusing snapshot "
-                  f"({len(vertices_by_cid)} vertices) — resuming stream")
+                  f"({len(_ns_state(snapshot, (owner, namespace))['vertices'])} vertices) "
+                  f"— resuming stream")
 
         # Consume the live change stream. Each line is one self-contained NamespaceChange.
         assert proc.stdout is not None
@@ -359,6 +414,26 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             except json.JSONDecodeError:
                 print(f"[Watcher] {key}: unparseable change line: {line[:200]}", file=sys.stderr)
                 continue
+
+            # Every change names the pair it belongs to — under a wildcard source that
+            # varies line to line, so state, checkpoints and projection all key off the
+            # change itself, not off this subscription's (possibly None) filter.
+            ch_owner = change.get("owner") or owner
+            ch_ns = change.get("namespace") or namespace
+            ch_key = f"{ch_owner}:{ch_ns}"
+
+            # First commit seen for a namespace we've never read: seed it now, so the
+            # projection sees the whole graph and not just what streamed past since.
+            # Applying the diff on top is idempotent (vertices are content-addressed;
+            # removals of already-absent cids are no-ops).
+            if (ch_owner, ch_ns) not in snapshot["seeded"] and (ch_owner, ch_ns) not in tried:
+                tried.add((ch_owner, ch_ns))
+                await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                                 checkpoint, ch_owner, ch_ns, snapshot)
+
+            state = _ns_state(snapshot, (ch_owner, ch_ns))
+            vertices_by_cid = state["vertices"]
+            edges_by_key = state["edges"]
 
             # Apply the diff to the in-memory snapshot: removals first, then adds
             # (an add re-pointing a cid must win over a same-line removal of the old one).
@@ -374,11 +449,11 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             contents = {"vertices": list(vertices_by_cid.values()),
                         "edges": list(edges_by_key.values())}
 
-            src_ck = checkpoint.setdefault("sources", {}).setdefault(key, {})
+            src_ck = checkpoint.setdefault("sources", {}).setdefault(ch_key, {})
             src_ck["head"] = change.get("newRoot")
             src_ck["block"] = change.get("blockNumber")
 
-            print(f"[Watcher] {key}: change @ block {change.get('blockNumber')} "
+            print(f"[Watcher] {ch_key}: change @ block {change.get('blockNumber')} "
                   f"(+{len(change.get('addedVertices', []))} / "
                   f"-{len(change.get('removedVertexCids', []))} vertices) "
                   f"→ {change.get('commitCid')}")
@@ -387,11 +462,11 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             change_tombstones: list = []
             n = await _ingest_contents(
                 args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                checkpoint, owner, namespace, contents,
+                checkpoint, ch_owner, ch_ns, contents,
                 edges_sink=change_edges, tombstones_sink=change_tombstones,
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
-            print(f"[Watcher] {key}: change applied — {status}")
+            print(f"[Watcher] {ch_key}: change applied — {status}")
             _deliver_cdn(args, qdrant, n, change_edges, change_tombstones)
 
         rc = await proc.wait()
@@ -411,11 +486,11 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
     """Supervise one source forever: (re)subscribe, and if the stream drops, back off
     --poll-interval seconds and reconnect. `fangorn subscribe` persists its own resume
     cursor, so a reconnect replays commits missed while we were down."""
-    key = f"{owner}:{namespace}"
-    # Persist the in-memory namespace snapshot across reconnects so the expensive full
-    # seed read runs only until it succeeds once; later reconnects reuse it and lean on
-    # the subscribe cursor to replay anything missed while down.
-    snapshot = {"seeded": False, "vertices": {}, "edges": {}}
+    key = f"{owner or '*'}:{namespace or '*'}"
+    # Persist the in-memory namespace snapshots across reconnects so the expensive full
+    # seed read runs only until it succeeds once per pair; later reconnects reuse them and
+    # lean on the subscribe cursor to replay anything missed while down.
+    snapshot = {"seeded": set(), "ns": {}}
     while True:
         try:
             await _stream_source_once(
@@ -443,7 +518,8 @@ async def main():
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
 
-    print(f"[Watcher] Starting — sources: {', '.join(f'{o}:{n}' for o, n in sources)}")
+    shown = ", ".join(f"{o or '*'}:{n or '*'}" for o, n in sources)
+    print(f"[Watcher] Starting — sources: {shown}")
     print(f"[Watcher] mode: push (fangorn subscribe); reconnect backoff {args.poll_interval}s")
 
     qdrant = QdrantClient(
