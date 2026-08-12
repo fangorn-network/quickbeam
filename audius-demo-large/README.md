@@ -24,6 +24,32 @@ appears in both has the same id, the same fields and the same vector. That is wh
 a search hit dedupe against the resident copy instead of showing you the same track
 twice.
 
+### What is actually served to you
+
+```mermaid
+flowchart LR
+    subgraph browser["YOUR BROWSER — downloaded once, identical for every visitor"]
+        direction TB
+        BS["<b>bootstrap graph</b><br/>41,424 records + vectors<br/>9 shards, ~120 MB"]
+        ED["<b>edges</b><br/>608,287 relations<br/>4.1 MB gzipped"]
+        CB["<b>codebook</b><br/>3,719 centroids<br/>930 KB"]
+        LO["<b>bucket layout</b><br/>which cell is in which bucket<br/>35 KB"]
+    end
+
+    subgraph server["SERVER — never sent to you, queried a bucket at a time"]
+        direction TB
+        QD["<b>Qdrant</b><br/>1,904,468 vectors<br/>each tagged with its cell"]
+        SQ["<b>edges.sqlite</b><br/>25,891,026 relations<br/>for entity pages"]
+    end
+
+    browser -. "one bucket number per uncached query" .-> server
+    server -. "~4,000 records + their vectors" .-> browser
+```
+
+The top box is everything the home page needs — it renders with no server involved at
+all. The bottom box is what searching reaches, and the only thing that ever travels up
+that dotted line is an integer.
+
 **The landing page is unchanged in character.** The hero ledger, onboarding, the
 publisher grids and every relation rail render from the bootstrap alone, before any
 search touches the network. Nothing about that first minute is observable.
@@ -32,7 +58,7 @@ search touches the network. Nothing about that first minute is observable.
 against a *codebook* you downloaded, and only a *bucket* number is sent. Candidates come
 back with their vectors and are re-ranked here against your real query. (If "codebook"
 and "bucket" mean nothing to you yet, [the next section defines
-them](#first-the-three-words-this-rests-on) from scratch — they are the whole mechanism.)
+them](#first-the-four-words-this-rests-on) from scratch — they are the whole mechanism.)
 
 **Records outside the bootstrap are first-class.** Click a search result and it opens
 with real relation rails, plays, and feeds the recommender — served by
@@ -45,11 +71,10 @@ architecture most obviously invites.
 The design goal is narrow and worth stating precisely: **we cannot tell what you
 searched for, and we should not be able to even if you do trust us.**
 
-### First, the three words this rests on
+### First, the four words this rests on
 
 If you have not worked with embeddings, the rest of this section is unreadable without
-these. Nothing here is specific to us — the first two are standard, only the third is
-ours.
+these. The first three are standard terms from vector search; only the fourth is ours.
 
 **A vector (or embedding)** is what a piece of text becomes when a model reads it: a
 fixed-length list of numbers, 256 of them here. The useful property is that *similar
@@ -62,17 +87,66 @@ Searching means turning your words into a vector and finding the nearest track v
 **A cell** is a cluster of nearby vectors. At build time we ran k-means — a standard
 clustering algorithm — over all 1.9M track vectors and told it to produce **3,719
 groups**. Each group is a cell, and each cell has a *centroid*: the average position of
-everything in it, one more 256-number vector that acts as that cell's address. Because
-clustering puts similar things together, a cell ends up being a coherent slice of the
-catalogue: one might be mostly deep house, another mostly acoustic folk. The list of all
-3,719 centroids is called the **codebook**, and it is a 952 KB file
-(`index/codebook.i8`) your browser downloads once.
+everything in it, one more 256-number vector that serves as that cell's address.
+Because clustering puts similar things together, a cell ends up being a coherent slice
+of the catalogue: one might be mostly deep house, another mostly acoustic folk.
+
+**The codebook** is the list of all 3,719 of those centroids — nothing more than an
+array of 3,719 × 256 numbers, shipped as a **952 KB file** (`index/codebook.i8`) that
+your browser downloads once and keeps.
+
+It exists so you can work out which cell your query belongs to *without asking anyone*.
+Finding your cell means comparing your query vector against 3,719 centroids and taking
+the nearest — arithmetic over a file you already hold, no network involved. That is the
+step that would otherwise have to happen on a server, and having it happen in your tab
+is the difference between sending your query and sending a number.
+
+The name is borrowed from vector quantisation, where a codebook is the fixed set of
+reference values you round a signal to. Same idea here: your query gets rounded to the
+nearest of 3,719 reference points, and only that choice is expressed.
+
+**It is public on purpose, and that is not a compromise.** Every visitor downloads the
+same codebook, and anyone can fetch it and read it. The privacy of the scheme never
+rested on it being secret — it rests on the *bucket* below, and on the routing
+happening locally. A secret codebook would be worse: you could not verify what your
+browser was routing against.
 
 **A bucket** is our addition: a fixed group of **8 cells that are deliberately not
 related to each other**. The 3,719 cells are shuffled and dealt out like cards into 464
 buckets, so one bucket might hold a deep-house cell, a gospel cell, a K-pop cell and
 five others with nothing in common. Which cells go in which bucket is fixed, public,
 and the same for every visitor.
+
+### How cells and buckets get built
+
+All of this happens once, at build time, on the server. Nothing here runs in a browser.
+
+```mermaid
+flowchart TB
+    R["<b>1,904,468 records</b><br/>title, artist, genre, mood, tags"]
+    V["<b>1,904,468 vectors</b><br/>256 numbers each<br/>similar meaning → nearby numbers"]
+    K["<b>k-means</b><br/>k = records / 512"]
+    C["<b>3,719 cells</b><br/>~512 similar records each<br/>e.g. a mostly-deep-house cell"]
+
+    CB["<b>codebook</b> — index/codebook.i8<br/>the 3,719 cell centroids<br/>930 KB, shipped to every browser"]
+    TAG["<b>cell id per record</b><br/>written into Qdrant as a payload field<br/>so a bucket can be fetched by filter"]
+
+    SH["<b>shuffle, then deal round-robin</b><br/>so neighbours land in DIFFERENT buckets"]
+    B["<b>464 buckets × 8 cells</b><br/>index/layout.json<br/>each bucket semantically incoherent"]
+
+    R -->|"embed<br/>nomic-embed-text-v1.5"| V
+    V --> K --> C
+    C -->|"take each cell's average position"| CB
+    C -->|"record → its cell"| TAG
+    C --> SH --> B
+
+    style CB fill:#1f6feb,color:#fff
+    style B fill:#1f6feb,color:#fff
+```
+
+The two blue boxes are the published artifacts. **The shuffle is the whole privacy
+mechanism** — deal the cells in order and each bucket would hold eight neighbouring
+regions, i.e. one big coherent region, which is exactly what a bucket must not be.
 
 ### What actually happens when you search
 
@@ -98,6 +172,46 @@ rainy night"*:
    best ten. The precise ranking happens where your query has always been: in the tab.
 
 The server's whole view of that search is the number **154**.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant Tab as Your browser tab
+    participant API as Server
+
+    You->>Tab: "melancholy piano for a rainy night"
+
+    rect rgb(232, 244, 234)
+    Note over Tab: NOTHING LEAVES THE TAB IN THESE STEPS
+    Tab->>Tab: embed the words → a 256-number vector
+    Tab->>Tab: compare against the 3,719 centroids<br/>nearest is cell 2702
+    Tab->>Tab: layout lookup: cell 2702 lives in bucket 154
+    end
+
+    Tab->>API: GET /bucket/154
+    Note right of Tab: one integer. no query string,<br/>no vector, no request body
+
+    rect rgb(255, 244, 230)
+    Note over API: the server cannot tell which of the<br/>8 cells you wanted — you did not say
+    API->>API: expand 154 → its 8 cells
+    API->>API: fetch every record tagged with those cells
+    end
+
+    API-->>Tab: ~4,000 records, each with its vector
+
+    rect rgb(232, 244, 234)
+    Tab->>Tab: rank all ~4,000 against the TRUE query vector
+    end
+    Tab-->>You: top 10
+
+    Note over Tab,API: a repeat search in the same region is served<br/>from cache — no request at all
+```
+
+Green is your machine, amber is ours. The only arrow that crosses carries the number
+**154** in one direction and records in the other. Your query vector is used twice —
+once to pick the cell, once to rank the results — and both times it stays in step 2's
+green box.
 
 **The expansion is server-side, and that matters.** `GET /bucket/{id}` accepts an
 integer and nothing else — there is no parameter for "just cell 2702". A client cannot
