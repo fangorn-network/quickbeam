@@ -37,6 +37,11 @@ services:
       - data:/data
     command:
       - watch
+      # Which app the reads resolve against. Unset means the fangorn CLI's DEFAULT_APP,
+      # which is NOT what the worker's watchlist points at unless they happen to match —
+      # a mismatch reads an empty namespace with no error. Keep APP equal to the
+      # worker's DEFAULT_APP.
+      - --app=${APP}
       - --sources-url=${SOURCES_URL}
       - --sources-refresh=${SOURCES_REFRESH:-60}
       - --collection=${COLLECTION:-fangorn}

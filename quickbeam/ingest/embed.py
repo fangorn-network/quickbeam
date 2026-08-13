@@ -155,6 +155,7 @@ def ensure_indexes(qdrant, collection):
         # One collection can hold every watched namespace, so this is the filter the
         # search routes and the CDN bake scope on — index it or they full-scan.
         ("meta.namespace",        models.KeywordIndexParams(type="keyword")),
+        ("meta.app",              models.KeywordIndexParams(type="keyword")),
         ("fields.source",         models.KeywordIndexParams(type="keyword")),
         ("fields.isPast",         models.BoolIndexParams(type="bool")),
         ("fields.hostBusinessId", models.KeywordIndexParams(type="keyword")),
@@ -261,7 +262,12 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                         "fields":     p["fields"],
                         # Carry the on-chain source CID so served results have real
                         # provenance (the `source_cid` the MCP layer surfaces).
-                        "meta":       {"namespace": p["meta"].get("namespace"),
+                        # This literal is written by hand, so a key added to
+                        # project_source's `meta` is DROPPED here unless added twice —
+                        # which is how meta.app once shipped absent while the
+                        # projection looked correct and every app-scoped filter missed.
+                        "meta":       {"app": p["meta"].get("app"),
+                                       "namespace": p["meta"].get("namespace"),
                                        "sourceCid": p["meta"].get("sourceCid")},
                     }
                 )

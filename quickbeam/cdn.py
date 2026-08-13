@@ -66,16 +66,19 @@ def _build_filter(spec: dict) -> qmodels.Filter | None:
        entityType: [list]  -> payload `entityType`     MatchAny
        owner:      [list]  -> payload `owner`          MatchAny
        namespace:  [list]  -> payload `meta.namespace` MatchAny
+       app:        [list]  -> payload `meta.app`       MatchAny
     Multiple keys are AND-ed (must). An empty/missing filter selects everything.
 
     `namespace` matters when one collection holds several watched namespaces (the
     shared-instance deployment): without it every domain would bake every namespace's
-    records, since a missing spec selects everything."""
+    records, since a missing spec selects everything. `app` is the third leg of the
+    same rule — one publisher can hold the same subspace name in two apps, and those
+    are different namespaces that must not bake into each other's domain."""
     if not spec:
         return None
     must = []
     field_map = {"entityType": "entityType", "owner": "owner",
-                 "namespace": "meta.namespace"}
+                 "namespace": "meta.namespace", "app": "meta.app"}
     for key, payload_key in field_map.items():
         vals = spec.get(key)
         if not vals:
@@ -548,7 +551,7 @@ def _sync_catalog(cdn_dir: str, domain: str, manifest: dict) -> None:
 def append_domain(qdrant, collection: str, cdn_dir: str, domain: str,
                   config_path: str | None = None,
                   entity_types: list | None = None, owners: list | None = None,
-                  namespaces: list | None = None,
+                  namespaces: list | None = None, apps: list | None = None,
                   scroll_batch: int = 2000) -> dict | None:
     """Scroll `collection` for points not already in `domain`'s shards and, if any,
     write them as a delta shard. Returns the new shard entry (or None if nothing new
@@ -578,6 +581,8 @@ def append_domain(qdrant, collection: str, cdn_dir: str, domain: str,
         scan["owner"] = owners
     if namespaces:
         scan["namespace"] = namespaces
+    if apps:
+        scan["app"] = apps
     q_filter = _build_filter(scan)
 
     baked = _existing_baked_ids(domain_dir, manifest)

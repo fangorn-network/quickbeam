@@ -174,7 +174,10 @@ async def main():
         print(f"[Builder] {key} — {len(contents.get('vertices', []))} vertices, "
               f"{len(contents.get('edges', []))} edges — projections: {_prof_desc}")
 
-        records = project_source(owner, namespace, contents, profiles, args)
+        # `build` has no --app, so these points carry meta.app = None — the same
+        # unscoped shape they had before the app dimension existed.
+        records = project_source(getattr(args, "app", None), owner, namespace,
+                                 contents, profiles, args)
         curr_ids = {r["track_id"] for r in records}
         new_records = [r for r in records if r["track_id"] not in processed_track_ids]
 

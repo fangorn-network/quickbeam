@@ -6,6 +6,7 @@ quickbeam/cdn.py
 quickbeam/cli.py
 quickbeam/embeddings.py
 quickbeam/export_bundle.py
+quickbeam/index.py
 quickbeam/mcp_payments.py
 quickbeam/mcp_server.py
 quickbeam/migrate.py
@@ -14,6 +15,7 @@ quickbeam/publish.py
 quickbeam/pull.py
 quickbeam/roles.py
 quickbeam/server.py
+quickbeam/shell.py
 quickbeam/test_mcp_analytics.py
 quickbeam/test_objects.py
 quickbeam/test_roles.py
@@ -48,8 +50,14 @@ quickbeam/pipelines/mb.py
 quickbeam/pipelines/mb_pg.py
 quickbeam/pipelines/places.py
 quickbeam/pipelines/prebake.py
+tests/test_adjacency_route.py
+tests/test_bucket_route.py
 tests/test_cdn_edges.py
+tests/test_index.py
 tests/test_mcp.py
 tests/test_roles.py
 tests/test_schemagen_identity.py
+tests/test_shell.py
+tests/test_sources.py
+tests/test_watchlist.py
 tests/test_x402_agent.py

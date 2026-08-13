@@ -14,16 +14,22 @@ leg already does — we shell out to the CLI. `--fangorn-bin` may be a FULL comm
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import subprocess
 
 
-def app_args(app: str | None) -> list[str]:
-    """`--app <name-or-id>` for the fangorn CLI, or nothing. The app id prefixes every
-    namespace key, so it decides which global namespace a read/subscribe sees. Unset means
-    whatever the local client is configured with (`fangorn set-app`) — which is why a
-    daemon watching someone else's app should always pass it explicitly."""
-    return ["--app", app] if app else []
+def app_env(app: str | None) -> dict | None:
+    """Environment for a fangorn child process that must read a specific app, or None to
+    inherit ours. The app id prefixes every namespace key, so it decides which global
+    namespace a read/subscribe sees.
+
+    The CLI takes this as FANGORN_APP_ID, NOT a `--app` flag — no fangorn command defines
+    one, so passing it as argv makes every read fail with "unknown option '--app'". The env
+    var explicitly outranks the app stored in ~/.fangorn/config.json ("env wins over the
+    saved app", cli.ts), which is what lets one daemon watch someone else's app without
+    touching the local client's config."""
+    return {**os.environ, "FANGORN_APP_ID": app} if app else None
 
 
 def parse_sources(raw_sources: list[str]) -> list[tuple[str | None, str | None]]:
@@ -51,9 +57,9 @@ def read_source(fangorn_bin: str, owner: str, namespace: str, app: str | None = 
     """Shell out to `fangorn read <namespace> --owner <owner>` and parse the JSON
     {owner, namespace, head, vertices, edges} it prints to stdout."""
     prefix = shlex.split(fangorn_bin)
-    cmd = [*prefix, *app_args(app), "read", namespace, "--owner", owner]
+    cmd = [*prefix, "read", namespace, "--owner", owner]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=app_env(app))
     except FileNotFoundError:
         raise RuntimeError(
             f"fangorn CLI not found (--fangorn-bin {fangorn_bin!r}, resolved to "
@@ -80,8 +86,7 @@ def read_head(fangorn_bin: str, owner: str) -> str:
 
 
 def subscribe_cmd(fangorn_bin: str, owner: str | None, namespace: str | None,
-                  from_start: bool = False, from_block: int | None = None,
-                  app: str | None = None) -> list[str]:
+                  from_start: bool = False, from_block: int | None = None) -> list[str]:
     """Argv for `fangorn subscribe <namespace> --owner <owner>` — a light-client
     stream that emits one `NamespaceChange` JSON per line on stdout as commits land
     (status/logs go to stderr; the CLI persists its own resume cursor under
@@ -93,15 +98,15 @@ def subscribe_cmd(fangorn_bin: str, owner: str | None, namespace: str | None,
     exactly what changed instead of us re-reading the whole namespace on a timer.
 
     A None owner or namespace (a `*` wildcard source) switches the CLI to `--all`: the
-    filter widens to the app id and the unset side matches every publisher/subspace. `app`
-    picks which app that is (see app_args); unset uses the local client's configured one.
+    filter widens to the app id and the unset side matches every publisher/subspace. Which
+    app that is rides in the child's environment, not this argv — see `app_env`.
 
     `from_block` (or `from_start`, its genesis form) replays history before going live —
     how an app-level watch discovers namespaces published before it started, since a
     wildcard source can't be seeded with `read` (which needs one exact namespace). Prefer
     `from_block`: the catch-up is windowed, and genesis on a fast chain like Arbitrum is
     hundreds of thousands of windows."""
-    argv = [*shlex.split(fangorn_bin), *app_args(app), "subscribe"]
+    argv = [*shlex.split(fangorn_bin), "subscribe"]
     if owner is None or namespace is None:
         argv.append("--all")
     if from_block is not None:

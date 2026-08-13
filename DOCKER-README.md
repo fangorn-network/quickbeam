@@ -65,11 +65,19 @@ HTTPS cannot call it (mixed content). Proxying supplies TLS with no per-namespac
 record or certificate, and it injects the view's `scope` so a view URL always means
 that view's namespaces.
 
+**A source is the whole `app:publisher:subspace` triple.** The app is the first leg and
+it is what every chain read resolves against, so each watched source carries its own —
+one instance can serve views across several apps. `--app` is only the fallback for a
+watch-list entry that names none; an entry with no app and no fallback is dropped rather
+than guessed, because reading the wrong app silently indexes the wrong graph.
+
 **Naming rule, shared by two codebases:** a source's CDN domain is
-`{owner[2:10]}-{namespace}` — `_domain_for()` in `quickbeam/watcher.py` names the
-directory, `domainFor()` in the worker names it back to filter a catalog. Namespace
-alone is not enough: two publishers both calling a namespace `music` would intermix
-their shards in one domain.
+`{app[2:10]}-{owner[2:10]}-{namespace}` — `_domain_for()` in `quickbeam/watcher.py`
+names the directory, `domainFor()` in the worker names it back to filter a catalog. All
+three legs are needed: two publishers both calling a namespace `music` would intermix
+their shards in one domain, and so would one publisher holding `music` in two apps. A
+bare app *name* (only reachable from a hand-run static watcher) is slugged whole
+instead of sliced.
 
 ### What happens when a commit lands
 
@@ -101,30 +109,38 @@ Prove the image before any cloud is involved. Local runs don't need the worker �
 
 ```sh
 cd quickbeam
-cp .env.example .env      # set ETH_PRIVATE_KEY, PINATA_GATEWAY, QDRANT_API_KEY
+cp .env.example .env      # set ETH_PRIVATE_KEY, PINATA_GATEWAY, QDRANT_API_KEY, APP
 docker compose up -d --build
 ```
+
+`--build` is not optional the first time, and not optional after a source change either:
+the Dockerfile `COPY`s `quickbeam/` at build time, so a plain `docker compose up -d`
+silently reuses the old layer and reproduces bugs you already fixed. To rebuild without
+starting anything, `docker compose build`.
 
 For a static list, write `sources.json` into the shared volume and set
 `SOURCES_URL=file:///data/sources.json`:
 
 ```json
-[ "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6:robinhood" ]
+[ {"app": "fangorn", "owner": "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6",
+   "namespace": "robinhood"} ]
 ```
 
-The list also accepts `[{"owner":"0x…","namespace":"…"}]` and either form wrapped in
-`{"sources": …}` — which is the shape the worker's `/watchlist` returns.
+The list also accepts `"APP:OWNER:NAMESPACE"` strings, the older `"OWNER:NAMESPACE"`
+form (which takes `APP` as its app), and either form wrapped in `{"sources": …}` —
+which is the shape the worker's `/watchlist` returns. `*` on any of owner/namespace is
+a wildcard that widens the subscription to the app level.
 
 Check it:
 
 ```sh
 docker compose logs -f watch
-#   [Watcher] + 0x…:robinhood — now watching 1 source(s)
-#   [Watcher] 0x…:robinhood: subscribed (pid …)
-#   [Watcher] 0x…:robinhood: seeded — N new record(s) embedded
+#   [Watcher] + 0x7e14…:0x147c…:robinhood — now watching 1 source(s)
+#   [Watcher] 0x147c…:robinhood: subscribed (pid …)
+#   [Watcher] 0x147c…:robinhood: seeded — N new record(s) embedded
 
 curl 'localhost:8080/search?q=<term>&scope=0x147c24c5…:robinhood'
-curl localhost:8090/domains/147c24c5-robinhood/manifest   # {owner8}-{namespace}
+curl localhost:8090/domains/7e1497af-147c24c5-robinhood/manifest  # {app8}-{owner8}-{ns}
 ```
 
 **Add a second entry to the file and watch a second task start with no restart.** That
@@ -145,6 +161,7 @@ IPFS fetch, the projection and the embed all worked.
 |---|---|
 | `SOURCES_URL` | The registry worker's `/watchlist` — the deduplicated union of every view's sources. Namespaces arrive there, never here. |
 | `SOURCES_REFRESH` | Seconds between watch-list polls. |
+| `APP` | Fallback app for a watch-list entry that names none. Entries from the worker always carry their own, so this only covers a hand-written list — but keep it equal to the worker's `DEFAULT_APP`, since that is what the worker stamps on a view created without one. A wrong value reads an empty namespace with **no error**. |
 | `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, no funding, no registration. |
 | `PINATA_GATEWAY` | Reads resolve every block by CID through this. The default is `ipfs.io`, DNS-filtered on many networks. |
 | `QDRANT_API_KEY` | Any random string; Qdrant enforces it on every request. |
@@ -162,20 +179,62 @@ that file exists and ignores every environment variable above.
 gcloud compute instances create quickbeam-1 \
   --machine-type=e2-small \
   --boot-disk-size=20GB --boot-disk-type=pd-balanced \
-  --zone=us-central1-a \
-  --image-family=debian-12 --image-project=debian-cloud
+  --zone=us-east4-a \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --tags=quickbeam
+
+gcloud compute ssh quickbeam-1 --zone=us-east4-a
 
 # on the box
 sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
+sudo usermod -aG docker $USER   # then log out and back in, or prefix docker with sudo
 git clone <this repo> && cd fangorn/quickbeam
-cp .env.example .env      # SOURCES_URL → the deployed worker
+cp .env.example .env      # SOURCES_URL → the deployed worker; APP; QDRANT_API_KEY
 docker compose up -d --build
 ```
 
-Open `8080` and `8090` to the worker, then set `SEARCH_URL` and `CDN_URL` in
-`webworker/quickbeam-registry/wrangler.toml` to this instance and deploy the worker.
+The first build installs the CPU ONNX stack and the Node CLI, and bakes the embedding
+model into the image (`Dockerfile`, so it is not re-downloaded on every container
+start), so expect several minutes and a ~2.5GB image (measured 2026-08-13). `docker compose ps` should show `qdrant`,
+`watch`, `cdn`, `serve` and `mcp` up, with `cdn` restarting until the watcher bakes the
+first domain (see the gotchas).
+
+**Open the two ports to the worker:**
+
+```sh
+gcloud compute firewall-rules create quickbeam-http \
+  --allow=tcp:8080,tcp:8090 --target-tags=quickbeam \
+  --description="registry worker → search + cdn"
+```
+
+Cloudflare Workers egress from the public internet with no fixed range, so
+`--source-ranges` cannot be narrowed to them; the instance is reachable by anyone who
+finds the IP. Both ports are read-only query surfaces, and the money actions live behind
+the worker's signature checks. Two ports stay closed on purpose: Qdrant's `6333` (bound
+to loopback in `docker-compose.yml`, and holding write routes), and the `mcp` service's
+`8765`, which serves the **whole** corpus unscoped — per-view MCP is the user's own
+client against `/q/{viewId}/cdn`.
+
+Then point the worker at the box and deploy it:
+
+```sh
+gcloud compute instances describe quickbeam-1 --zone=us-east4-a \
+  --format='get(networkInterfaces[0].accessConfigs[0].natIP)'
+# → set SEARCH_URL = http://<IP>:8080 and CDN_URL = http://<IP>:8090
+#   in webworker/quickbeam-registry/wrangler.toml
+cd ../webworker/quickbeam-registry && wrangler deploy
+```
+
 There is no `MCP_URL`: a user's MCP is their own `quickbeam mcp` client pointed at
 `/q/{viewId}/cdn`.
+
+**Survive a reboot.** Every service is `restart: unless-stopped`, so Docker brings the
+stack back as long as the daemon starts: `sudo systemctl enable docker`. Nothing else is
+needed — no unit file, no cron.
+
+**Redeploying a code change** is `git pull && docker compose up -d --build`. Compose
+recreates only the services whose image changed; the `qdrant` and `data` volumes are
+untouched, so the collection and the baked shards survive.
 
 **Machine type.** Start on `e2-small` (2GB). If a seed OOMs, stop the instance, change
 the type to `e2-medium` (4GB) and start it again — the disk survives, so it costs a
@@ -219,7 +278,17 @@ Neither touches this box.
   `/` and 400 on `/mcp` for a request without a handshake.
 - **The CDN domain rule is duplicated in two languages.** `_domain_for()` in
   `watcher.py` and `domainFor()` in the registry worker must agree, or a view's catalog
-  comes back empty. If you change one, change the other.
+  comes back empty. If you change one, change the other — `tests/test_watchlist.py`
+  re-derives the worker's version from its actual source and fails if they drift.
+- **The watch-list fetch sends an explicit `User-Agent`.** The worker sits behind
+  Cloudflare, whose bot-signature check answers urllib's default `Python-urllib/x.y`
+  with a **403 (error 1010)** before the worker ever runs. `/watchlist` is
+  unauthenticated, so a 403 there means the edge blocked you, not that you lack access —
+  and the watcher then holds its current set forever with zero sources, which cascades
+  into `cdn` restart-looping because no domain is ever baked.
+- **Points embedded before the app dimension have no `meta.app`.** They will not match
+  an app-scoped filter or bake into a three-part domain. A collection from an older
+  build needs a re-embed (drop it and let the seed rerun), not a migration.
 - **`cdn` restart-loops for a few seconds on first boot** — `cdn serve` exits if its
   directory does not exist yet, and the watcher creates it when it bakes the first
   domain. The restart policy covers the window.

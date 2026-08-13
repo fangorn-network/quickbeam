@@ -838,7 +838,8 @@ async def ingest():
 
         discovered = {v["schemaId"] for v in contents.get("vertices", [])}
         profiles   = load_profiles(proj_args, discovered)
-        records    = project_source(owner, namespace, contents, profiles, proj_args)
+        records    = project_source(getattr(cfg, "app", None), owner, namespace,
+                                    contents, profiles, proj_args)
         curr_ids   = {r["track_id"] for r in records}
 
         # Tombstone roots present at the last read but gone now (deleted upstream).

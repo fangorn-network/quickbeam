@@ -46,7 +46,7 @@ from quickbeam.ingest.embed import (
 from quickbeam.ingest.graph.projection import load_profiles, project_source
 from quickbeam.ingest.identity import _str_to_uuid
 from quickbeam.ingest.sources.fangorn import (
-    app_args, parse_sources, subscribe_cmd)
+    app_env, parse_sources, subscribe_cmd)
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from quickbeam.roles import infer_roles, role_map_applies
@@ -76,6 +76,14 @@ def parse_args():
                         "wildcard that widens the subscription to the app level: "
                         "'0x..:*' (one publisher, every namespace), '*:docs' (that "
                         "namespace across publishers), '*:*' (the whole app).")
+    p.add_argument("--sources-url", default=None, metavar="URL",
+                   help="Poll this URL for the watch list instead of fixed --source "
+                        "flags. Sources that appear start streaming and sources that "
+                        "vanish are cancelled, with no restart. Accepts "
+                        '["OWNER:NS", …], [{"owner":…,"namespace":…}, …], or either '
+                        'wrapped in {"sources": …}.')
+    p.add_argument("--sources-refresh", type=int, default=60,
+                   help="Seconds between --sources-url polls (default: 60).")
     p.add_argument("--app", default=None,
                    help="App (global namespace) to watch — a name or a 32-byte app id. The "
                         "app is the first part of the app:publisher:subspace triple and is "
@@ -161,16 +169,16 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
     change (the change is applied to an in-memory snapshot first, then re-projected
     here — projection is local CPU, so re-running it per change is cheap). Returns the
     number of new records embedded."""
-    # ponytail: checkpoint keys are publisher:subspace, not app:publisher:subspace —
-    # two watchers on different apps must not share a --checkpoint-file. Key on the app
-    # too if that ever happens.
-    key = f"{owner}:{namespace}"
+    # Keyed on the whole app:publisher:subspace triple. Two apps can hold the same
+    # publisher:subspace, and a shared key would make each one's snapshot diff read as
+    # "every vertex removed" against the other's — tombstoning both corpora in turn.
+    key = f"{args.app}:{owner}:{namespace}"
     src_ck = checkpoint.setdefault("sources", {}).setdefault(key, {})
 
     cid_to_tag = {v["cid"]: v["schemaId"] for v in contents.get("vertices", [])}
     discovered_tags = set(cid_to_tag.values())
     profiles = load_profiles(args, discovered_tags)
-    records = project_source(owner, namespace, contents, profiles, args)
+    records = project_source(args.app, owner, namespace, contents, profiles, args)
     by_track_id = {r["track_id"]: r for r in records}
 
     prev_ids = set(src_ck.get("vertex_cids", []))
@@ -222,7 +230,8 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
 # ---------------------------------------------------------------------------
 # LIVE CDN DELIVERY — ship a change's delta into the baked domain
 # ---------------------------------------------------------------------------
-def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespace=None):
+def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespace=None,
+                 app=None):
     """Mirror an ingested change into the delivered CDN domain: append the new points
     as a delta shard, ride removals on the manifest's tombstone list, and merge new
     edges into the served graph. Each step is isolated — a delivery failure never
@@ -239,7 +248,8 @@ def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespa
             append_domain(qdrant, args.collection, args.cdn_dir,
                           args.cdn_domain, config_path=args.cdn_config,
                           owners=[owner] if owner else None,
-                          namespaces=[namespace] if namespace else None)
+                          namespaces=[namespace] if namespace else None,
+                          apps=[app] if app else None)
         except Exception as e:  # noqa: BLE001
             print(f"[Watcher] CDN append error: {e}", file=sys.stderr)
 
@@ -298,9 +308,9 @@ async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
     its own child process we can wait on with a hard timeout and kill if it overruns, so
     a slow/hung read degrades to 'skip the seed, go live' instead of freezing."""
     proc = await asyncio.create_subprocess_exec(
-        *shlex.split(fangorn_bin), *app_args(app), "read", namespace, "--owner", owner,
+        *shlex.split(fangorn_bin), "read", namespace, "--owner", owner,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        limit=_STREAM_LIMIT,
+        limit=_STREAM_LIMIT, env=app_env(app),
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -366,7 +376,10 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
         edges_sink=seed_edges, tombstones_sink=seed_tombstones,
     )
     print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
-    _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
+    # Scope the append to THIS source. One collection holds every watched namespace, so
+    # an unfiltered append sweeps every other source's points into this domain.
+    _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones,
+                 owner=owner, namespace=namespace, app=args.app)
 
 
 async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, truncate,
@@ -393,9 +406,9 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
     # checkpoint dedupes embeds — so the seed↔live gap loses nothing.
     proc = await asyncio.create_subprocess_exec(
         *subscribe_cmd(args.fangorn_bin, owner, namespace, args.from_start,
-                       args.from_block, args.app),
+                       args.from_block),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        limit=_STREAM_LIMIT,
+        limit=_STREAM_LIMIT, env=app_env(args.app),
     )
     print(f"[Watcher] {key}: subscribed (pid {proc.pid})")
     stderr_task = asyncio.create_task(_drain_stderr(key, proc.stderr))
@@ -480,7 +493,8 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
             print(f"[Watcher] {ch_key}: change applied — {status}")
-            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones)
+            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones,
+                         owner=ch_owner, namespace=ch_ns, app=args.app)
 
         rc = await proc.wait()
         print(f"[Watcher] {key}: subscribe stream ended (rc={rc})", file=sys.stderr)
@@ -522,48 +536,74 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
 # ---------------------------------------------------------------------------
 def _slug(text: str) -> str:
     """Filename-safe fragment of a namespace/owner."""
-    return re.sub(r"[^A-Za-z0-9_-]+", "-", text).strip("-").lower() or "x"
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", text or "").strip("-").lower() or "x"
 
 
-def _domain_for(owner: str, namespace: str) -> str:
+_APP_ID_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+
+
+def _app_slug(app: str) -> str:
+    """The app's fragment of a domain name. An app id is sliced to its first 8 hex chars
+    exactly as the owner address is — a full 66-char id would dominate the directory name
+    for no extra safety. A plain name is slugged whole. Mirrors the worker's `appSlug()`."""
+    return _slug(app[2:10]) if _APP_ID_RE.match(app or "") else _slug(app)
+
+
+def _domain_for(app: str, owner: str, namespace: str) -> str:
     """CDN domain name for one watched source.
 
-    Scoped by owner AND namespace: a bare namespace collides the moment two
-    publishers pick the same name (`music` is not rare), and their shards would then
-    intermix in one domain. The registry worker derives this same name to scope a
-    requester's catalog, so the rule has to stay in sync with `viewDomains()` there.
+    Scoped by app AND owner AND namespace, because that triple IS the namespace: a bare
+    subspace name collides the moment two publishers pick the same one (`music` is not
+    rare), and one publisher can hold the same subspace in two apps. Either collision
+    intermixes shards in a single domain.
+
+    MUST match `domainFor()` in webworker/quickbeam-registry/src/index.js — the watcher
+    names the directory and the worker names it BACK to filter a view's catalog, so byte
+    drift between the two returns an empty catalog with no error on either side.
     """
-    return f"{_slug(owner[2:10])}-{_slug(namespace)}"
+    return f"{_app_slug(app)}-{_slug(owner[2:10])}-{_slug(namespace)}"
 
 
-def _scoped_role_map(path: str, owner: str, namespace: str) -> str:
+def _scoped_role_map(path: str, app: str, owner: str, namespace: str) -> str:
     root, ext = os.path.splitext(path)
-    return f"{root}-{_slug(owner[2:10])}-{_slug(namespace)}{ext or '.json'}"
+    return f"{root}-{_app_slug(app)}-{_slug(owner[2:10])}-{_slug(namespace)}{ext or '.json'}"
 
 
-def _source_args(args, owner: str, namespace: str, pin_domain: bool = False):
+def _source_args(args, app: str, owner: str | None, namespace: str | None,
+                 pin_domain: bool = False):
     """A per-source view of `args`.
 
-    Two settings must NOT be shared once a process watches several namespaces:
+    Three settings must NOT be shared once a process watches several namespaces:
 
+      app            each source names its own app, and it is what every chain read
+                     resolves against (app_env → FANGORN_APP_ID). Leaving the global
+                     --app here would read every source out of one app, so a view on
+                     another app silently resolves nothing.
       cdn_domain     one domain per source, or their shards intermix.
       role_map_file  _ingest_contents re-infers the role map whenever the loaded one
                      doesn't fit the current records, then saves it — so two
                      dissimilar corpora sharing one file overwrite each other on
                      every single commit.
 
-    `collection` deliberately stays shared: every point carries `owner` and
-    `meta.namespace`, so one collection is still attributable and `serve` can filter
-    on it. `checkpoint_file` is shared too — its contents are already keyed
-    `sources["owner:namespace"]`.
+    `collection` deliberately stays shared: every point carries `owner`, `meta.app` and
+    `meta.namespace`, so one collection is still attributable and `serve` can filter on
+    it. `checkpoint_file` is shared too — its contents are keyed by the whole triple.
 
     `pin_domain` honours an explicit --cdn-domain, which only makes sense for a
     single static source (the pre-existing single-namespace invocation).
     """
     scoped = copy.copy(args)
+    scoped.app = app
     if not pin_domain:
-        scoped.cdn_domain = _domain_for(owner, namespace) if args.cdn_dir else None
-    scoped.role_map_file = _scoped_role_map(args.role_map_file, owner, namespace)
+        # ponytail: a wildcard source gets no live CDN delivery. Its pairs are only
+        # learned as commits arrive, so there is no single domain to bake at task
+        # start — and _deliver_cdn ships to one fixed domain per task. Give the
+        # delivery path a per-change domain if wildcard sources ever need shards.
+        concrete = owner is not None and namespace is not None
+        scoped.cdn_domain = (_domain_for(app, owner, namespace)
+                             if args.cdn_dir and concrete else None)
+    scoped.role_map_file = _scoped_role_map(args.role_map_file, app, owner or "*",
+                                            namespace or "*")
     return scoped
 
 
@@ -587,7 +627,8 @@ def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
         from quickbeam.cdn import bake_domain
         entry = bake_domain(
             qdrant, args.collection, args.cdn_dir, args.cdn_domain,
-            spec={"filter": {"owner": [owner], "namespace": [namespace]}},
+            spec={"filter": {"app": [args.app], "owner": [owner],
+                             "namespace": [namespace]}},
             config_path=args.cdn_config, model=args.embedding_model)
         print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
               f"{args.cdn_dir}/{args.cdn_domain}")
@@ -595,30 +636,69 @@ def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
         print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
 
 
-def _fetch_sources(url: str) -> set:
-    """GET the watch list. Liberal about shape: a bare list or {"sources": [...]},
-    holding either "OWNER:NAMESPACE" strings or {owner, namespace} objects.
+def _wild(value: str | None) -> str | None:
+    """A source side, or None if it is a wildcard. `*`, empty and whitespace all mean
+    "any" — the worker writes `*` for an unpinned side, and an absent key means the same."""
+    text = (value or "").strip()
+    return None if text in ("", "*") else text
+
+
+def _show(source: tuple) -> str:
+    """One source as `app:owner:namespace` for the log, wildcards as `*`."""
+    return ":".join(part or "*" for part in source)
+
+
+def _sort_key(source: tuple) -> tuple:
+    """Order sources for the converge loop's `sorted()`. A wildcard side is None, which
+    cannot be compared against str, so flatten it to "" (which also sorts wildcards first)."""
+    return tuple(part or "" for part in source)
+
+
+def _fetch_sources(url: str, default_app: str | None = None) -> set:
+    """GET the watch list as a set of (app, owner, namespace) triples. Liberal about
+    shape: a bare list or {"sources": [...]}, holding either "APP:OWNER:NAMESPACE"
+    strings (or the older "OWNER:NAMESPACE", which takes `default_app`) or
+    {app, owner, namespace} objects. A `*` or absent owner/namespace is a wildcard.
+
+    The triple is the identity — dedupe on all three. One publisher can hold the same
+    subspace name in two apps, and collapsing those to one key leaves the other app's
+    namespace unwatched.
+
+    An entry naming no app at all, with no --app to fall back on, is DROPPED rather than
+    guessed: reads resolve against the app, so watching the wrong one silently indexes
+    the wrong graph, which is worse than watching nothing.
 
     ponytail: urllib in a thread rather than adding an async HTTP client for one
     poll every --sources-refresh seconds.
+
+    The User-Agent is NOT cosmetic: the registry worker sits behind Cloudflare, whose
+    bot-signature check answers urllib's default `Python-urllib/x.y` with a 403 (error
+    1010) before the worker ever runs. `/watchlist` itself is unauthenticated, so a 403
+    here means the edge blocked us, not that we lack access.
     """
-    with urllib.request.urlopen(url, timeout=30) as resp:
+    req = urllib.request.Request(url, headers={"User-Agent": "quickbeam-watch"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read().decode())
     if isinstance(data, dict):
         data = data.get("sources", [])
     out = set()
     for item in data:
         if isinstance(item, str):
-            owner, sep, namespace = item.partition(":")
-            if not sep:
+            parts = item.split(":")
+            if len(parts) == 3:
+                app, owner, namespace = parts
+            elif len(parts) == 2:
+                app, (owner, namespace) = default_app, parts
+            else:
                 continue
         elif isinstance(item, dict):
-            owner, namespace = item.get("owner", ""), item.get("namespace", "")
+            app = item.get("app") or default_app
+            owner, namespace = item.get("owner"), item.get("namespace")
         else:
             continue
-        owner, namespace = owner.strip(), namespace.strip()
-        if owner and namespace:
-            out.add((owner, namespace))
+        app = _wild(app) or _wild(default_app)
+        if app:
+            out.add((app, _wild(owner), _wild(namespace)))
     return out
 
 
@@ -651,7 +731,8 @@ async def main():
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
 
-    shown = ", ".join(f"{o or '*'}:{n or '*'}" for o, n in sources)
+    shown = ", ".join(f"{args.app or '<default app>'}:{o or '*'}:{n or '*'}"
+                      for o, n in sources)
     print(f"[Watcher] Starting — sources: {shown}")
     print(f"[Watcher] mode: push (fangorn subscribe); reconnect backoff {args.poll_interval}s")
 
@@ -670,29 +751,34 @@ async def main():
 
     checkpoint = _load_checkpoint(args.checkpoint_file)
 
-    # One independent task per source. Each gets its own scoped args and its own role
-    # map (see _source_args); the CDN domain is baked once at task start.
+    # One independent task per source, keyed by the whole (app, owner, namespace) triple.
+    # Each gets its own scoped args — including its own app, so one process serves views
+    # across several apps — and its own role map (see _source_args); the CDN domain is
+    # baked once at task start.
     tasks: dict[tuple, asyncio.Task] = {}
 
-    def start(owner, namespace, pin_domain=False):
-        scoped = _source_args(args, owner, namespace, pin_domain=pin_domain)
+    def start(app, owner, namespace, pin_domain=False):
+        scoped = _source_args(args, app, owner, namespace, pin_domain=pin_domain)
         _bake_initial(scoped, qdrant, owner, namespace)
         return asyncio.create_task(
             _stream_source(scoped, qdrant, embed_engine, [{}], dim, truncate,
                            checkpoint, owner, namespace))
 
-    # Static mode: fixed --source flags, exactly as before.
+    # Static mode: fixed --source flags, all under the one --app.
     if not args.sources_url:
         pin = bool(args.cdn_domain) and len(sources) == 1
         for owner, namespace in sources:
-            tasks[(owner, namespace)] = start(owner, namespace, pin_domain=pin)
+            tasks[(args.app, owner, namespace)] = start(args.app, owner, namespace,
+                                                        pin_domain=pin)
         await asyncio.gather(*tasks.values())
         return
 
-    # Dynamic mode: converge on whatever the registry lists, forever.
+    # Dynamic mode: converge on whatever the registry lists, forever. Each entry names
+    # its own app, so one instance can serve views across several — --app is only the
+    # fallback for an entry that names none.
     while True:
         try:
-            wanted = _fetch_sources(args.sources_url)
+            wanted = _fetch_sources(args.sources_url, args.app)
         except Exception as e:  # noqa: BLE001
             # Keep every running source. A blip at the registry must never look like
             # "everyone unsubscribed" and tear the whole fleet down.
@@ -701,19 +787,19 @@ async def main():
             wanted = None
 
         if wanted is not None:
-            for key in sorted(wanted - set(tasks)):
+            for key in sorted(wanted - set(tasks), key=_sort_key):
                 tasks[key] = start(*key)
-                print(f"[Watcher] + {key[0]}:{key[1]} — now watching {len(tasks)} source(s)")
-            for key in sorted(set(tasks) - wanted):
+                print(f"[Watcher] + {_show(key)} — now watching {len(tasks)} source(s)")
+            for key in sorted(set(tasks) - wanted, key=_sort_key):
                 tasks.pop(key).cancel()
-                print(f"[Watcher] - {key[0]}:{key[1]} — now watching {len(tasks)} source(s)")
+                print(f"[Watcher] - {_show(key)} — now watching {len(tasks)} source(s)")
 
         # Surface a task that died of something _stream_source's own retry loop could
         # not absorb, instead of losing it silently.
         for key, task in list(tasks.items()):
             if task.done() and not task.cancelled():
                 exc = task.exception()
-                print(f"[Watcher] {key[0]}:{key[1]} stopped ({exc!r}) — restarting",
+                print(f"[Watcher] {_show(key)} stopped ({exc!r}) — restarting",
                       file=sys.stderr)
                 tasks[key] = start(*key)
 
