@@ -1220,8 +1220,10 @@ def _serve_args():
 
 
 def build_app(cdn_dir: str, cors: bool = False):
-    from fastapi import FastAPI, HTTPException
-    from fastapi.responses import FileResponse, JSONResponse
+    import asyncio
+
+    from fastapi import FastAPI, HTTPException, Query, Request
+    from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
     cdn_dir = os.path.abspath(cdn_dir)
     app = FastAPI(title="Fangorn Semantic CDN")
@@ -1255,6 +1257,94 @@ def build_app(cdn_dir: str, cors: bool = False):
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail="no catalog — run `cdn bake`")
         return FileResponse(path, media_type="application/json", headers=_NO_CACHE)
+
+    # ── Change notifications ────────────────────────────────────────────────
+    # Events are NOTIFICATIONS, never payloads: they name the domain (and, for a
+    # commit, the shard files it produced) and the client pulls those over the normal
+    # cacheable, content-hashed shard route. That split is why a reconnect costs
+    # nothing — no state to resume, and a re-sent event re-fetches nothing, because a
+    # shard filename embeds a hash of its bytes.
+    #
+    # The watcher writes shards from a DIFFERENT container (shared /data volume), so
+    # there is no in-process signal to hook. This polls each watched manifest instead
+    # and diffs its shard list.
+    # ponytail: mtime-gated polling, not inotify — one small stat per domain per
+    # connection per tick, against a handful of domains and a handful of clients.
+    # Reach for watchfiles only if that ever shows up in a profile.
+    _POLL_SECONDS = 2.0
+    _PING_SECONDS = 15.0
+
+    def _shard_files(name: str) -> list | None:
+        """Shard filenames a domain's manifest lists, or None if it is not baked yet
+        (or is mid-rewrite — the watcher rewrites the manifest non-atomically, and a
+        torn read must read as 'nothing new', never as 'the domain vanished')."""
+        try:
+            with open(_safe(name, "manifest.json")) as f:
+                return [s["file"] for s in json.load(f).get("shards", [])]
+        except (FileNotFoundError, json.JSONDecodeError, KeyError):
+            return None
+
+    def _sse(event: str, payload: dict) -> str:
+        # json.dumps stays on one line, which the wire format requires: a client
+        # concatenates `data:` lines, so an embedded newline would split one event.
+        return f"event: {event}\ndata: {json.dumps(payload)}\n\n"
+
+    @app.get("/events")
+    async def events(request: Request, domain: list[str] = Query(default=[])):
+        """SSE feed naming which domain changed. `?domain=` is repeatable; with none
+        given it follows every domain present, matching /catalog's unscoped view (the
+        registry worker injects a view's domains, and scoping is its job, not ours).
+
+        Emits `snapshot` per already-baked domain on connect, `added` when a domain
+        gets its first bake, and `change` carrying the new shard files after that.
+        """
+        watched = list(domain) or sorted(
+            d for d in (os.listdir(cdn_dir) if os.path.isdir(cdn_dir) else [])
+            if os.path.exists(os.path.join(cdn_dir, d, "manifest.json")))
+        for name in watched:
+            _safe(name)  # reject traversal before it reaches the poll loop
+
+        async def stream():
+            # None means "not baked yet", which is what separates `added` from `change`.
+            known: dict = {name: _shard_files(name) for name in watched}
+            for name, files in known.items():
+                if files is not None:
+                    yield _sse("snapshot", {"domain": name})
+            last_sent = time.time()
+
+            while not await request.is_disconnected():
+                await asyncio.sleep(_POLL_SECONDS)
+                sent = False
+                for name in watched:
+                    files = _shard_files(name)
+                    if files is None:
+                        continue
+                    if known[name] is None:
+                        known[name] = files
+                        yield _sse("added", {"domain": name})
+                        sent = True
+                        continue
+                    fresh = [f for f in files if f not in set(known[name])]
+                    if fresh:
+                        known[name] = files
+                        yield _sse("change", {"domain": name, "added": fresh})
+                        sent = True
+                if sent:
+                    last_sent = time.time()
+                elif time.time() - last_sent > _PING_SECONDS:
+                    # A comment line: parses to no data, so clients drop it. Its only
+                    # job is keeping the connection off an idle-proxy timeout.
+                    yield ": ping\n\n"
+                    last_sent = time.time()
+
+        return StreamingResponse(stream(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            # Tell any buffering reverse proxy to pass chunks straight through;
+            # buffered SSE arrives in one lump when the connection closes, which
+            # looks exactly like "the stream never fires".
+            "X-Accel-Buffering": "no",
+        })
 
     @app.get("/domains/{name}/manifest")
     def manifest(name: str):

@@ -173,31 +173,89 @@ that file exists and ignores every environment variable above.
 
 ---
 
-## 2. The instance
+## 2. Build the image
+
+All four Quickbeam services are the **same image** with different commands, so it builds
+once and is tagged `${IMAGE}` (default `quickbeam:local`). The build installs the CPU
+ONNX stack and the Node CLI and bakes the embedding model in (`Dockerfile` — left to run
+time it re-downloads on every container start), so expect several minutes and a ~2.5GB
+image (measured 2026-08-13).
+
+```sh
+docker compose build          # tags quickbeam:local
+```
+
+**Build here, not on the box.** E2 shared-core types are burstable and small; installing
+the ONNX stack on one is slow at best and OOMs at worst, and it burns the same burst
+credits the watcher needs to seed. Push a built image instead — which is also why the box
+never needs the source.
+
+### Push it to Artifact Registry
+
+```sh
+PROJECT=$(gcloud config get-value project)
+REGION=us-east4
+IMG=$REGION-docker.pkg.dev/$PROJECT/quickbeam/quickbeam:latest
+
+# One-time, per project.
+gcloud artifacts repositories create quickbeam \
+  --repository-format=docker --location=$REGION
+gcloud auth configure-docker $REGION-docker.pkg.dev
+
+docker build -t $IMG . && docker push $IMG
+```
+
+`IMAGE` in `.env` is what points the compose stack at that tag; it defaults to a local
+build, so leaving it unset keeps step 1 working unchanged.
+
+`:latest` keeps the deploy a one-liner, at the cost of not being able to tell which build
+a box is running — `docker compose pull` will not say whether the tag moved. If that
+matters, tag `:$(git rev-parse --short HEAD)` as well and put that in the box's `.env`;
+rollback is then the previous tag instead of a rebuild.
+
+---
+
+## 3. The instance
 
 ```sh
 gcloud compute instances create quickbeam-1 \
-  --machine-type=e2-small \
+  --machine-type=e2-medium \
   --boot-disk-size=20GB --boot-disk-type=pd-balanced \
-  --zone=us-east4-a \
+  --zone=$REGION-a \
   --image-family=debian-12 --image-project=debian-cloud \
-  --tags=quickbeam
-
-gcloud compute ssh quickbeam-1 --zone=us-east4-a
-
-# on the box
-sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 git
-sudo usermod -aG docker $USER   # then log out and back in, or prefix docker with sudo
-git clone <this repo> && cd fangorn/quickbeam
-cp .env.example .env      # SOURCES_URL → the deployed worker; APP; QDRANT_API_KEY
-docker compose up -d --build
+  --tags=quickbeam --scopes=cloud-platform
 ```
 
-The first build installs the CPU ONNX stack and the Node CLI, and bakes the embedding
-model into the image (`Dockerfile`, so it is not re-downloaded on every container
-start), so expect several minutes and a ~2.5GB image (measured 2026-08-13). `docker compose ps` should show `qdrant`,
-`watch`, `cdn`, `serve` and `mcp` up, with `cdn` restarting until the watcher bakes the
-first domain (see the gotchas).
+`--scopes=cloud-platform` is what lets the VM's default service account pull from
+Artifact Registry; without it the pull 403s and nothing else on the box explains why.
+
+Install Docker once:
+
+```sh
+gcloud compute ssh quickbeam-1 --zone=$REGION-a --command='
+  sudo apt-get update && sudo apt-get install -y docker.io docker-compose-v2 &&
+  sudo usermod -aG docker $USER &&
+  gcloud auth configure-docker '$REGION'-docker.pkg.dev --quiet'
+```
+
+### Ship it
+
+**The box never gets the source — only two files.** The image is already built, so a
+clone there would be dead weight that also invites an accidental `--build` on a machine
+that cannot afford one:
+
+```sh
+gcloud compute scp docker-compose.yml .env quickbeam-1:~/ --zone=$REGION-a
+gcloud compute ssh quickbeam-1 --zone=$REGION-a --command='docker compose pull && docker compose up -d'
+```
+
+The `.env` you copy **must** contain `IMAGE=$IMG`. Without it the compose file falls back
+to `quickbeam:local`, which does not exist on the box, and `docker compose up` tries to
+build from a directory holding no Dockerfile. That is the one failure mode of this flow,
+and its error message points at the build, not at the missing variable.
+
+`docker compose ps` should then show `qdrant`, `watch`, `cdn`, `serve` and `mcp` up, with
+`cdn` restarting until the watcher bakes the first domain (see the gotchas).
 
 **Open the two ports to the worker:**
 
@@ -232,14 +290,22 @@ There is no `MCP_URL`: a user's MCP is their own `quickbeam mcp` client pointed 
 stack back as long as the daemon starts: `sudo systemctl enable docker`. Nothing else is
 needed — no unit file, no cron.
 
-**Redeploying a code change** is `git pull && docker compose up -d --build`. Compose
-recreates only the services whose image changed; the `qdrant` and `data` volumes are
-untouched, so the collection and the baked shards survive.
+**Redeploying a code change** is the same three commands, and only `docker-compose.yml`
+needs re-copying if it changed:
 
-**Machine type.** Start on `e2-small` (2GB). If a seed OOMs, stop the instance, change
-the type to `e2-medium` (4GB) and start it again — the disk survives, so it costs a
-minute. `e2-micro` (1GB, free tier) is too small: the ONNX model plus one Node
-subscribe process per source will not fit.
+```sh
+docker build -t $IMG . && docker push $IMG
+gcloud compute scp docker-compose.yml quickbeam-1:~/ --zone=$REGION-a   # if it changed
+gcloud compute ssh quickbeam-1 --zone=$REGION-a --command='docker compose pull && docker compose up -d'
+```
+
+Compose recreates only the services whose image actually changed, and the `qdrant` and
+`data` volumes are untouched, so the collection and the baked shards survive.
+
+**Machine type.** `e2-medium` (4GB) is the working default above. `e2-small` (2GB) runs
+but leaves little headroom — if a seed OOMs there, stop the instance, change the type and
+start it again; the disk survives, so it costs a minute. `e2-micro` (1GB, free tier) is
+too small: the ONNX model plus one Node subscribe process per source will not fit.
 
 **Do big backfills elsewhere.** E2 shared-core types are burstable (`e2-small`
 baselines at 0.5 vCPU) and a full seed embed is a sustained burn that exhausts burst
@@ -251,7 +317,7 @@ Measure its RSS before promising a namespace count.
 
 ---
 
-## 3. Adding and removing views
+## 4. Adding and removing views
 
 **Adding** is a user action: sign in at fangorn.network with an active storage
 subscription, name a view and give it a publisher + namespace, and press Create. The

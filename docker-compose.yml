@@ -27,6 +27,7 @@ services:
   # Also bakes each namespace's initial CDN domain, which creates /data/cdn.
   watch:
     build: .
+    image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
     depends_on: [qdrant]
     environment:
@@ -58,6 +59,7 @@ services:
   # created /data/cdn; the restart policy covers that first-run window.
   cdn:
     build: .
+    image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
     depends_on: [watch]
     volumes:
@@ -70,6 +72,7 @@ services:
   # proxies to it so browsers get HTTPS.
   serve:
     build: .
+    image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
     depends_on: [qdrant]
     ports:
@@ -86,6 +89,7 @@ services:
   # over HTTP and needs no shared volume and no Qdrant.
   mcp:
     build: .
+    image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
     depends_on: [cdn]
     ports:

@@ -201,10 +201,11 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
                 "fromType": cid_to_tag.get(e["sourceCid"]), "toType": cid_to_tag.get(e["targetCid"]),
             })
 
-    src_ck["vertex_cids"] = list(curr_ids)
-    _save_checkpoint(checkpoint, args.checkpoint_file)
-
     if not new_records:
+        # Nothing to upload, so recording the projected set now risks nothing — and this
+        # is the path that has to persist the tombstones applied just above.
+        src_ck["vertex_cids"] = list(curr_ids)
+        _save_checkpoint(checkpoint, args.checkpoint_file)
         return 0
 
     # Infer the role map from the first real batch if none is loaded yet, OR if
@@ -223,6 +224,15 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
     print(f"[Watcher] {key}: {len(new_records)} new record(s)")
     await _embed_and_upload(args, qdrant, embed_engine, new_records, role_map_ref[0],
                             dim, truncate, checkpoint)
+
+    # ONLY after the upload lands. `vertex_cids` is what makes the NEXT diff treat these
+    # records as already held, so persisting it before the upload turns any transient
+    # Qdrant failure into permanent loss: the records are marked present, `new_records`
+    # comes back empty forever, and the CDN domain bakes zero shards while the seed log
+    # cheerfully reports "no new records". That is not hypothetical — a full disk did
+    # exactly this in production. Point ids are deterministic (_str_to_uuid), so
+    # re-running an upload that partly succeeded just re-upserts the same points.
+    src_ck["vertex_cids"] = list(curr_ids)
     _save_checkpoint(checkpoint, args.checkpoint_file)
     return len(new_records)
 
@@ -362,7 +372,6 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
         print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
               f"stream, will retry seed on reconnect", file=sys.stderr)
         return
-    snapshot["seeded"].add((owner, namespace))
 
     state = _ns_state(snapshot, (owner, namespace))
     state["vertices"] = {v["cid"]: v for v in contents.get("vertices", [])}
@@ -375,6 +384,11 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
         checkpoint, owner, namespace, contents,
         edges_sink=seed_edges, tombstones_sink=seed_tombstones,
     )
+    # Marked seeded only once the ingest actually landed. If _ingest_contents raised
+    # (a Qdrant outage mid-upload), leaving this unset is what lets the next reconnect
+    # retry the seed instead of reporting "reusing snapshot" over an empty collection.
+    # `tried` in _stream_source_once bounds that to one attempt per pair per connection.
+    snapshot["seeded"].add((owner, namespace))
     print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
     # Scope the append to THIS source. One collection holds every watched namespace, so
     # an unfiltered append sweeps every other source's points into this domain.
