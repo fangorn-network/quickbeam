@@ -1,0 +1,38 @@
+{
+  "domains": {
+    "audius": {
+      "description": "Audius — the platform's trending catalog and one artist's own sovereign graph, published by two independent wallets and fused by a linkset.",
+      "filter": {},
+      "bundle_schema": "./examples/audius/audius-build/audius.bundle.json",
+      "role_map": {
+        "title": "title",
+        "subtitle": "artist",
+        "temporal": "releaseDate",
+        "spatial": null,
+        "media": null,
+        "tags": ["genre", "mood", "tags"],
+        "measures": ["playCount", "favoriteCount", "repostCount", "duration", "followerCount"],
+        "relations": [
+          "created", "released", "curated", "contains",
+          "follows", "relatedTo", "supports", "reposted", "favorited",
+          "remixOf", "hasStem", "inGenre", "hasMood", "taggedWith", "worksIn",
+          "sameAs"
+        ],
+        "text": ["text"],
+        "labels": {},
+        "fields": []
+      },
+      "presentation": {
+        "accent": "#7e1bcc",
+        "types": {
+          "Artist":   { "singular": "Artist",   "plural": "Artists",   "accent": "#7e1bcc", "definition": "A creator publishing on Audius." },
+          "Track":    { "singular": "Track",    "plural": "Tracks",    "accent": "#00d1c1", "definition": "A single piece of music." },
+          "Playlist": { "singular": "Playlist", "plural": "Playlists", "accent": "#f2b705", "definition": "A curated set of tracks (an album when the artist released it as one)." },
+          "Genre":    { "singular": "Genre",    "plural": "Genres",    "accent": "#4aa3ff", "definition": "A musical genre." },
+          "Mood":     { "singular": "Mood",     "plural": "Moods",     "accent": "#e0567a", "definition": "The mood an artist assigned to a track." },
+          "Tag":      { "singular": "Tag",      "plural": "Tags",      "accent": "#8a8f98", "definition": "A free-form tag applied by the artist." }
+        }
+      }
+    }
+  }
+}

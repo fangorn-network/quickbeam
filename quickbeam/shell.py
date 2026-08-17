@@ -1,7 +1,7 @@
 """Precompute the UI-shell summaries that the browser currently derives by
 scanning every record.
 
-`audius-demo`'s Graph computes three things over the whole corpus:
+`examples/audius/audius-demo`'s Graph computes three things over the whole corpus:
   buildStats        (graph.ts:248) — the publisher ledger, linkset and convergence
   onboardingOptions (graph.ts:497) — the first-screen genre/artist picker
   sample            (graph.ts:763) — the Home rows, twice per visit to Home

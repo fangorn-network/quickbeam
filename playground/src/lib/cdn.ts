@@ -2,7 +2,7 @@
 // Qdrant, we download the gzipped NDJSON shards that `quickbeam cdn bake` produces
 // and `quickbeam cdn serve` serves (proxied at /cdn), and rank them in-browser by
 // cosine against the query vector. Document vectors are *served* (precomputed by the
-// pipeline); the browser only embeds the query. This mirrors examples/src/lib/shards.ts,
+// pipeline); the browser only embeds the query. This mirrors examples/places/src/lib/shards.ts,
 // pared down to just what search needs.
 import { embedQuery } from './embed';
 import type { SearchHit } from './types';

@@ -340,7 +340,7 @@ def main():
     env = (f'VITE_DATA_SOURCE=shards VITE_CDN_URL=http://localhost:8090 VITE_DOMAIN={domain} '
            f'VITE_COMMUNITY_NAME="{comm_name}" VITE_COMMUNITY_REGION="{region}" '
            f'VITE_COMMUNITY_REGION_ABBR="{region_abbr}" VITE_COMMUNITY_SLUG="{slug}"')
-    print(c(f"  cd examples && {env} npm run dev", "36"))
+    print(c(f"  cd examples/places && {env} npm run dev", "36"))
     print("\nThen open the URL it prints (http://localhost:5173, or 5174 if taken).")
 
 

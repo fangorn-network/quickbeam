@@ -9,7 +9,7 @@
 #
 # WHY IT GLOBS. The wheels do not agree on a directory name — cuDNN lands in
 # nvidia/cudnn/lib but cuBLAS lands in nvidia/cu13/lib (the CUDA-13 wheels bundle
-# several libraries under one `cu13` directory). audius-build/rebuild.sh hardcoded
+# several libraries under one `cu13` directory). examples/audius/audius-build/rebuild.sh hardcoded
 # nvidia/cublas/lib, which has never existed for this wheel set. Globbing every
 # nvidia/*/lib survives the next repackaging too.
 #

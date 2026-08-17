@@ -195,7 +195,7 @@ class _Dataset:
 
     def index_edges(self) -> None:
         """Build the two adjacency maps from self.edges. Same structure the browser
-        client uses (audius-demo/src/lib/graph.ts) — whole edge objects under both
+        client uses (examples/audius/audius-demo/src/lib/graph.ts) — whole edge objects under both
         endpoints, so expansion is O(degree) instead of O(|E|)."""
         self.out_adj, self.in_adj = {}, {}
         for e in self.edges or ():

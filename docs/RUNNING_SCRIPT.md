@@ -27,7 +27,7 @@ alternative, and more — see
 | Qdrant running | vector store | `docker run -d -p 6333:6333 -p 6334:6334 --name qdrant-core qdrant/qdrant` |
 | Postgres running | raw cache for `placespg`/`eventspg` | see [Postgres setup](#postgres-setup) below |
 | `GOOGLE_PLACES_API_KEY` | only if scraping places | `export GOOGLE_PLACES_API_KEY=AIza...` (Places API **new** + billing on) |
-| Node 18+ | only for the demo UI | already in `examples/` |
+| Node 18+ | only for the demo UI | already in `examples/places/` |
 | Internet | geocoding via OSM Nominatim (free) | falls back to manual `lat,lng` entry if offline |
 
 The script checks `quickbeam`, Qdrant, the API key, and `PLACES_PG_DSN` in a
@@ -144,7 +144,7 @@ Dry run — a real run would make 150 billable Place Details call(s) ...
 
 Launch the demo (two terminals):
   quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
-  cd examples && VITE_DATA_SOURCE=shards ... npm run dev
+  cd examples/places && VITE_DATA_SOURCE=shards ... npm run dev
 ```
 
 ---
@@ -159,7 +159,7 @@ itself). In two terminals:
 quickbeam cdn serve --cdn-dir ./cdn --port 8090 --cors
 
 # Terminal 2 — run the app, pre-filled with the place's community labels
-cd examples && VITE_DATA_SOURCE=shards VITE_CDN_URL=http://localhost:8090 \
+cd examples/places && VITE_DATA_SOURCE=shards VITE_CDN_URL=http://localhost:8090 \
   VITE_DOMAIN=places VITE_COMMUNITY_NAME="Asheville" VITE_COMMUNITY_REGION="North Carolina" \
   VITE_COMMUNITY_REGION_ABBR="NC" VITE_COMMUNITY_SLUG="asheville" npm run dev
 ```
@@ -214,8 +214,8 @@ re-bake, just **reload** the browser — `cdn serve` reads the new shard from di
 - **Demo chrome vs. data:** `VITE_COMMUNITY_*` overrides only the name/region
   labels. The "vibe" quick-searches and microcopy come from `VITE_LOCALE`
   (default `en-eagle-river`), and the browser tab title is hard-coded in
-  `examples/index.html`. For a fully localized voice, author a locale profile in
-  `examples/src/lib/i18n/` and pass `VITE_LOCALE=<id>`.
+  `examples/places/index.html`. For a fully localized voice, author a locale profile in
+  `examples/places/src/lib/i18n/` and pass `VITE_LOCALE=<id>`.
 - **Re-running is safe:** every step upserts by id (`place_id` / `event_key`), and
   only the Places scrape touches the paid API — downstream stages reprocess the
   local cache for free.
