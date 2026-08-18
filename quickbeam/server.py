@@ -76,6 +76,11 @@ def parse_args():
                         help="Namespace to reingest, as OWNER:NAMESPACE. Repeatable. Read "
                              "off-chain via `fangorn read`, projected, and embedded on "
                              "startup (if the collection is empty) and on POST /reingest.")
+    parser.add_argument("--app", default=None,
+                        help="App (global namespace) the --source pairs live in, as a name "
+                             "or a 32-byte id. Written to meta.app and used for the chain "
+                             "read, same as `quickbeam watch --app`. Without it these points "
+                             "carry no app and no app-scoped query can reach them.")
     parser.add_argument("--fangorn-bin", default="fangorn",
                         help="The `fangorn` CLI invocation (shell-split, so a full command works).")
     # Projection knobs — how graph roots become documents (mirror `quickbeam build`).
@@ -552,7 +557,8 @@ def _build_text_index_sync() -> list[dict]:
             "id":       str(pt_id),
             "owner":    owner,
             # Carried so a shared collection's lexical search can be scoped to one
-            # namespace, the same way the vector routes filter on meta.namespace.
+            # namespace, the same way the vector routes filter on meta.app/namespace.
+            "app":       (payload.get("meta") or {}).get("app"),
             "namespace": (payload.get("meta") or {}).get("namespace"),
             "fields":   fields,
             "_sub_l":   subtitle.lower(),
@@ -595,24 +601,25 @@ def _ensure_text_index() -> list[dict]:
                 _text_index = _build_text_index_sync()
     return _text_index
 
-def _search_text_sync(q: str, limit: int, owner: str | None,
+def _search_text_sync(q: str, limit: int, app: str | None = None,
+                      owner: str | None = None,
                       namespace: str | None = None,
                       scope: list[str] | None = None) -> list[dict]:
     index  = _ensure_text_index()
     q_l    = q.strip().lower()
     tokens = [tok for tok in q_l.split() if tok]
     recs   = index
-    pairs  = _parse_scope(scope)
-    if pairs:
-        # Mirrors _scope_filter: pairs OR together, each pair's halves AND.
-        recs = [r for r in recs
-                if any((not o or r.get("owner") == o) and (not n or r.get("namespace") == n)
-                       for o, n in pairs)]
-    else:
-        if owner:
-            recs = [r for r in recs if r.get("owner") == owner]
-        if namespace:
-            recs = [r for r in recs if r.get("namespace") == namespace]
+
+    def _keep(r, a, o, n):
+        return ((not a or r.get("app") == a) and (not o or r.get("owner") == o)
+                and (not n or r.get("namespace") == n))
+
+    triples = _parse_scope(scope)
+    if triples:
+        # Mirrors _scope_filter: triples OR together, each triple's parts AND.
+        recs = [r for r in recs if any(_keep(r, a, o, n) for a, o, n in triples)]
+    elif app or owner or namespace:
+        recs = [r for r in recs if _keep(r, app, owner, namespace)]
     scored = [(s, r) for r in recs if (s := _score_rec(r, q_l, tokens)) > 0]
     scored.sort(key=lambda x: (-x[0], x[1]["_sort"]))
     return [{"id": r["id"], "fields": r["fields"], "owner": r.get("owner")}
@@ -680,13 +687,15 @@ class EmbedRequest(BaseModel):
 class VectorSearchRequest(BaseModel):
     embedding: list[float]
     n_results: int        = 20
+    app:       str | None = None
     owner:     str | None = None
     namespace: str | None = None
-    scope:     list[str] | None = None   # ["OWNER:NAMESPACE", …] — ORed
+    scope:     list[str] | None = None   # ["APP:OWNER:NAMESPACE", …] — ORed
 
 class TextSearchRequest(BaseModel):
     q:     str
     limit: int        = 60
+    app:   str | None = None
     owner: str | None = None
     namespace: str | None = None
     scope: list[str] | None = None
@@ -831,7 +840,8 @@ async def ingest():
         key = f"{owner}:{namespace}"
         try:
             contents = await loop.run_in_executor(
-                None, read_source, cfg.fangorn_bin, owner, namespace)
+                None, read_source, cfg.fangorn_bin, owner, namespace,
+                getattr(cfg, "app", None))
         except Exception as e:  # noqa: BLE001 — a bad source must not abort the others
             print(f"  [{key}] read failed: {e}")
             continue
@@ -1105,8 +1115,10 @@ app.add_middleware(
 # ROUTES
 # ---------------------------------------------------------------------------
 
-def _pair_conditions(owner: str | None, namespace: str | None) -> list:
+def _pair_conditions(app: str | None, owner: str | None, namespace: str | None) -> list:
     out = []
+    if app:
+        out.append(qmodels.FieldCondition(key="meta.app", match=qmodels.MatchValue(value=app)))
     if owner:
         out.append(qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner)))
     if namespace:
@@ -1115,37 +1127,44 @@ def _pair_conditions(owner: str | None, namespace: str | None) -> list:
     return out
 
 
-def _parse_scope(scope: list[str] | None) -> list[tuple[str | None, str | None]]:
-    """`scope=OWNER:NAMESPACE`, repeatable. Either side may be empty (`:ns`, `0xA:`)
-    to leave that half unconstrained."""
-    pairs = []
+def _parse_scope(scope: list[str] | None) -> list[tuple[str | None, str | None, str | None]]:
+    """`scope=APP:OWNER:NAMESPACE`, repeatable. Any part may be empty (`app::`,
+    `:0xA:ns`) to leave it unconstrained — that is how the registry worker expresses a
+    `*` source. A namespace IS the app:publisher:subspace triple (see watcher.py), so
+    scoping on the last two alone mixes two apps that share a subspace name.
+
+    Two-part `OWNER:NAMESPACE` is still accepted: the shape callers used before apps
+    existed, and what `--source` still speaks.
+    """
+    triples = []
     for item in scope or []:
-        owner, sep, namespace = (item or "").partition(":")
-        if not sep:
+        parts = [p.strip() for p in (item or "").split(":")]
+        if len(parts) == 2:
+            parts = ["", *parts]
+        if len(parts) != 3 or not any(parts):
             continue
-        owner, namespace = owner.strip(), namespace.strip()
-        if owner or namespace:
-            pairs.append((owner or None, namespace or None))
-    return pairs
+        triples.append(tuple(p or None for p in parts))
+    return triples
 
 
-def _scope_filter(owner: str | None, namespace: str | None, scope: list[str] | None = None):
-    """Restrict a query to one or more (publisher, namespace) pairs; None = no filter.
+def _scope_filter(app: str | None, owner: str | None, namespace: str | None,
+                  scope: list[str] | None = None):
+    """Restrict a query to one or more (app, publisher, namespace) triples; None = no filter.
 
     One collection holds every watched namespace (the shared-instance deployment) and
     embeddings are NOT duplicated per requester — points carry `owner` at the payload
-    top level and `meta.namespace` nested, so a caller's slice of the corpus is a
-    filter rather than a collection of its own.
+    top level and `meta.app`/`meta.namespace` nested, so a caller's slice of the corpus
+    is a filter rather than a collection of its own.
 
-    Several pairs OR together (`should`), each pair AND-ing its own halves (`must`),
+    Several triples OR together (`should`), each AND-ing its own parts (`must`),
     which is what lets one endpoint span several namespaces.
     """
-    pairs = _parse_scope(scope)
-    if pairs:
+    triples = _parse_scope(scope)
+    if triples:
         return qmodels.Filter(should=[
-            qmodels.Filter(must=_pair_conditions(o, n)) for o, n in pairs
+            qmodels.Filter(must=_pair_conditions(a, o, n)) for a, o, n in triples
         ])
-    must = _pair_conditions(owner, namespace)
+    must = _pair_conditions(app, owner, namespace)
     return qmodels.Filter(must=must) if must else None
 
 
@@ -1170,6 +1189,7 @@ async def browse(limit: int = Query(20), offset: int = Query(0)):
 async def search(
     q:         str        = Query(...),
     n_results: int        = Query(10),
+    app:       str | None = Query(None),
     owner:     str | None = Query(None),
     namespace: str | None = Query(None),
     scope:     list[str] | None = Query(None),
@@ -1180,7 +1200,7 @@ async def search(
     vectors = await loop.run_in_executor(None, lambda: _embed_texts([q], prefix="search_query"))
     query_vec = vectors[0]
 
-    query_filter = _scope_filter(owner, namespace, scope)
+    query_filter = _scope_filter(app, owner, namespace, scope)
 
     resp = await loop.run_in_executor(
         None,
@@ -1345,7 +1365,7 @@ async def bucket(
 @app.post("/search/vector")
 async def search_vector(body: VectorSearchRequest):
     loop         = asyncio.get_event_loop()
-    query_filter = _scope_filter(body.owner, body.namespace, body.scope)
+    query_filter = _scope_filter(body.app, body.owner, body.namespace, body.scope)
     resp = await loop.run_in_executor(
         None,
         lambda: qdrant_client.query_points(
@@ -1363,7 +1383,7 @@ async def search_vector(body: VectorSearchRequest):
 async def search_text(body: TextSearchRequest):
     loop    = asyncio.get_event_loop()
     results = await loop.run_in_executor(None, _search_text_sync, body.q, body.limit,
-                                         body.owner, body.namespace, body.scope)
+                                         body.app, body.owner, body.namespace, body.scope)
     results = await loop.run_in_executor(None, _attach_embeddings, results)
     return {"results": results}
 
@@ -1475,17 +1495,24 @@ async def bundle_import(request: Request):
 async def bundle_export(
     limit:  int        = Query(default=0,    description="Max points to export. 0 = all."),
     offset: int        = Query(default=0,    description="Skip this many points (for pagination)."),
-    owner:  str | None = Query(default=None, description="Filter by owner address."),
+    app:       str | None = Query(default=None, description="Filter by app (id or name as stored)."),
+    owner:     str | None = Query(default=None, description="Filter by owner address."),
+    namespace: str | None = Query(default=None, description="Filter by namespace."),
+    scope:  list[str] | None = Query(default=None,
+                                     description="APP:OWNER:NAMESPACE, repeatable, ORed."),
 ):
     """
     Stream pre-embedded points as newline-delimited JSON (NDJSON).
     Each line is one point in BundlePoint format — no buffering.
     Pipe directly into /bundle/upsert via the companion import script,
     or collect with: curl ... | jq -s '{"points": .}' | curl -X POST .../bundle/upsert
+
+    Scoped exactly like /search — one shared collection holds every watched namespace,
+    so an export with no filter is the WHOLE instance. The registry worker proxies
+    /q/{view}/export here with the view's `scope` injected; a route that understood
+    only `owner` ignored it and handed every view the same full dump.
     """
-    query_filter = qmodels.Filter(
-        must=[qmodels.FieldCondition(key="owner", match=qmodels.MatchValue(value=owner))]
-    ) if owner else None
+    query_filter = _scope_filter(app, owner, namespace, scope)
 
     def _stream():
         cursor    = None

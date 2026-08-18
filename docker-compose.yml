@@ -7,9 +7,10 @@
 # worker) and starts or cancels a stream per namespace with no restart, so adding a
 # customer is a row in the worker's KV — see DOCKER-README.md.
 #
-# Everything embeds into one Qdrant collection; each point carries `owner` and
-# `meta.namespace`, so `serve` scopes results with ?owner=&namespace= and each
-# namespace still gets its own CDN domain.
+# Everything embeds into one Qdrant collection; each point carries `owner`,
+# `meta.app` and `meta.namespace`, so `serve` scopes results (search AND export) with
+# ?scope=APP:OWNER:NAMESPACE — repeatable, ORed — and each namespace still gets its
+# own CDN domain.
 
 services:
   qdrant:
