@@ -245,18 +245,34 @@ def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespa
     """Mirror an ingested change into the delivered CDN domain: append the new points
     as a delta shard, ride removals on the manifest's tombstone list, and merge new
     edges into the served graph. Each step is isolated — a delivery failure never
-    kills the watch stream."""
-    if not (args.cdn_dir and args.cdn_domain):
+    kills the watch stream.
+
+    A WILDCARD source has no domain at task start — its (owner, namespace) pairs are
+    only learned as commits arrive — so the domain is derived here, from the pair this
+    change is for, and baked on first sight. Without this an app-level watch embeds
+    into Qdrant perfectly and ships nothing: `/cdn/catalog` stays `domains: []` for
+    ever, which is invisible unless you happen to be reading the served catalog rather
+    than /search.
+    """
+    domain = args.cdn_domain
+    baked_now = False
+    if args.cdn_dir and not domain and owner and namespace:
+        domain = _domain_for(app or args.app, owner, namespace)
+        baked_now = _bake_initial(args, qdrant, owner, namespace, domain=domain, app=app)
+    if not (args.cdn_dir and domain):
         return
 
-    if total_new:
+    # The bake above is a full snapshot taken AFTER this change was upserted, so it
+    # already contains these points — appending them again would ship every row twice
+    # in the first delta.
+    if total_new and not baked_now:
         try:
             from quickbeam.cdn import append_domain
             # Scope the scan to this source. One collection can hold several watched
             # namespaces, and an unfiltered append would pull every other namespace's
             # points into this domain.
             append_domain(qdrant, args.collection, args.cdn_dir,
-                          args.cdn_domain, config_path=args.cdn_config,
+                          domain, config_path=args.cdn_config,
                           owners=[owner] if owner else None,
                           namespaces=[namespace] if namespace else None,
                           apps=[app] if app else None)
@@ -275,14 +291,14 @@ def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespa
             alive = {str(pt.id) for pt in found}
             dead = [t for u, t in by_uuid.items() if u not in alive]
             if dead:
-                append_tombstones(args.cdn_dir, args.cdn_domain, dead)
+                append_tombstones(args.cdn_dir, domain, dead)
         except Exception as e:  # noqa: BLE001
             print(f"[Watcher] CDN tombstone error: {e}", file=sys.stderr)
 
     if edges:
         try:
             from quickbeam.cdn import append_edges
-            added = append_edges(args.cdn_dir, args.cdn_domain, edges)
+            added = append_edges(args.cdn_dir, domain, edges)
             if added:
                 print(f"[Watcher] CDN edges: +{added['added']} new "
                       f"({added['count']} total; relations={added['relations']})")
@@ -609,10 +625,10 @@ def _source_args(args, app: str, owner: str | None, namespace: str | None,
     scoped = copy.copy(args)
     scoped.app = app
     if not pin_domain:
-        # ponytail: a wildcard source gets no live CDN delivery. Its pairs are only
-        # learned as commits arrive, so there is no single domain to bake at task
-        # start — and _deliver_cdn ships to one fixed domain per task. Give the
-        # delivery path a per-change domain if wildcard sources ever need shards.
+        # A wildcard source has no domain HERE — its pairs are only learned as commits
+        # arrive, so there is nothing to name at task start. None is the signal, not a
+        # disabling: _deliver_cdn derives the domain per change and bakes it on first
+        # sight, so an app-level watch ships shards like any other.
         concrete = owner is not None and namespace is not None
         scoped.cdn_domain = (_domain_for(app, owner, namespace)
                              if args.cdn_dir and concrete else None)
@@ -621,7 +637,8 @@ def _source_args(args, app: str, owner: str | None, namespace: str | None,
     return scoped
 
 
-def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
+def _bake_initial(args, qdrant, owner: str, namespace: str,
+                  domain: str | None = None, app: str | None = None) -> bool:
     """Bootstrap live CDN delivery for one source. append_domain can only EXTEND an
     already-baked domain, so bake once here to give it a base manifest; `cdn serve`
     then works immediately with no manual `cdn bake`.
@@ -629,25 +646,34 @@ def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
     The spec is forced to this source rather than resolved from domains.json: the
     collection may hold other namespaces, and a bake-everything spec would pull them
     into this domain.
+
+    `domain`/`app` override the scoped args, for the wildcard case: there the pair is
+    only known per change, so _deliver_cdn derives the domain and bakes it on first
+    sight. Returns True only when this call did the bake — the caller must not then
+    append the same points as a delta on top of a snapshot that already holds them.
     """
-    if not (args.cdn_dir and args.cdn_domain):
-        return
-    manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
+    domain = domain or args.cdn_domain
+    app = app or args.app
+    if not (args.cdn_dir and domain):
+        return False
+    manifest_path = os.path.join(args.cdn_dir, domain, "manifest.json")
     if os.path.exists(manifest_path):
-        print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
-        return
-    print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
+        print(f"[Watcher] CDN domain {domain!r} already baked — deltas append per change")
+        return False
+    print(f"[Watcher] CDN domain {domain!r} not baked — baking initial snapshot...")
     try:
         from quickbeam.cdn import bake_domain
         entry = bake_domain(
-            qdrant, args.collection, args.cdn_dir, args.cdn_domain,
-            spec={"filter": {"app": [args.app], "owner": [owner],
+            qdrant, args.collection, args.cdn_dir, domain,
+            spec={"filter": {"app": [app], "owner": [owner],
                              "namespace": [namespace]}},
             config_path=args.cdn_config, model=args.embedding_model)
         print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
-              f"{args.cdn_dir}/{args.cdn_domain}")
+              f"{args.cdn_dir}/{domain}")
+        return True
     except Exception as e:  # noqa: BLE001 — delivery must never block ingest
         print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+        return False
 
 
 def _wild(value: str | None) -> str | None:

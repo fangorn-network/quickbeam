@@ -60,3 +60,6 @@ node_modules/
 # discoverable without pinning anyone to this machine's ports.
 .env.local
 .env.*.local
+
+# local watch list (docker-compose.local.yml)
+sources.json

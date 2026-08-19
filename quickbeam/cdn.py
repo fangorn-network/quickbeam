@@ -1414,7 +1414,27 @@ def build_app(cdn_dir: str, cors: bool = False):
                                         "/domains/{name}/edges",
                                         "/domains/{name}/shards/{file}",
                                         "/domains/{name}/index/{file}", "/health"]})
-    return app
+
+    # ── View shape, for a storefront with no registry worker ────────────────
+    # sond3r's src/search.js reads `${view}/cdn/catalog` and opens `${view}/stream`,
+    # because the worker publishes a view as {registry}/q/{viewId} and rewrites those
+    # two prefixes onto this origin. Pointed straight at a local `cdn serve` there is
+    # no worker doing the rewrite, so serve the same shape here.
+    #
+    # Unconditional rather than behind a flag: the worker asks for neither path (it
+    # strips its own prefix before proxying), so prod route behaviour is unchanged and
+    # a flag would just be a knob that is never turned.
+    @app.get("/stream")
+    async def stream_alias(request: Request, domain: list[str] = Query(default=[])):
+        return await events(request, domain)
+
+    # Mounting the app inside a wrapper, rather than restating five routes under a
+    # /cdn prefix, so the two shapes can never drift. /cdn is registered first because
+    # routes match in order and "/" would otherwise swallow it.
+    outer = FastAPI(title="Fangorn Semantic CDN")
+    outer.mount("/cdn", app)
+    outer.mount("/", app)
+    return outer
 
 
 def serve_main():

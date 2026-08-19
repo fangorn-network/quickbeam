@@ -1,0 +1,22 @@
+# Local testing overlay — no registry worker, no external service.
+#
+#   cp sources.json.example sources.json    # edit the list
+#   SOURCES_URL=file:///sources.json docker compose \
+#     -f docker-compose.yml -f docker-compose.local.yml up -d --build
+#
+# `watch` polls SOURCES_URL with urllib, which speaks file:// as happily as https://,
+# so a bind-mounted JSON file IS a registry. Edits are picked up on the next
+# --sources-refresh tick (60s default) — same add/cancel-with-no-restart behaviour as
+# the worker, so this exercises the real dynamic path, not a second code path.
+#
+# SOURCES_URL goes on the command line, not in an `environment:` block here: the base
+# file interpolates ${SOURCES_URL} into watch's `command` at parse time, and compose
+# resolves that from the shell and .env only — a service's own `environment:` is set
+# too late to be seen. Putting it in .env instead of inline works equally well.
+#
+# Mounted at / rather than /data: /data is a named volume, and nesting a bind under it
+# works but depends on Docker's mount ordering. Nothing needs them adjacent.
+services:
+  watch:
+    volumes:
+      - ./sources.json:/sources.json:ro
