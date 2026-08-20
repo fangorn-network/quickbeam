@@ -1,0 +1,23 @@
+{
+  "nodes": {
+    "Section": "surgext.section",
+    "Module": "surgext.module",
+    "Effect": "surgext.effect",
+    "OscillatorType": "surgext.osctype",
+    "FilterType": "surgext.filtertype",
+    "ModulationSource": "surgext.modsource",
+    "Parameter": "surgext.parameter",
+    "Patch": "surgext.patch"
+  },
+  "edges": [
+    { "rel": "hasSubsection", "from": "Section", "to": "Section" },
+    { "rel": "hasParameter", "from": "Effect", "to": "Parameter" },
+    { "rel": "hasParameter", "from": "Section", "to": "Parameter" },
+    { "rel": "hasType", "from": "Section", "to": "FilterType" },
+    { "rel": "providesModulation", "from": "Section", "to": "ModulationSource" },
+    { "rel": "seeAlso", "from": "Section", "to": "Section" },
+    { "rel": "usesFilter", "from": "Patch", "to": "FilterType" },
+    { "rel": "usesEffect", "from": "Patch", "to": "Effect" },
+    { "rel": "usesOscillator", "from": "Patch", "to": "OscillatorType" }
+  ]
+}

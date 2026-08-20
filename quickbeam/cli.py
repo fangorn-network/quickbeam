@@ -128,6 +128,22 @@ def cdn_edges(ctx: typer.Context):
     edges_main()
 
 
+@cdn_app.command("precompute", **_PASSTHROUGH)
+def cdn_precompute(ctx: typer.Context):
+    """Fold UI-shell summaries (stats, onboarding, samples) into the manifest."""
+    _fwd("quickbeam cdn precompute", ctx.args)
+    from quickbeam.cdn import precompute_main
+    precompute_main()
+
+
+@cdn_app.command("index", **_PASSTHROUGH)
+def cdn_index(ctx: typer.Context):
+    """Fit the public codebook for private retrieval, and measure what it discloses."""
+    _fwd("quickbeam cdn index", ctx.args)
+    from quickbeam.cdn import index_main
+    index_main()
+
+
 @cdn_app.command("serve", **_PASSTHROUGH)
 def cdn_serve(ctx: typer.Context):
     """Serve baked Semantic CDN shards as static, resumable files."""

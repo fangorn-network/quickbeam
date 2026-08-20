@@ -562,10 +562,14 @@ def _project_records(profiles, nodes_by_id, adj, meta, defaults, prefer_key,
 # ---------------------------------------------------------------------------
 # OWNER:NAMESPACE PROJECTION — the read side of the new data model.
 # ---------------------------------------------------------------------------
-def project_source(owner: str, namespace: str, contents: dict,
+def project_source(app: str | None, owner: str, namespace: str, contents: dict,
                    profiles: list[dict], args) -> list[dict]:
     """Project one namespace's `{vertices, edges}` (from `fangorn read`) into
-    root-profile documents, reusing the shared projection core."""
+    root-profile documents, reusing the shared projection core.
+
+    A namespace is the `app:publisher:subspace` triple, so `app` rides in `meta` next
+    to owner/namespace: one publisher can hold the same subspace name in two apps, and
+    without the app those two populations are indistinguishable in a shared collection."""
     nodes_by_id = {
         v["cid"]: {"id": v["cid"], "type": v["schemaId"], "fields": v["payload"]}
         for v in contents.get("vertices", [])
@@ -575,7 +579,7 @@ def project_source(owner: str, namespace: str, contents: dict,
     defaults = {"max_depth": getattr(args, "max_depth", 2),
                 "label_cap": getattr(args, "label_cap", 50), 
                 "node_cap": getattr(args, "node_cap", 1000)}
-    meta = {"owner": owner, "namespace": namespace}
+    meta = {"app": app, "owner": owner, "namespace": namespace}
     # `id` on each projected node is its on-chain vertex CID (see the nodes_by_id
     # comprehension above), so thread it in as the record's verifiable source CID.
     return _project_records(profiles, nodes_by_id, adj, meta, defaults,

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "quickbeam-audius": {
+      "command": "/home/coleman/fangorn/quickbeam/venv/bin/python",
+      "args": [
+        "-m", "quickbeam.cli", "mcp",
+        "--transport", "stdio",
+        "--cdn-url", "http://localhost:8090"
+      ]
+    }
+  }
+}

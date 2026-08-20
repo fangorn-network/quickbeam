@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: quickbeam-audius
+Version: 0.1.0
+Summary: A pluggable quickbeam Source: Audius → two sovereign Fangorn graphs joined by a linkset.
+Requires-Python: >=3.12
+Requires-Dist: quickbeam
+Requires-Dist: hashids
+Provides-Extra: dev
+Requires-Dist: pytest; extra == "dev"

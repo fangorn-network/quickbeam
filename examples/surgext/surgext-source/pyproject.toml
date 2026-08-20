@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickbeam-surgext"
+version = "0.1.0"
+description = "A pluggable quickbeam Source: the Surge XT manual PDF -> a rich Fangorn knowledge graph."
+requires-python = ">=3.12"
+# Depends on quickbeam for the harness runtime (not to satisfy the `Source` contract —
+# SurgeXTSource matches it structurally), pymupdf for PDF parsing, and requests for the
+# on-chain image-pinning step (pin.py).
+dependencies = ["quickbeam", "pymupdf", "requests"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# The one line that wires this source into quickbeam's CLI: `discover_sources()` reads the
+# `quickbeam.sources` entry-point group, so installing this package makes `quickbeam data
+# surgext` appear with the full dry-run/watch/publish/checkpoint loop.
+[project.entry-points."quickbeam.sources"]
+surgext = "quickbeam_surgext.source:SurgeXTSource"
+
+# Standalone console script: run the harness without the quickbeam CLI, e.g.
+# `surgext-ingest --pdf-path ./Surge-XT-Manual.pdf --dry-run`.
+[project.scripts]
+surgext-ingest = "quickbeam_surgext.source:run"
+# Pin the extracted figures to IPFS so they travel with the on-chain graph (needs a Pinata JWT).
+surgext-pin-images = "quickbeam_surgext.pin:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quickbeam_surgext*"]

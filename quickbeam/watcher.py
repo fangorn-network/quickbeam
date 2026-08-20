@@ -12,6 +12,9 @@ stream goes live — a commit that lands during seeding is buffered by the
 subscription and applied afterwards idempotently (vertices are content-addressed
 and the checkpoint dedupes), so nothing is lost.
 
+A namespace is an `app:publisher:subspace` triple. `--source` carries the last two;
+the app comes from `--app` (or, unset, from the local fangorn client's config).
+
 Examples
 --------
   # Watch one source:
@@ -21,14 +24,20 @@ Examples
   # Watch several sources into the same collection (independently — no
   # cross-source identity fusion):
   quickbeam watch --source 0x147c...:robinhood --source 0x9a38...:music
+
+  # Watch an entire app — every publisher, every subspace in it:
+  quickbeam watch --app sond3r.test.1 --source '*:*'
 """
 
 import argparse
 import asyncio
+import copy
 import json
 import os
+import re
 import shlex
 import sys
+import urllib.request
 
 from quickbeam.ingest.checkpoint import (
     _load_checkpoint, _save_checkpoint, _save_role_map)
@@ -37,7 +46,7 @@ from quickbeam.ingest.embed import (
 from quickbeam.ingest.graph.projection import load_profiles, project_source
 from quickbeam.ingest.identity import _str_to_uuid
 from quickbeam.ingest.sources.fangorn import (
-    parse_sources, subscribe_cmd)
+    app_env, parse_sources, subscribe_cmd)
 from qdrant_client import QdrantClient
 from qdrant_client import models
 from quickbeam.roles import infer_roles, role_map_applies
@@ -63,7 +72,33 @@ def parse_args():
     )
 
     p.add_argument("--source", action="append", dest="sources", default=[],
-                   help="OWNER:NAMESPACE to watch, repeatable.")
+                   help="OWNER:NAMESPACE to watch, repeatable. `*` on either side is a "
+                        "wildcard that widens the subscription to the app level: "
+                        "'0x..:*' (one publisher, every namespace), '*:docs' (that "
+                        "namespace across publishers), '*:*' (the whole app).")
+    p.add_argument("--sources-url", default=None, metavar="URL",
+                   help="Poll this URL for the watch list instead of fixed --source "
+                        "flags. Sources that appear start streaming and sources that "
+                        "vanish are cancelled, with no restart. Accepts "
+                        '["OWNER:NS", …], [{"owner":…,"namespace":…}, …], or either '
+                        'wrapped in {"sources": …}.')
+    p.add_argument("--sources-refresh", type=int, default=60,
+                   help="Seconds between --sources-url polls (default: 60).")
+    p.add_argument("--app", default=None,
+                   help="App (global namespace) to watch — a name or a 32-byte app id. The "
+                        "app is the first part of the app:publisher:subspace triple and is "
+                        "NOT part of --source. Unset means whatever the local fangorn client "
+                        "is configured with (`fangorn set-app`, ~/.fangorn/config.json).")
+    p.add_argument("--from-block", type=int, default=None,
+                   help="Replay each source's commits from this block before going live. "
+                        "This is how an app-level (`*`) watch picks up namespaces published "
+                        "before it started — a wildcard source has no single namespace to "
+                        "seed with `fangorn read`. Catch-up is fetched in windows "
+                        "(FANGORN_LOG_WINDOW blocks each), so pick a block near the first "
+                        "publish, not genesis.")
+    p.add_argument("--from-start", action="store_true",
+                   help="Replay from genesis (ignored if --from-block is set). Only "
+                        "practical on a private RPC with a large log window.")
     p.add_argument("--fangorn-bin", default="fangorn",
                    help="How to invoke the fangorn CLI (may be a full command).")
 
@@ -103,6 +138,11 @@ def parse_args():
                     help="Domain config used to resolve the append scan filter.")
 
     # ── Shared with build ─────────────────────────────────────────────────────
+    p.add_argument("--qdrant-url", default=None, metavar="URL",
+                   help="Qdrant base URL, e.g. https://qdrant.example.com (overrides "
+                        "--qdrant-host/port). Use for a remote/authenticated Qdrant.")
+    p.add_argument("--qdrant-api-key", default=None,
+                   help="Qdrant API key (QDRANT__SERVICE__API_KEY on the server).")
     p.add_argument("--qdrant-host", default="localhost")
     p.add_argument("--qdrant-port", type=int, default=6333)
     p.add_argument("--qdrant-grpc-port", type=int, default=6334)
@@ -129,13 +169,16 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
     change (the change is applied to an in-memory snapshot first, then re-projected
     here — projection is local CPU, so re-running it per change is cheap). Returns the
     number of new records embedded."""
-    key = f"{owner}:{namespace}"
+    # Keyed on the whole app:publisher:subspace triple. Two apps can hold the same
+    # publisher:subspace, and a shared key would make each one's snapshot diff read as
+    # "every vertex removed" against the other's — tombstoning both corpora in turn.
+    key = f"{args.app}:{owner}:{namespace}"
     src_ck = checkpoint.setdefault("sources", {}).setdefault(key, {})
 
     cid_to_tag = {v["cid"]: v["schemaId"] for v in contents.get("vertices", [])}
     discovered_tags = set(cid_to_tag.values())
     profiles = load_profiles(args, discovered_tags)
-    records = project_source(owner, namespace, contents, profiles, args)
+    records = project_source(args.app, owner, namespace, contents, profiles, args)
     by_track_id = {r["track_id"]: r for r in records}
 
     prev_ids = set(src_ck.get("vertex_cids", []))
@@ -158,10 +201,11 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
                 "fromType": cid_to_tag.get(e["sourceCid"]), "toType": cid_to_tag.get(e["targetCid"]),
             })
 
-    src_ck["vertex_cids"] = list(curr_ids)
-    _save_checkpoint(checkpoint, args.checkpoint_file)
-
     if not new_records:
+        # Nothing to upload, so recording the projected set now risks nothing — and this
+        # is the path that has to persist the tombstones applied just above.
+        src_ck["vertex_cids"] = list(curr_ids)
+        _save_checkpoint(checkpoint, args.checkpoint_file)
         return 0
 
     # Infer the role map from the first real batch if none is loaded yet, OR if
@@ -180,6 +224,15 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
     print(f"[Watcher] {key}: {len(new_records)} new record(s)")
     await _embed_and_upload(args, qdrant, embed_engine, new_records, role_map_ref[0],
                             dim, truncate, checkpoint)
+
+    # ONLY after the upload lands. `vertex_cids` is what makes the NEXT diff treat these
+    # records as already held, so persisting it before the upload turns any transient
+    # Qdrant failure into permanent loss: the records are marked present, `new_records`
+    # comes back empty forever, and the CDN domain bakes zero shards while the seed log
+    # cheerfully reports "no new records". That is not hypothetical — a full disk did
+    # exactly this in production. Point ids are deterministic (_str_to_uuid), so
+    # re-running an upload that partly succeeded just re-upserts the same points.
+    src_ck["vertex_cids"] = list(curr_ids)
     _save_checkpoint(checkpoint, args.checkpoint_file)
     return len(new_records)
 
@@ -187,7 +240,8 @@ async def _ingest_contents(args, qdrant, embed_engine, role_map_ref, dim, trunca
 # ---------------------------------------------------------------------------
 # LIVE CDN DELIVERY — ship a change's delta into the baked domain
 # ---------------------------------------------------------------------------
-def _deliver_cdn(args, qdrant, total_new, edges, tombstones):
+def _deliver_cdn(args, qdrant, total_new, edges, tombstones, owner=None, namespace=None,
+                 app=None):
     """Mirror an ingested change into the delivered CDN domain: append the new points
     as a delta shard, ride removals on the manifest's tombstone list, and merge new
     edges into the served graph. Each step is isolated — a delivery failure never
@@ -198,8 +252,14 @@ def _deliver_cdn(args, qdrant, total_new, edges, tombstones):
     if total_new:
         try:
             from quickbeam.cdn import append_domain
+            # Scope the scan to this source. One collection can hold several watched
+            # namespaces, and an unfiltered append would pull every other namespace's
+            # points into this domain.
             append_domain(qdrant, args.collection, args.cdn_dir,
-                          args.cdn_domain, config_path=args.cdn_config)
+                          args.cdn_domain, config_path=args.cdn_config,
+                          owners=[owner] if owner else None,
+                          namespaces=[namespace] if namespace else None,
+                          apps=[app] if app else None)
         except Exception as e:  # noqa: BLE001
             print(f"[Watcher] CDN append error: {e}", file=sys.stderr)
 
@@ -247,7 +307,7 @@ async def _drain_stderr(key: str, stream):
 
 
 async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
-                           timeout: float) -> dict:
+                           timeout: float, app: str | None = None) -> dict:
     """Async, timeout-bounded `fangorn read <ns> --owner <owner>` for the startup seed.
 
     CRITICAL: the seed MUST NOT use the synchronous `read_source` (subprocess.run) —
@@ -260,7 +320,7 @@ async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
     proc = await asyncio.create_subprocess_exec(
         *shlex.split(fangorn_bin), "read", namespace, "--owner", owner,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        limit=_STREAM_LIMIT,
+        limit=_STREAM_LIMIT, env=app_env(app),
     )
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -288,65 +348,100 @@ async def _seed_read_async(fangorn_bin: str, owner: str, namespace: str,
     return data
 
 
+def _ns_state(snapshot, pair):
+    """The in-memory {vertices, edges} for one (owner, namespace) pair. A wildcard source
+    streams commits from many pairs, so state is per-pair, not per-subscription."""
+    return snapshot["ns"].setdefault(pair, {"vertices": {}, "edges": {}})
+
+
+async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                     checkpoint, owner, namespace, snapshot):
+    """Read one namespace's full on-chain state and embed it, so the existing corpus is
+    indexed before live diffs land on top. Bounded + off the event loop (see
+    _seed_read_async): a slow/hung read degrades to 'skip the seed, go live' instead of
+    freezing the watcher, and the pair stays unseeded so a later attempt retries it.
+
+    On failure we leave the prior snapshot ALONE and ingest nothing: projecting an empty
+    namespace would diff every already-embedded vertex as removed and tombstone the whole
+    source (the exact outcome the null-head guard in _seed_read_async exists to prevent)."""
+    key = f"{owner}:{namespace}"
+    try:
+        contents = await _seed_read_async(
+            args.fangorn_bin, owner, namespace, args.seed_timeout, args.app)
+    except Exception as e:  # noqa: BLE001
+        print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
+              f"stream, will retry seed on reconnect", file=sys.stderr)
+        return
+
+    state = _ns_state(snapshot, (owner, namespace))
+    state["vertices"] = {v["cid"]: v for v in contents.get("vertices", [])}
+    state["edges"] = {_edge_key(e): e for e in contents.get("edges", [])}
+
+    seed_edges: list = []
+    seed_tombstones: list = []
+    n = await _ingest_contents(
+        args, qdrant, embed_engine, role_map_ref, dim, truncate,
+        checkpoint, owner, namespace, contents,
+        edges_sink=seed_edges, tombstones_sink=seed_tombstones,
+    )
+    # Marked seeded only once the ingest actually landed. If _ingest_contents raised
+    # (a Qdrant outage mid-upload), leaving this unset is what lets the next reconnect
+    # retry the seed instead of reporting "reusing snapshot" over an empty collection.
+    # `tried` in _stream_source_once bounds that to one attempt per pair per connection.
+    snapshot["seeded"].add((owner, namespace))
+    print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
+    # Scope the append to THIS source. One collection holds every watched namespace, so
+    # an unfiltered append sweeps every other source's points into this domain.
+    _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones,
+                 owner=owner, namespace=namespace, app=args.app)
+
+
 async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, truncate,
                               checkpoint, owner, namespace, snapshot):
-    """Seed one owner:namespace source (once), then consume its `fangorn subscribe`
-    stream until it ends. Returns normally when the stream closes (caller resubscribes).
+    """Seed one source (once), then consume its `fangorn subscribe` stream until it ends.
+    Returns normally when the stream closes (caller resubscribes).
 
-    `snapshot` is the in-memory namespace state ({vertices, edges, seeded}), owned by the
-    caller so it PERSISTS across reconnects — we do the expensive full `fangorn read`
-    seed only until it succeeds once, then reconnects reuse the snapshot and rely on the
-    subscribe cursor replaying any commits missed while down. Re-reading the whole
-    namespace on every reconnect is what made a slow read freeze the watcher in a loop."""
-    key = f"{owner}:{namespace}"
+    `owner`/`namespace` may be None — a wildcard source (`*:*`, `0x..:*`, `*:ns`) that
+    subscribes at the app level and receives commits from many namespaces. Those can't be
+    seeded up front (there is no single namespace to read), so each pair is seeded lazily
+    the first time a commit for it arrives.
+
+    `snapshot` is the in-memory state ({seeded, ns}), owned by the caller so it PERSISTS
+    across reconnects — the expensive full `fangorn read` seed runs only until it succeeds
+    once per pair, then reconnects reuse the snapshot and rely on the subscribe cursor
+    replaying any commits missed while down. Re-reading the whole namespace on every
+    reconnect is what made a slow read freeze the watcher in a loop."""
+    key = f"{owner or '*'}:{namespace or '*'}"
+    app_mode = owner is None or namespace is None
 
     # Start the subscription FIRST so any commit that lands while we seed buffers in
     # the pipe. Applying such a buffered change after the seed is idempotent: vertices
     # are content-addressed (re-adding a cid the seed already has is a no-op) and the
     # checkpoint dedupes embeds — so the seed↔live gap loses nothing.
     proc = await asyncio.create_subprocess_exec(
-        *subscribe_cmd(args.fangorn_bin, owner, namespace),
+        *subscribe_cmd(args.fangorn_bin, owner, namespace, args.from_start,
+                       args.from_block),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        limit=_STREAM_LIMIT,
+        limit=_STREAM_LIMIT, env=app_env(args.app),
     )
     print(f"[Watcher] {key}: subscribed (pid {proc.pid})")
     stderr_task = asyncio.create_task(_drain_stderr(key, proc.stderr))
 
     try:
-        vertices_by_cid = snapshot["vertices"]
-        edges_by_key = snapshot["edges"]
-
-        # Seed current on-chain state ONCE so the existing corpus is embedded before we
-        # go live. Bounded + off the event loop (see _seed_read_async): a slow/hung read
-        # no longer freezes the watcher — it skips the seed, goes live, and retries the
-        # seed on the next reconnect until it lands. After a successful seed, reconnects
-        # reuse the persisted snapshot instead of re-reading the whole namespace.
-        if not snapshot["seeded"]:
-            try:
-                contents = await _seed_read_async(
-                    args.fangorn_bin, owner, namespace, args.seed_timeout)
-                snapshot["seeded"] = True
-            except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
-                      f"stream, will retry seed on reconnect", file=sys.stderr)
-                contents = {"vertices": [], "edges": []}
-            vertices_by_cid.clear()
-            vertices_by_cid.update({v["cid"]: v for v in contents.get("vertices", [])})
-            edges_by_key.clear()
-            edges_by_key.update({_edge_key(e): e for e in contents.get("edges", [])})
-
-            seed_edges: list = []
-            seed_tombstones: list = []
-            n = await _ingest_contents(
-                args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                checkpoint, owner, namespace, contents,
-                edges_sink=seed_edges, tombstones_sink=seed_tombstones,
-            )
-            print(f"[Watcher] {key}: seeded — {n or 'no'} new record(s) embedded")
-            _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones)
-        else:
+        # Seed current on-chain state ONCE per namespace so the existing corpus is embedded
+        # before we go live. A pinned source seeds up front; a wildcard source has no single
+        # namespace to read, so its pairs seed lazily below, on first commit. `tried` bounds
+        # that to one attempt per pair per connection — a persistently failing read must not
+        # cost --seed-timeout on every incoming change.
+        tried: set = set()
+        if not app_mode and (owner, namespace) not in snapshot["seeded"]:
+            tried.add((owner, namespace))
+            await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                             checkpoint, owner, namespace, snapshot)
+        elif not app_mode:
             print(f"[Watcher] {key}: reusing snapshot "
-                  f"({len(vertices_by_cid)} vertices) — resuming stream")
+                  f"({len(_ns_state(snapshot, (owner, namespace))['vertices'])} vertices) "
+                  f"— resuming stream")
 
         # Consume the live change stream. Each line is one self-contained NamespaceChange.
         assert proc.stdout is not None
@@ -359,6 +454,26 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             except json.JSONDecodeError:
                 print(f"[Watcher] {key}: unparseable change line: {line[:200]}", file=sys.stderr)
                 continue
+
+            # Every change names the pair it belongs to — under a wildcard source that
+            # varies line to line, so state, checkpoints and projection all key off the
+            # change itself, not off this subscription's (possibly None) filter.
+            ch_owner = change.get("owner") or owner
+            ch_ns = change.get("namespace") or namespace
+            ch_key = f"{ch_owner}:{ch_ns}"
+
+            # First commit seen for a namespace we've never read: seed it now, so the
+            # projection sees the whole graph and not just what streamed past since.
+            # Applying the diff on top is idempotent (vertices are content-addressed;
+            # removals of already-absent cids are no-ops).
+            if (ch_owner, ch_ns) not in snapshot["seeded"] and (ch_owner, ch_ns) not in tried:
+                tried.add((ch_owner, ch_ns))
+                await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                                 checkpoint, ch_owner, ch_ns, snapshot)
+
+            state = _ns_state(snapshot, (ch_owner, ch_ns))
+            vertices_by_cid = state["vertices"]
+            edges_by_key = state["edges"]
 
             # Apply the diff to the in-memory snapshot: removals first, then adds
             # (an add re-pointing a cid must win over a same-line removal of the old one).
@@ -374,11 +489,11 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             contents = {"vertices": list(vertices_by_cid.values()),
                         "edges": list(edges_by_key.values())}
 
-            src_ck = checkpoint.setdefault("sources", {}).setdefault(key, {})
+            src_ck = checkpoint.setdefault("sources", {}).setdefault(ch_key, {})
             src_ck["head"] = change.get("newRoot")
             src_ck["block"] = change.get("blockNumber")
 
-            print(f"[Watcher] {key}: change @ block {change.get('blockNumber')} "
+            print(f"[Watcher] {ch_key}: change @ block {change.get('blockNumber')} "
                   f"(+{len(change.get('addedVertices', []))} / "
                   f"-{len(change.get('removedVertexCids', []))} vertices) "
                   f"→ {change.get('commitCid')}")
@@ -387,12 +502,13 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             change_tombstones: list = []
             n = await _ingest_contents(
                 args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                checkpoint, owner, namespace, contents,
+                checkpoint, ch_owner, ch_ns, contents,
                 edges_sink=change_edges, tombstones_sink=change_tombstones,
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
-            print(f"[Watcher] {key}: change applied — {status}")
-            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones)
+            print(f"[Watcher] {ch_key}: change applied — {status}")
+            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones,
+                         owner=ch_owner, namespace=ch_ns, app=args.app)
 
         rc = await proc.wait()
         print(f"[Watcher] {key}: subscribe stream ended (rc={rc})", file=sys.stderr)
@@ -411,11 +527,11 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
     """Supervise one source forever: (re)subscribe, and if the stream drops, back off
     --poll-interval seconds and reconnect. `fangorn subscribe` persists its own resume
     cursor, so a reconnect replays commits missed while we were down."""
-    key = f"{owner}:{namespace}"
-    # Persist the in-memory namespace snapshot across reconnects so the expensive full
-    # seed read runs only until it succeeds once; later reconnects reuse it and lean on
-    # the subscribe cursor to replay anything missed while down.
-    snapshot = {"seeded": False, "vertices": {}, "edges": {}}
+    key = f"{owner or '*'}:{namespace or '*'}"
+    # Persist the in-memory namespace snapshots across reconnects so the expensive full
+    # seed read runs only until it succeeds once per pair; later reconnects reuse them and
+    # lean on the subscribe cursor to replay anything missed while down.
+    snapshot = {"seeded": set(), "ns": {}}
     while True:
         try:
             await _stream_source_once(
@@ -430,26 +546,211 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
 
 
 # ---------------------------------------------------------------------------
+# PER-SOURCE SCOPING — one process, many namespaces
+# ---------------------------------------------------------------------------
+def _slug(text: str) -> str:
+    """Filename-safe fragment of a namespace/owner."""
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", text or "").strip("-").lower() or "x"
+
+
+_APP_ID_RE = re.compile(r"^0x[0-9a-fA-F]{64}$")
+
+
+def _app_slug(app: str) -> str:
+    """The app's fragment of a domain name. An app id is sliced to its first 8 hex chars
+    exactly as the owner address is — a full 66-char id would dominate the directory name
+    for no extra safety. A plain name is slugged whole. Mirrors the worker's `appSlug()`."""
+    return _slug(app[2:10]) if _APP_ID_RE.match(app or "") else _slug(app)
+
+
+def _domain_for(app: str, owner: str, namespace: str) -> str:
+    """CDN domain name for one watched source.
+
+    Scoped by app AND owner AND namespace, because that triple IS the namespace: a bare
+    subspace name collides the moment two publishers pick the same one (`music` is not
+    rare), and one publisher can hold the same subspace in two apps. Either collision
+    intermixes shards in a single domain.
+
+    MUST match `domainFor()` in webworker/quickbeam-registry/src/index.js — the watcher
+    names the directory and the worker names it BACK to filter a view's catalog, so byte
+    drift between the two returns an empty catalog with no error on either side.
+    """
+    return f"{_app_slug(app)}-{_slug(owner[2:10])}-{_slug(namespace)}"
+
+
+def _scoped_role_map(path: str, app: str, owner: str, namespace: str) -> str:
+    root, ext = os.path.splitext(path)
+    return f"{root}-{_app_slug(app)}-{_slug(owner[2:10])}-{_slug(namespace)}{ext or '.json'}"
+
+
+def _source_args(args, app: str, owner: str | None, namespace: str | None,
+                 pin_domain: bool = False):
+    """A per-source view of `args`.
+
+    Three settings must NOT be shared once a process watches several namespaces:
+
+      app            each source names its own app, and it is what every chain read
+                     resolves against (app_env → FANGORN_APP_ID). Leaving the global
+                     --app here would read every source out of one app, so a view on
+                     another app silently resolves nothing.
+      cdn_domain     one domain per source, or their shards intermix.
+      role_map_file  _ingest_contents re-infers the role map whenever the loaded one
+                     doesn't fit the current records, then saves it — so two
+                     dissimilar corpora sharing one file overwrite each other on
+                     every single commit.
+
+    `collection` deliberately stays shared: every point carries `owner`, `meta.app` and
+    `meta.namespace`, so one collection is still attributable and `serve` can filter on
+    it. `checkpoint_file` is shared too — its contents are keyed by the whole triple.
+
+    `pin_domain` honours an explicit --cdn-domain, which only makes sense for a
+    single static source (the pre-existing single-namespace invocation).
+    """
+    scoped = copy.copy(args)
+    scoped.app = app
+    if not pin_domain:
+        # ponytail: a wildcard source gets no live CDN delivery. Its pairs are only
+        # learned as commits arrive, so there is no single domain to bake at task
+        # start — and _deliver_cdn ships to one fixed domain per task. Give the
+        # delivery path a per-change domain if wildcard sources ever need shards.
+        concrete = owner is not None and namespace is not None
+        scoped.cdn_domain = (_domain_for(app, owner, namespace)
+                             if args.cdn_dir and concrete else None)
+    scoped.role_map_file = _scoped_role_map(args.role_map_file, app, owner or "*",
+                                            namespace or "*")
+    return scoped
+
+
+def _bake_initial(args, qdrant, owner: str, namespace: str) -> None:
+    """Bootstrap live CDN delivery for one source. append_domain can only EXTEND an
+    already-baked domain, so bake once here to give it a base manifest; `cdn serve`
+    then works immediately with no manual `cdn bake`.
+
+    The spec is forced to this source rather than resolved from domains.json: the
+    collection may hold other namespaces, and a bake-everything spec would pull them
+    into this domain.
+    """
+    if not (args.cdn_dir and args.cdn_domain):
+        return
+    manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
+    if os.path.exists(manifest_path):
+        print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
+        return
+    print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
+    try:
+        from quickbeam.cdn import bake_domain
+        entry = bake_domain(
+            qdrant, args.collection, args.cdn_dir, args.cdn_domain,
+            spec={"filter": {"app": [args.app], "owner": [owner],
+                             "namespace": [namespace]}},
+            config_path=args.cdn_config, model=args.embedding_model)
+        print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
+              f"{args.cdn_dir}/{args.cdn_domain}")
+    except Exception as e:  # noqa: BLE001 — delivery must never block ingest
+        print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+
+
+def _wild(value: str | None) -> str | None:
+    """A source side, or None if it is a wildcard. `*`, empty and whitespace all mean
+    "any" — the worker writes `*` for an unpinned side, and an absent key means the same."""
+    text = (value or "").strip()
+    return None if text in ("", "*") else text
+
+
+def _show(source: tuple) -> str:
+    """One source as `app:owner:namespace` for the log, wildcards as `*`."""
+    return ":".join(part or "*" for part in source)
+
+
+def _sort_key(source: tuple) -> tuple:
+    """Order sources for the converge loop's `sorted()`. A wildcard side is None, which
+    cannot be compared against str, so flatten it to "" (which also sorts wildcards first)."""
+    return tuple(part or "" for part in source)
+
+
+def _fetch_sources(url: str, default_app: str | None = None) -> set:
+    """GET the watch list as a set of (app, owner, namespace) triples. Liberal about
+    shape: a bare list or {"sources": [...]}, holding either "APP:OWNER:NAMESPACE"
+    strings (or the older "OWNER:NAMESPACE", which takes `default_app`) or
+    {app, owner, namespace} objects. A `*` or absent owner/namespace is a wildcard.
+
+    The triple is the identity — dedupe on all three. One publisher can hold the same
+    subspace name in two apps, and collapsing those to one key leaves the other app's
+    namespace unwatched.
+
+    An entry naming no app at all, with no --app to fall back on, is DROPPED rather than
+    guessed: reads resolve against the app, so watching the wrong one silently indexes
+    the wrong graph, which is worse than watching nothing.
+
+    ponytail: urllib in a thread rather than adding an async HTTP client for one
+    poll every --sources-refresh seconds.
+
+    The User-Agent is NOT cosmetic: the registry worker sits behind Cloudflare, whose
+    bot-signature check answers urllib's default `Python-urllib/x.y` with a 403 (error
+    1010) before the worker ever runs. `/watchlist` itself is unauthenticated, so a 403
+    here means the edge blocked us, not that we lack access.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "quickbeam-watch"})
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    if isinstance(data, dict):
+        data = data.get("sources", [])
+    out = set()
+    for item in data:
+        if isinstance(item, str):
+            parts = item.split(":")
+            if len(parts) == 3:
+                app, owner, namespace = parts
+            elif len(parts) == 2:
+                app, (owner, namespace) = default_app, parts
+            else:
+                continue
+        elif isinstance(item, dict):
+            app = item.get("app") or default_app
+            owner, namespace = item.get("owner"), item.get("namespace")
+        else:
+            continue
+        app = _wild(app) or _wild(default_app)
+        if app:
+            out.add((app, _wild(owner), _wild(namespace)))
+    return out
+
+
+def _make_qdrant(args) -> QdrantClient:
+    """Qdrant connection: a remote URL (with optional API key) when given, else the
+    local host/port pair. Mirrors pull.py's helper of the same name.
+
+    ponytail: the URL branch does NOT set prefer_grpc. A remote Qdrant is typically
+    reached through an HTTPS reverse proxy on 443, which does not carry gRPC on 6334 —
+    forcing gRPC there fails to connect. REST is slower per upload and correct
+    everywhere; switch it on if a deployment actually exposes gRPC.
+    """
+    if args.qdrant_url:
+        return QdrantClient(url=args.qdrant_url, api_key=args.qdrant_api_key, timeout=600)
+    return QdrantClient(host=args.qdrant_host, port=args.qdrant_port,
+                        grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600)
+
+
+# ---------------------------------------------------------------------------
 # ENTRYPOINT
 # ---------------------------------------------------------------------------
 async def main():
     args = parse_args()
 
     sources = parse_sources(args.sources)
-    if not sources:
-        sys.exit("[Watcher] pass at least one --source OWNER:NAMESPACE.")
+    if not sources and not args.sources_url:
+        sys.exit("[Watcher] pass at least one --source OWNER:NAMESPACE, or --sources-url.")
 
     model_dim = MODEL_DIM_MAP.get(args.embedding_model, 768)
     dim       = min(args.dim, model_dim)
     truncate  = dim < model_dim
 
-    print(f"[Watcher] Starting — sources: {', '.join(f'{o}:{n}' for o, n in sources)}")
+    shown = ", ".join(f"{args.app or '<default app>'}:{o or '*'}:{n or '*'}"
+                      for o, n in sources)
+    print(f"[Watcher] Starting — sources: {shown}")
     print(f"[Watcher] mode: push (fangorn subscribe); reconnect backoff {args.poll_interval}s")
 
-    qdrant = QdrantClient(
-        host=args.qdrant_host, port=args.qdrant_port,
-        grpc_port=args.qdrant_grpc_port, prefer_grpc=True, timeout=600
-    )
+    qdrant = _make_qdrant(args)
 
     if not qdrant.collection_exists(args.collection):
         qdrant.create_collection(
@@ -462,40 +763,61 @@ async def main():
     embed_engine = _init_embed_engine(args)
     print(f"[Watcher] model dim={model_dim}, output dim={dim} (truncate={truncate})")
 
-    # Load existing role map; inferred on first real batch if absent.
-    role_map_ref = [{}]
-    if os.path.exists(args.role_map_file):
-        with open(args.role_map_file) as f:
-            role_map_ref[0] = json.load(f)
-
     checkpoint = _load_checkpoint(args.checkpoint_file)
 
-    # Bootstrap live CDN delivery. The per-change delta path (append_domain) can only
-    # EXTEND an already-baked domain, so if a delivery target is set but not yet baked,
-    # bake it once now from whatever the collection already holds. This makes `cdn serve`
-    # start immediately (no manual `cdn bake`) and gives append_domain the base manifest
-    # it grows per change. Domains need no domains.json entry — a missing spec bakes all.
-    if args.cdn_dir and args.cdn_domain:
-        manifest_path = os.path.join(args.cdn_dir, args.cdn_domain, "manifest.json")
-        if os.path.exists(manifest_path):
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} already baked — deltas append per change")
-        else:
-            print(f"[Watcher] CDN domain {args.cdn_domain!r} not baked — baking initial snapshot...")
-            try:
-                from quickbeam.cdn import bake_domain
-                entry = bake_domain(qdrant, args.collection, args.cdn_dir, args.cdn_domain,
-                                    config_path=args.cdn_config, model=args.embedding_model)
-                print(f"[Watcher] initial CDN bake: {entry['count']} point(s) into "
-                      f"{args.cdn_dir}/{args.cdn_domain}")
-            except Exception as e:  # noqa: BLE001
-                print(f"[Watcher] initial CDN bake failed: {e}", file=sys.stderr)
+    # One independent task per source, keyed by the whole (app, owner, namespace) triple.
+    # Each gets its own scoped args — including its own app, so one process serves views
+    # across several apps — and its own role map (see _source_args); the CDN domain is
+    # baked once at task start.
+    tasks: dict[tuple, asyncio.Task] = {}
 
-    # One independent subscription per source, all live concurrently.
-    await asyncio.gather(*(
-        _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate,
-                       checkpoint, owner, namespace)
-        for owner, namespace in sources
-    ))
+    def start(app, owner, namespace, pin_domain=False):
+        scoped = _source_args(args, app, owner, namespace, pin_domain=pin_domain)
+        _bake_initial(scoped, qdrant, owner, namespace)
+        return asyncio.create_task(
+            _stream_source(scoped, qdrant, embed_engine, [{}], dim, truncate,
+                           checkpoint, owner, namespace))
+
+    # Static mode: fixed --source flags, all under the one --app.
+    if not args.sources_url:
+        pin = bool(args.cdn_domain) and len(sources) == 1
+        for owner, namespace in sources:
+            tasks[(args.app, owner, namespace)] = start(args.app, owner, namespace,
+                                                        pin_domain=pin)
+        await asyncio.gather(*tasks.values())
+        return
+
+    # Dynamic mode: converge on whatever the registry lists, forever. Each entry names
+    # its own app, so one instance can serve views across several — --app is only the
+    # fallback for an entry that names none.
+    while True:
+        try:
+            wanted = _fetch_sources(args.sources_url, args.app)
+        except Exception as e:  # noqa: BLE001
+            # Keep every running source. A blip at the registry must never look like
+            # "everyone unsubscribed" and tear the whole fleet down.
+            print(f"[Watcher] sources fetch failed ({e}) — keeping current set",
+                  file=sys.stderr)
+            wanted = None
+
+        if wanted is not None:
+            for key in sorted(wanted - set(tasks), key=_sort_key):
+                tasks[key] = start(*key)
+                print(f"[Watcher] + {_show(key)} — now watching {len(tasks)} source(s)")
+            for key in sorted(set(tasks) - wanted, key=_sort_key):
+                tasks.pop(key).cancel()
+                print(f"[Watcher] - {_show(key)} — now watching {len(tasks)} source(s)")
+
+        # Surface a task that died of something _stream_source's own retry loop could
+        # not absorb, instead of losing it silently.
+        for key, task in list(tasks.items()):
+            if task.done() and not task.cancelled():
+                exc = task.exception()
+                print(f"[Watcher] {_show(key)} stopped ({exc!r}) — restarting",
+                      file=sys.stderr)
+                tasks[key] = start(*key)
+
+        await asyncio.sleep(args.sources_refresh)
 
 
 if __name__ == "__main__":

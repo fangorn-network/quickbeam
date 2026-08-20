@@ -1,0 +1,600 @@
+/* Design tokens taken from Audius' own open-source Harmony design system
+   (AudiusProject/audius-protocol, packages/harmony/src/foundations) rather than
+   eyeballed, so this sits inside their visual language instead of near it.
+   Dark theme, which is Audius' default. */
+:root {
+  /* colour — harmony/foundations/color/primitive.css, dark theme */
+  --bg:            #202131;
+  --bg-sunken:     #191a27;
+  --surface:       #2f3348;
+  --surface-2:     #383c54;
+  --line:          #3f4460;
+  --primary:       #d767e1;  /* dark-theme primary  (magenta) */
+  --secondary:     #c67cff;  /* dark-theme secondary (purple) */
+  --text:          #ffffff;
+  --text-muted:    #c6c8d6;
+  --text-faint:    #8e93ab;
+  --gradient:      linear-gradient(315deg, #5b23e1 0%, #a22feb 100%);
+
+  /* the two publishers. Distinguished by FORM as well as hue — never hue alone,
+     because that is the one thing a colour-blind viewer cannot use. */
+  --pub-platform:  #c67cff;
+  --pub-artist:    #d767e1;
+
+  /* corner radius — harmony/foundations/corner-radius */
+  --r-s: 4px;  --r-m: 8px;  --r-l: 12px;  --r-xl: 16px;  --r-2xl: 32px;
+  --r-pill: 1000px;
+
+  /* type — Avenir Next LT Pro is Audius' face but proprietary; Figtree is the
+     closest free geometric-humanist and sits next in the chain so this renders
+     right without pretending to be Avenir. */
+  --font: 'Avenir Next LT Pro', 'Figtree Variable', Figtree, 'Helvetica Neue', Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+
+  --shadow-near: 0 1px 3px rgba(0, 0, 0, .35);
+  --shadow-mid:  0 4px 16px rgba(0, 0, 0, .4);
+  --shadow-far:  0 12px 40px rgba(0, 0, 0, .5);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* Strip UA chrome. Without this a button with no background/border of its own renders
+   as a light-grey box — glaring on a dark theme. Every styled button here sets both,
+   so they're unaffected; padding is left alone since several rely on their own. */
+button { font: inherit; color: inherit; cursor: pointer; background: none; border: 0; }
+
+:focus-visible {
+  outline: 2px solid var(--secondary);
+  outline-offset: 2px;
+  border-radius: var(--r-s);
+}
+
+/* ─── app shell ─────────────────────────────────────────────────────────── */
+.shell { min-height: 100%; display: flex; flex-direction: column; }
+
+.topbar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 24px;
+  background: rgba(32, 33, 49, .86);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line);
+}
+.topbar::after {
+  content: ''; position: absolute; left: 0; right: 0; bottom: -1px;
+  height: 2px; background: var(--gradient);
+}
+
+.brand { display: flex; align-items: baseline; gap: 10px; font-weight: 700; letter-spacing: -.02em;
+  padding: 0; text-align: left; }
+.brand-mark { font-size: 18px; }
+/* Explicitly a Fangorn demo *of* Audius data — never dressed as an Audius property. */
+.brand-sub { font-size: 12px; color: var(--text-faint); font-weight: 500; }
+
+.main { flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 24px 96px; }
+
+/* ─── search field ──────────────────────────────────────────────────────── */
+.search {
+  display: flex; align-items: center; gap: 12px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 4px 4px 4px 22px;
+  box-shadow: var(--shadow-mid);
+  transition: border-color .16s ease;
+}
+.search:focus-within { border-color: var(--secondary); }
+.search input {
+  flex: 1; background: none; border: 0; outline: none;
+  color: var(--text); font: inherit; font-size: 17px; padding: 14px 0;
+  min-width: 0;
+}
+.search input::placeholder { color: var(--text-faint); }
+.search button {
+  border: 0; border-radius: var(--r-pill); background: var(--gradient);
+  color: #fff; font-weight: 700; font-size: 15px; padding: 13px 26px;
+  transition: filter .16s ease, transform .16s ease;
+  white-space: nowrap;
+}
+.search button:hover:not(:disabled) { filter: brightness(1.12); }
+.search button:active:not(:disabled) { transform: translateY(1px); }
+.search button:disabled { opacity: .5; cursor: not-allowed; }
+.topbar .search { flex: 1; max-width: 520px; box-shadow: none; padding-left: 18px; }
+.topbar .search input { font-size: 15px; padding: 9px 0; }
+.topbar .search button { padding: 9px 18px; font-size: 14px; }
+
+/* ─── publisher chip: form + hue, so it never relies on colour alone ────── */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 3px 10px; border-radius: var(--r-pill); white-space: nowrap;
+}
+.chip-platform { background: color-mix(in srgb, var(--pub-platform) 20%, transparent);
+                 color: var(--pub-platform); border: 1px solid transparent; }
+.chip-artist   { background: transparent; color: var(--pub-artist);
+                 border: 1px solid var(--pub-artist); }
+.chip-artist::before {
+  content: ''; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--pub-artist);
+}
+.chip-addr { font-family: var(--mono); font-size: 10px; opacity: .8; letter-spacing: 0; }
+
+/* ─── hero: the root ledger ─────────────────────────────────────────────── */
+.hero { padding: 72px 0 40px; }
+.hero-kicker {
+  font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
+  color: var(--secondary); margin-bottom: 18px;
+}
+.hero h1 {
+  margin: 0 0 14px; font-size: clamp(32px, 5vw, 56px); line-height: 1.08;
+  letter-spacing: -.03em; font-weight: 700; max-width: 15ch;
+}
+.hero h1 em { font-style: normal; background: var(--gradient);
+              -webkit-background-clip: text; background-clip: text; color: transparent; }
+.hero p { margin: 0 0 40px; font-size: 18px; color: var(--text-muted); max-width: 56ch; }
+
+.ledger {
+  display: grid; grid-template-columns: 1fr minmax(180px, 300px) 1fr;
+  gap: 0; align-items: stretch; margin-bottom: 40px;
+}
+.root {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-xl); padding: 22px 24px;
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+}
+.root-role { font-size: 12px; font-weight: 700; letter-spacing: .12em;
+             text-transform: uppercase; color: var(--text-faint); }
+.root-name { font-size: 22px; font-weight: 700; letter-spacing: -.02em;
+             overflow: hidden; text-overflow: ellipsis; }
+.root-addr { font-family: var(--mono); font-size: 12px; color: var(--text-muted);
+             overflow: hidden; text-overflow: ellipsis; }
+.root-stats { display: flex; gap: 18px; margin-top: 12px; }
+.root-stat b { display: block; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+.root-stat span { font-size: 11px; color: var(--text-faint);
+                  text-transform: uppercase; letter-spacing: .08em; }
+.root-a { border-top: 3px solid var(--pub-platform); }
+.root-b { border-top: 3px solid var(--pub-artist); }
+
+/* the strands: one per relation type, thickness proportional to its real count */
+.strands { position: relative; display: flex; align-items: center; }
+.strands svg { width: 100%; height: 100%; overflow: visible; }
+.strand-path { fill: none; stroke-linecap: round; }
+.strand-label {
+  font-family: var(--mono); font-size: 9px; fill: var(--text-muted);
+  letter-spacing: -.02em;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .strand-path { stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
+                 animation: draw .9s cubic-bezier(.2, .7, .3, 1) forwards; }
+  .strand-label { opacity: 0; animation: fade .4s ease forwards .55s; }
+}
+@keyframes draw { to { stroke-dashoffset: 0; } }
+@keyframes fade { to { opacity: 1; } }
+
+.ledger-caption {
+  text-align: center; font-size: 13px; color: var(--text-faint); margin: 0 0 40px;
+}
+.ledger-caption b { color: var(--text-muted); font-weight: 600; }
+
+/* ─── result grid ───────────────────────────────────────────────────────── */
+.section-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 16px; margin: 40px 0 18px;
+}
+.section-head h2 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+.section-head .count { font-size: 13px; color: var(--text-faint); }
+
+.grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-l); overflow: hidden; text-align: left;
+  padding: 0; display: flex; flex-direction: column;
+  transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease;
+  width: 100%;
+}
+.card:hover { transform: translateY(-3px); border-color: var(--secondary);
+              box-shadow: var(--shadow-far); }
+.card-art { position: relative; aspect-ratio: 1; background: var(--bg-sunken); }
+.card-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.card-chip { position: absolute; top: 8px; left: 8px;
+             backdrop-filter: blur(6px); background: rgba(25, 26, 39, .72);
+             border-radius: var(--r-pill); }
+.card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 3px; }
+.card-title { font-weight: 600; font-size: 15px; line-height: 1.3;
+              display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+              overflow: hidden; }
+.card-sub { font-size: 13px; color: var(--text-muted);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.card-meta { font-size: 11px; color: var(--text-faint); text-transform: uppercase;
+             letter-spacing: .06em; margin-top: 2px; }
+
+/* art placeholder — deterministic from the id, so a missing cover still reads as
+   a distinct object rather than a broken image */
+.art-fallback { width: 100%; height: 100%; display: grid; place-items: center;
+                font-size: 26px; font-weight: 700; color: rgba(255, 255, 255, .55); }
+
+/* ─── entity page ───────────────────────────────────────────────────────── */
+.entity-head { display: flex; gap: 28px; padding: 36px 0 28px; align-items: flex-end; }
+.entity-art { width: 208px; height: 208px; flex: none; border-radius: var(--r-xl);
+              overflow: hidden; background: var(--bg-sunken); box-shadow: var(--shadow-far); }
+.entity-art.round { border-radius: 50%; }
+.entity-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.entity-meta { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.entity-type { font-size: 12px; font-weight: 700; letter-spacing: .14em;
+               text-transform: uppercase; color: var(--text-faint); }
+.entity-meta h1 { margin: 0; font-size: clamp(26px, 4vw, 42px); line-height: 1.1;
+                  letter-spacing: -.03em; font-weight: 700; }
+.entity-sub { font-size: 17px; color: var(--text-muted); }
+.entity-stats { display: flex; flex-wrap: wrap; gap: 22px; margin-top: 6px; }
+.entity-stats div b { display: block; font-size: 17px; font-weight: 700; }
+.entity-stats div span { font-size: 11px; color: var(--text-faint);
+                         text-transform: uppercase; letter-spacing: .08em; }
+
+.tags { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 0; }
+.tag { font-size: 12px; padding: 4px 12px; border-radius: var(--r-pill);
+       background: var(--surface-2); color: var(--text-muted); border: 0; }
+.tag:hover { color: var(--text); background: var(--line); }
+
+.prose { color: var(--text-muted); max-width: 68ch; margin: 0 0 8px;
+         white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* ─── relation rails ────────────────────────────────────────────────────── */
+.rail { margin: 34px 0; }
+.rail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.rail-title { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.rail-count { font-size: 12px; color: var(--text-faint); font-family: var(--mono); }
+/* the miniature of the hero's strand marker: this rail leaves the publisher */
+.rail-bridge {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
+  font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--bg); background: var(--gradient);
+  padding: 3px 10px; border-radius: var(--r-pill);
+}
+.rail-bridge b { color: var(--bg); }
+
+.banner {
+  display: flex; gap: 14px; align-items: flex-start;
+  border: 1px solid var(--line); border-left: 3px solid var(--secondary);
+  background: var(--surface); border-radius: var(--r-m);
+  padding: 16px 18px; margin: 26px 0; color: var(--text-muted); font-size: 14px;
+  max-width: 78ch;
+}
+.banner b { color: var(--text); }
+
+/* ─── loading / empty / error ───────────────────────────────────────────── */
+.loading { display: flex; flex-direction: column; gap: 14px; align-items: center;
+           padding: 80px 0; color: var(--text-muted); }
+.bar { width: min(420px, 80vw); height: 6px; border-radius: var(--r-pill);
+       background: var(--surface-2); overflow: hidden; }
+.bar i { display: block; height: 100%; background: var(--gradient);
+         transition: width .3s ease; }
+/* Also the freeze detector: pure CSS, so if it ever stops turning, something has
+   blocked the main thread. By construction nothing should. */
+.spinner { width: 26px; height: 26px; border-radius: 50%;
+           border: 3px solid var(--surface-2); border-top-color: var(--secondary);
+           animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
+.empty { padding: 64px 0; color: var(--text-faint); text-align: center; }
+.empty h3 { color: var(--text); margin: 0 0 8px; font-size: 18px; }
+
+.suggestions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.suggestion { background: var(--surface); border: 1px solid var(--line);
+              border-radius: var(--r-pill); padding: 9px 16px; font-size: 14px;
+              color: var(--text-muted); }
+.suggestion:hover { border-color: var(--secondary); color: var(--text); }
+
+.back { display: inline-flex; align-items: center; gap: 7px; background: none;
+        border: 0; color: var(--text-faint); font-size: 14px; padding: 20px 0 0; }
+.back:hover { color: var(--text); }
+
+/* ─── playback ──────────────────────────────────────────────────────────── */
+.play {
+  display: grid; place-items: center;
+  border: 0; border-radius: 50%;
+  background: var(--gradient); color: #fff;
+  box-shadow: var(--shadow-mid);
+  transition: transform .14s ease, filter .14s ease;
+}
+.play svg { width: 58%; height: 58%; }
+.play:hover:not(:disabled) { filter: brightness(1.12); transform: scale(1.06); }
+.play:active:not(:disabled) { transform: scale(.97); }
+.play-sm { width: 30px; height: 30px; }
+.play-md { width: 42px; height: 42px; }
+.play-lg { width: 52px; height: 52px; }
+.play.is-dead { background: var(--surface-2); color: var(--text-faint);
+                box-shadow: none; cursor: not-allowed; }
+.play-spin { width: 42%; height: 42%; border-radius: 50%;
+             border: 2px solid rgba(255,255,255,.35); border-top-color: #fff;
+             animation: spin .7s linear infinite; }
+
+/* Audius' hover pattern: the play control sits on the artwork. Always visible on
+   touch, where there is no hover to reveal it. */
+.card-play { position: absolute; right: 10px; bottom: 10px;
+             opacity: 0; transform: translateY(6px);
+             transition: opacity .16s ease, transform .16s ease; }
+.card:hover .card-play, .card:focus-within .card-play { opacity: 1; transform: none; }
+@media (hover: none) { .card-play { opacity: 1; transform: none; } }
+
+.playall {
+  border: 1px solid var(--line); background: var(--surface-2); color: var(--text);
+  border-radius: var(--r-pill); padding: 10px 20px; font-size: 14px; font-weight: 600;
+}
+.playall:hover:not(:disabled) { border-color: var(--secondary); }
+.playall:disabled { opacity: .6; cursor: default; }
+
+/* ─── taste controls ────────────────────────────────────────────────────── */
+.taste { display: inline-flex; gap: 4px; }
+.taste-btn {
+  display: grid; place-items: center;
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--line); background: rgba(25, 26, 39, .7);
+  color: var(--text-muted); backdrop-filter: blur(6px);
+  transition: color .14s ease, border-color .14s ease, transform .14s ease;
+}
+.taste-sm .taste-btn { width: 26px; height: 26px; }
+.taste-btn svg { width: 55%; height: 55%; }
+.taste-btn:hover { color: var(--text); border-color: var(--secondary); transform: scale(1.06); }
+.taste-btn.is-on { color: var(--primary); border-color: var(--primary); }
+.taste-btn.is-off { color: var(--text-faint); border-color: var(--text-faint); }
+
+.card-taste { position: absolute; left: 8px; bottom: 10px;
+              opacity: 0; transform: translateY(6px);
+              transition: opacity .16s ease, transform .16s ease; }
+.card:hover .card-taste, .card:focus-within .card-taste { opacity: 1; transform: none; }
+@media (hover: none) { .card-taste { opacity: 1; transform: none; } }
+
+/* ─── session-kernel readout ────────────────────────────────────────────── */
+/* Deliberately instrument-like: monospace figures and small meters, so it reads as
+   a model with state rather than as another content module. */
+.kstrip {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin: 20px 0 4px; padding: 10px 16px;
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--r-l);
+  font-family: var(--mono); font-size: 11px;
+}
+.kstrip-label {
+  font-family: var(--font); font-weight: 700; font-size: 11px;
+  letter-spacing: .12em; text-transform: uppercase; color: var(--secondary);
+}
+.kstrip-item { display: flex; align-items: center; gap: 6px; }
+.kstrip-k { color: var(--text-faint); letter-spacing: .04em; }
+.kstrip-v { color: var(--text); font-variant-numeric: tabular-nums; }
+.kstrip-meter { width: 42px; height: 3px; border-radius: var(--r-pill);
+                background: var(--surface-2); overflow: hidden; }
+.kstrip-meter i { display: block; height: 100%; background: var(--gradient);
+                  transition: width .35s cubic-bezier(.2,.7,.3,1); }
+.kstrip-sep { width: 1px; height: 16px; background: var(--line); }
+.kstrip-tags .kstrip-v { color: var(--text-muted); }
+.kstrip-reset {
+  margin-left: auto; background: none; border: 1px solid var(--line);
+  color: var(--text-faint); border-radius: var(--r-pill);
+  padding: 4px 12px; font-family: var(--font); font-size: 12px;
+}
+.kstrip-reset:hover { color: var(--text); border-color: var(--secondary); }
+
+@media (max-width: 720px) {
+  .kstrip { gap: 12px; font-size: 10px; }
+  .kstrip-meter { display: none; }
+}
+
+/* ─── now playing bar ───────────────────────────────────────────────────── */
+.nowplaying {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+  display: grid; align-items: center; gap: 16px;
+  grid-template-columns: 56px minmax(0, 1fr) auto minmax(180px, 1.2fr);
+  padding: 10px 24px;
+  background: rgba(47, 51, 72, .94);
+  backdrop-filter: blur(14px);
+  border-top: 1px solid var(--line);
+}
+.nowplaying::before {
+  content: ''; position: absolute; left: 0; right: 0; top: -1px;
+  height: 2px; background: var(--gradient);
+}
+.np-art { width: 56px; height: 56px; border-radius: var(--r-m); overflow: hidden;
+          background: var(--bg-sunken); cursor: pointer; flex: none; }
+.np-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.np-meta { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.np-title { background: none; border: 0; padding: 0; text-align: left;
+            font-size: 14px; font-weight: 700; color: var(--text);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-title:hover { color: var(--secondary); }
+.np-sub { display: flex; align-items: center; gap: 8px; min-width: 0;
+          font-size: 12px; color: var(--text-muted); }
+.np-sub > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.np-controls { display: flex; align-items: center; gap: 10px; }
+.np-step { background: none; border: 0; color: var(--text-muted); font-size: 17px;
+           line-height: 1; padding: 6px 8px; border-radius: var(--r-s); }
+.np-step:hover { color: var(--text); }
+.np-scrub { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.np-time { font-family: var(--mono); font-size: 11px; color: var(--text-faint);
+           font-variant-numeric: tabular-nums; }
+.np-dead { position: absolute; right: 24px; top: -26px;
+           font-size: 11px; color: var(--text-faint);
+           background: var(--surface); border: 1px solid var(--line);
+           border-radius: var(--r-pill); padding: 3px 10px; }
+
+/* A real <input type=range>, so seeking is keyboard-operable without extra code. */
+.np-scrub input[type='range'] {
+  -webkit-appearance: none; appearance: none;
+  flex: 1; min-width: 0; height: 4px; border-radius: var(--r-pill);
+  background: linear-gradient(to right,
+    var(--secondary) 0%, var(--secondary) var(--pct, 0%),
+    var(--surface-2) var(--pct, 0%), var(--surface-2) 100%);
+  cursor: pointer;
+}
+.np-scrub input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #fff; box-shadow: var(--shadow-near);
+}
+.np-scrub input[type='range']::-moz-range-thumb {
+  width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff;
+}
+
+@media (max-width: 720px) {
+  /* Drop the scrubber before the controls — being able to pause matters more than
+     being able to seek on a phone. */
+  .nowplaying { grid-template-columns: 48px minmax(0, 1fr) auto; padding: 8px 16px; }
+  .np-scrub { display: none; }
+  .np-art { width: 48px; height: 48px; }
+}
+
+@media (max-width: 860px) {
+  .ledger { grid-template-columns: 1fr; gap: 12px; }
+  .strands { height: 96px; }
+  .entity-head { flex-direction: column; align-items: flex-start; gap: 20px; }
+  .entity-art { width: 148px; height: 148px; }
+  .topbar .search { display: none; }
+}
+
+/* ── onboarding ─────────────────────────────────────────────────────────────
+   The first screen. Shares the hero's measure and rhythm so it reads as the
+   front of the app rather than a modal bolted over it. */
+.onboard { max-width: 860px; margin: 0 auto; padding: 40px 0 72px; }
+.onboard h1 { font-size: 44px; line-height: 1.1; margin: 8px 0 0; letter-spacing: -.02em; }
+.onboard h1 em {
+  font-style: normal;
+  background: var(--gradient);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.onboard-lede { color: var(--text-muted); max-width: 60ch; margin: 14px 0 0; line-height: 1.55; }
+
+.onboard-step { margin-top: 40px; }
+.onboard-step h2 {
+  font-size: 15px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); margin: 0 0 14px;
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+}
+.onboard-step h2 .count { text-transform: none; letter-spacing: 0; font-size: 13px; }
+
+.onboard-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.onboard-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: var(--r-pill);
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--text); font: inherit; font-size: 14px; cursor: pointer;
+  transition: background .12s, border-color .12s, transform .12s;
+}
+.onboard-chip:hover { background: var(--surface-2); }
+.onboard-chip:active { transform: scale(.97); }
+.onboard-chip.is-on { background: var(--gradient); border-color: transparent; }
+.onboard-chip-n { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.onboard-chip.is-on .onboard-chip-n { color: rgba(255, 255, 255, .75); }
+
+.onboard-artists {
+  display: grid; gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+}
+.onboard-artist {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 14px; border-radius: var(--r-l);
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--text); font: inherit; text-align: left; cursor: pointer;
+  transition: background .12s, border-color .12s, transform .12s;
+}
+.onboard-artist:hover:not(:disabled) { background: var(--surface-2); }
+.onboard-artist:active:not(:disabled) { transform: scale(.98); }
+.onboard-artist.is-on { border-color: var(--primary); background: var(--surface-2); }
+.onboard-artist:disabled { opacity: .4; cursor: not-allowed; }
+.onboard-artist-name { font-weight: 600; font-size: 15px; }
+.onboard-artist-meta { color: var(--text-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.onboard-artist .chip { margin-top: 6px; }
+
+.onboard-go {
+  margin-top: 36px; padding: 14px 28px; border: 0; border-radius: var(--r-pill);
+  background: var(--gradient); color: #fff; font: inherit; font-size: 16px;
+  font-weight: 600; cursor: pointer; box-shadow: var(--shadow-mid);
+  transition: opacity .12s, transform .12s;
+}
+.onboard-go:active:not(:disabled) { transform: scale(.98); }
+.onboard-go:disabled { opacity: .35; cursor: not-allowed; box-shadow: none; }
+.onboard-hint { margin-top: 10px; color: var(--text-faint); font-size: 13px; }
+
+@media (max-width: 620px) {
+  .onboard h1 { font-size: 32px; }
+  .onboard-artists { grid-template-columns: 1fr 1fr; }
+}
+
+/* ── about ──────────────────────────────────────────────────────────────────
+   Long-form reading, so it keeps a narrow measure and its own vertical rhythm
+   rather than borrowing the grid's. */
+.topnav { margin-left: auto; display: flex; gap: 4px; }
+.topnav-link {
+  background: none; border: 1px solid transparent; border-radius: var(--r-pill);
+  padding: 7px 15px; font: inherit; font-size: 14px; font-weight: 600;
+  color: var(--text-faint); cursor: pointer;
+  transition: color .12s, border-color .12s, background .12s;
+}
+.topnav-link:hover { color: var(--text); background: var(--surface); }
+.topnav-link.is-on { color: var(--text); border-color: var(--line); background: var(--surface); }
+
+.about { max-width: 720px; margin: 0 auto; padding: 40px 0 80px; }
+.about h1 { font-size: 42px; line-height: 1.1; margin: 8px 0 0; letter-spacing: -.02em; }
+.about h1 em {
+  font-style: normal;
+  background: var(--gradient);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.about h2 {
+  font-size: 15px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--text-faint); margin: 44px 0 12px;
+  padding-top: 20px; border-top: 1px solid var(--line);
+}
+.about p { color: var(--text-muted); line-height: 1.65; margin: 0 0 14px; }
+.about-lede { font-size: 17px; margin-top: 16px !important; }
+.about b { color: var(--text); font-weight: 600; }
+.about em { color: var(--text); font-style: italic; }
+
+.about-defs { margin: 0 0 18px; }
+.about-defs dt {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  font-weight: 700; color: var(--text); margin-top: 18px;
+}
+.about-defs dd {
+  margin: 6px 0 0; padding-left: 14px;
+  border-left: 2px solid var(--line);
+  color: var(--text-muted); line-height: 1.6;
+}
+.about-addr { font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--text-faint); }
+
+.about-caveats { margin: 0; padding: 0; list-style: none; }
+.about-caveats li {
+  border: 1px solid var(--line); border-left: 3px solid var(--secondary);
+  background: var(--surface); border-radius: var(--r-m);
+  padding: 14px 16px; margin-bottom: 10px;
+  color: var(--text-muted); font-size: 14px; line-height: 1.6;
+}
+
+@media (max-width: 620px) { .about h1 { font-size: 30px; } }
+
+/* Provenance note on a derived rail — says how the records were arrived at, since
+   "related" is a computed claim here, not an edge in the source data. */
+.rail-note { font-size: 12px; color: var(--text-faint); font-style: italic; }
+.rail-more {
+  margin-top: 14px; background: var(--surface); border: 1px solid var(--line);
+  border-radius: var(--r-pill); padding: 9px 18px; font: inherit; font-size: 14px;
+  color: var(--text-muted); cursor: pointer;
+}
+.rail-more:hover { border-color: var(--secondary); color: var(--text); }
+

@@ -1,0 +1,29 @@
+{
+  "nodes": {
+    "Artist": "audius.artist",
+    "Track": "audius.track",
+    "Playlist": "audius.playlist",
+    "Genre": "audius.genre",
+    "Mood": "audius.mood",
+    "Tag": "audius.tag"
+  },
+  "edges": [
+    { "rel": "created", "from": "Artist", "to": "Track" },
+    { "rel": "released", "from": "Artist", "to": "Playlist" },
+    { "rel": "curated", "from": "Artist", "to": "Playlist" },
+    { "rel": "follows", "from": "Artist", "to": "Artist" },
+    { "rel": "relatedTo", "from": "Artist", "to": "Artist" },
+    { "rel": "supports", "from": "Artist", "to": "Artist" },
+    { "rel": "reposted", "from": "Artist", "to": "Track" },
+    { "rel": "reposted", "from": "Artist", "to": "Playlist" },
+    { "rel": "favorited", "from": "Artist", "to": "Track" },
+    { "rel": "worksIn", "from": "Artist", "to": "Genre" },
+    { "rel": "contains", "from": "Playlist", "to": "Track" },
+    { "rel": "remixOf", "from": "Track", "to": "Track" },
+    { "rel": "hasStem", "from": "Track", "to": "Track" },
+    { "rel": "inGenre", "from": "Track", "to": "Genre" },
+    { "rel": "hasMood", "from": "Track", "to": "Mood" },
+    { "rel": "taggedWith", "from": "Track", "to": "Tag" },
+    { "rel": "sameAs", "from": "Artist", "to": "Artist" }
+  ]
+}

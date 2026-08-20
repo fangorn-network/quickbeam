@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=42"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quickbeam-audius"
+version = "0.1.0"
+description = "A pluggable quickbeam Source: Audius → two sovereign Fangorn graphs joined by a linkset."
+requires-python = ">=3.12"
+# quickbeam supplies the harness runtime, not the `Source` contract — AudiusSource
+# matches that structurally (see source.py). `hashids` is Audius' public id encoding:
+# several API fields hand back raw numeric ids while every path takes the encoded
+# form. It is one pure-Python file with no transitive dependencies.
+dependencies = ["quickbeam", "hashids"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+# The one line that wires this into quickbeam's CLI: `discover_sources()` reads the
+# `quickbeam.sources` entry-point group, so installing this package makes
+# `quickbeam data audius` appear with the full watch/publish/checkpoint loop.
+[project.entry-points."quickbeam.sources"]
+audius = "quickbeam_audius.source:AudiusSource"
+
+[project.scripts]
+audius-ingest = "quickbeam_audius.source:run"
+audius-link = "quickbeam_audius.link:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["quickbeam_audius*"]

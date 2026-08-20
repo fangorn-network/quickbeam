@@ -13,3 +13,50 @@ node_modules/
 **/personal_notes/
 /cdn**
 /build
+# generated build output (audius demo) — recipe in examples/audius/audius-build/RUNBOOK.md
+# Leading **/ on purpose: an anchored `audius-build/…` silently stopped matching
+# when these moved under examples/, which un-ignored every artifact below.
+**/audius-build/audius_cache.json
+**/audius-build/edges_all.json
+**/audius-build/cdn/
+**/audius-build/stage/
+**/audius-build/*.log
+**/.wrangler/
+**/*.tsbuildinfo
+**/dist/**
+
+# ── audius-large-build ──────────────────────────────────────────────────────
+# ~37 GB of build artifacts. The SCRIPTS here are tracked on purpose — dump_source.py,
+# embed_stage.py, bootstrap.py, repair_vocab_edges.py, restore.sh, fetch-dump.sh and
+# RUNBOOK.md are the whole reproducible pipeline. Everything they PRODUCE is ignored:
+# rebuilding from the dump is a documented recipe, and none of it belongs in history.
+#
+# The dump is a PRODUCTION social database — it contains chat_message and
+# chat_blocked_users. Never commit it, and delete it once extraction is done.
+**/audius-large-build/dump.bin
+**/audius-large-build/*.bin
+**/audius-large-build/*.jsonl
+# 4.9 GB of baked shards (audius-large + audius-home) and the codebook.
+**/audius-large-build/cdn/
+# 6.9 GB: the staged volume_*.json graph and the 2.4 GB edges.sqlite. This is the one
+# that would actually have been pushed — 17 files, none of them small.
+**/audius-large-build/stage/
+# Postgres data if restore.sh is ever pointed at a bind mount instead of a volume.
+**/audius-large-build/pgdata/
+# Build logs, up to ~7 MB each.
+**/audius-large-build/*.log
+
+# ── belt and braces ─────────────────────────────────────────────────────────
+# Each app carries its own .gitignore for `dist` and `public/cdn`, which is where the
+# staged snapshot lands (78 MB for audius-demo alone). Repeat them here so a new app
+# copied from an existing one cannot leak a snapshot before someone notices its
+# .gitignore did not come along.
+**/public/cdn/
+**/*.sqlite
+**/*.ndjson.gz
+
+# Local env. Machine-specific (ports, tunnel URLs), and the convention every vite app
+# here follows. `.env.local.example` is committed instead, so the wiring is
+# discoverable without pinning anyone to this machine's ports.
+.env.local
+.env.*.local

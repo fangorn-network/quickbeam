@@ -1,0 +1,6 @@
+[console_scripts]
+audius-ingest = quickbeam_audius.source:run
+audius-link = quickbeam_audius.link:main
+
+[quickbeam.sources]
+audius = quickbeam_audius.source:AudiusSource

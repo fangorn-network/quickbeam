@@ -11,7 +11,7 @@ This repo contains infrastructure for building and serving vector search over on
 ## How it works
 
 - **`quickbeam build`**: offline (local, trusted) embeddings builder. Pulls from subgraph, resolves IPFS, joins schemas, embeds, writes to Qdrant.
-- **`quickbeam watch`**: live daemon that polls for new dataset tips and embeds them automatically as they arrive. Keeps the GPU model loaded between cycles. A dataset tip is now a **git-native commit** (a small IPFS object wrapping the manifest, with a parent link and an embedding contract); the watcher resolves the commit, **inherits `model`/`dim`/`distance` from it** (sizes the collection to the data, not a CLI default), and **diffs the new tip against the last-built commit** so it embeds only what changed and **tombstones entities the commit removed**. Legacy raw-manifest tips still work unchanged. See [`docs/NEW_QUICKSTART.md`](docs/NEW_QUICKSTART.md).
+- **`quickbeam watch`**: live daemon that subscribes to one or more `PUBLISHER:SUBSPACE` sources within an `--app` (`*` widens either side to the whole app) and embeds commits as they land — push-based via the `fangorn` light client, no indexer and no polling. Keeps the GPU model loaded between changes. Each commit is a self-contained on-chain diff, so it embeds only what changed and **tombstones vertices the commit removed**. See [Watch for new events](#3-watch-for-new-events-optional) and [`docs/NEW_QUICKSTART.md`](docs/NEW_QUICKSTART.md).
 - **`quickbeam serve`**: read-only API server. Connects to Qdrant and serves search, browse, and catalog endpoints. It does not ingest on startup, but instead expects the collection to already be populated, either by the builder or by seeding from a snapshot. Can optionally run the watcher alongside it (`serve --watch`) so one process both ingests and serves, and can gate the search routes behind [x402 payments](#x402-payment-gating).
 - **`quickbeam mcp`**: a [Model Context Protocol](#mcp-server) layer for agents. A self-contained **local pull-client of the [Semantic CDN](#semantic-cdn)** — it pulls a dataset's shards and searches them locally (the query never leaves the process), exposing semantic search *and* typed-edge graph traversal over raw records, with on-chain provenance on every result, and can optionally charge the calling agent per tool call via [x402](#x402-payment-gating).
 - **`quickbeam cdn` + `quickbeam pull`**: the [Semantic CDN](#semantic-cdn) — instead of running queries on the server (where the node sees every query = intent), the operator *bakes* the embedded graph into immutable, content-addressed shard files (a "domain") and *serves* them as static, resumable downloads. A user *pulls* a domain into their own local Qdrant and queries it offline. Knowledge moves to the user; the network never sees a query. See [docs/SEMANTIC_CDN.md](docs/SEMANTIC_CDN.md).
@@ -78,6 +78,14 @@ pip install -e ".[agent]"   # fastmcp + eth-account + httpx
 pip install -e ".[dev]"     # pytest + fastmcp + eth-account (to run the test-suite)
 ```
 
+### Running the Audius demo
+
+Two sovereign publishers fused by a linkset, searched client-side in the browser.
+**[`examples/audius/audius-build/RUNBOOK.md`](examples/audius/audius-build/RUNBOOK.md)** takes it from a fresh clone to a
+running demo — Part 0 is setup, Part 1 rebuilds the graph with one command, Part 2 is
+the optional on-chain publish. The build outputs (220 MB) are gitignored and
+regenerated; only the crawl cache can't be reproduced byte-for-byte from the repo.
+
 ---
 
 ## Quickstart
@@ -143,43 +151,64 @@ quickbeam build --umap-only
 
 ### 3. Watch for new events (optional)
 
-After an initial build, run `quickbeam watch` to keep the collection up to date as new manifests are published on-chain.
+After an initial build, run `quickbeam watch` to keep the collection up to date as commits land on-chain. It is push-based: one `fangorn subscribe` light-client stream per source, no indexer and no polling (`--poll-interval` is only the reconnect backoff).
 
 ```sh
 quickbeam watch \
-  --bundle "fangorn.mb.bundle.v1=0xabc123..." \
-  --graph-api-key <key> \
-  --ipfs-gateway https://your-gateway.mypinata.cloud/ipfs \
-  --ipfs-gateway-key <pinata-jwt> \
-  --poll-interval 120
+  --app sond3r.test.1 --source 0x7a78...:media \
+  --collection sond3r --cdn-dir ./cdn --cdn-domain sond3r
 ```
 
-The watcher uses the same checkpoint file as the builder. On startup it reads `last_block` from the checkpoint and only queries subgraph events with `blockNumber_gt: last_block`, so it never re-scans the full history. The GPU model is loaded once and kept alive across poll cycles.
+On startup each source is seeded once with `fangorn read` so the existing corpus is embedded before the stream goes live; after that every commit arrives as a self-contained diff, is applied to an in-memory snapshot, re-projected, embedded, and (with `--cdn-dir`/`--cdn-domain`) shipped as a CDN delta. The GPU model is loaded once and kept alive.
 
-**Git-native tips (commit diff).** When a tip is a commit, the watcher: (1) at startup, resolves the tip commit for the watched schema and **inherits its embedding contract** (`model`/`dim`/`distance`) to size the collection — the CLI `--embedding-model`/`--dim`/distance flags are only a fallback when the commit carries no contract; (2) each cycle, diffs the new tip against `last_tip` and **deletes the points of any entities the commit dropped** (delete propagation) before embedding the additions. Raw-manifest tips (pre-commit publishes) are handled exactly as before.
+#### Namespaces: `app : publisher : subspace`
 
-#### Filter hierarchy
+A namespace is a triple. Two of the three come from the source string, the third does not:
 
-All filters are optional and combinable. Narrower filters reduce both subgraph load and embedding work.
+| Part | Where it comes from |
+|---|---|
+| **app** | `--app <name-or-id>`. **Not** part of `--source`. Omit it and you get whatever the local fangorn client is set to (`appId` in `~/.fangorn/config.json`, `fangorn set-app`, or `FANGORN_APP_ID`) — fine interactively, a footgun for a daemon, so pass it explicitly. |
+| **publisher** | the address left of the `:` in `--source` |
+| **subspace** | the name right of the `:` |
+
+All three are indexed topics on the `StateCommitted` event, so the subscription is a node-side filter — `*` on either side of the `:` widens it:
 
 ```sh
-# Watch all publishers, all dataset names:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc...
+# One publisher's one subspace — the tightest filter:
+quickbeam watch --app sond3r.test.1 --source 0x7a78...:media
 
-# Only a specific publisher:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --owner 0xdeadbeef
+# One publisher, every subspace they write in this app:
+quickbeam watch --app sond3r.test.1 --source '0x7a78...:*'
 
-# Only certain dataset names (any publisher):
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --dataset Track Recording
+# That subspace name across every publisher:
+quickbeam watch --app sond3r.test.1 --source '*:media'
 
-# Most specific — one publisher's named datasets:
-quickbeam watch --bundle fangorn.mb.bundle.v1=0xabc... \
-  --owner 0xdeadbeef --dataset Track
+# The whole app — every publisher, every subspace:
+quickbeam watch --app sond3r.test.1 --source '*:*'
 ```
 
-`--owner` and `--dataset` are both repeatable. `--dataset` filters on the `name` field of the `ManifestPublished` event — the name the publisher assigned when registering the dataset.
+The same override exists on the fangorn CLI itself as a global option, ahead of the subcommand: `fangorn --app sond3r.test.1 read media --owner 0x8ce6...`, `fangorn --app sond3r.test.1 subscribe --all`.
+
+`--source` is repeatable; each source gets its own independent subscription, and a wildcard source keeps a separate in-memory snapshot per `(publisher, subspace)` pair it sees, seeding each one the first time a commit for it arrives.
+
+#### Catching up on history
+
+A subscription starts at the current chain tip, so a wildcard source only learns about namespaces that commit while it is running (there is no single namespace for it to seed with `fangorn read`). To pick up what was published earlier, replay from a block:
+
+```sh
+quickbeam watch --app sond3r.test.1 --source '*:*' --from-block 297435100
+```
+
+Catch-up is fetched in windows of `FANGORN_LOG_WINDOW` blocks (default 1000) because RPC providers cap the block span of one `eth_getLogs` call — the public Arbitrum Sepolia endpoint rejects anything wider with a bare `internal server errror`. Pick a block near the first publish; `--from-start` (genesis) is only practical against a private RPC with a large window.
+
+#### Watching returns nothing
+
+In order of likelihood:
+
+1. **The app id is not what you think.** Without `--app` the watcher inherits the local client's app (`~/.fangorn/config.json`); topic 2 of the `eth_getLogs` call in the error output is `keccak256(appId)`, so you can check which one it used. Passing the *app* name as the *subspace* — `--source 0xyou:sond3r.test.1` when `sond3r.test.1` is your app — filters on a namespace nobody has ever written to.
+2. **The namespace really is empty.** Check directly: `fangorn read <subspace> --owner <publisher>`. A `head: null` with `vertices: []` means nothing has been committed there. Use `--source '*:*'` to see what the app *does* contain.
+3. **Live-from-tip.** Nothing has committed since you started — see catch-up above.
+4. **RPC rate limits.** `429 Too Many Requests` from `https://sepolia-rollup.arbitrum.io/rpc` kills the stream and the watcher reconnects on the backoff. Point the SDK at a private endpoint.
 
 ### 4. Start the server
 
@@ -206,6 +235,31 @@ quickbeam serve \
 ```
 
 Note this loads the embedding model twice (once in each process), so plan VRAM accordingly — or run the two commands as separate services against the same Qdrant.
+
+---
+
+## Deployment
+
+For running Quickbeam as a service rather than from a shell, see
+**[`DOCKER-README.md`](DOCKER-README.md)**.
+
+The short version: **one shared instance, and each namespace is embedded exactly
+once.** Docker Compose brings up `qdrant`, `watch`, `cdn serve`, `serve` and `mcp`;
+`watch` polls `--sources-url` for its watch list and starts or cancels a stream per
+namespace with no restart, so namespaces arrive from the Fangorn website rather than
+by editing config here.
+
+Users get a **view** — a named set of namespaces with its own search URL and MCP
+catalog. A view is a [`scope` filter](#api) over the one shared collection, never a
+copy of the vectors, so a second requester asking for an already-watched namespace
+costs no extra indexing. `webworker/quickbeam-registry` holds the views, serves the
+**deduplicated union** of their sources as the watch list, gates writes on the
+caller's subscription, and proxies queries so a browser reaches the instance over
+HTTPS.
+
+That shape exists because the embedding model and the embedding work are the expensive
+residents: one process loads the model once for every namespace it watches, where a
+container per namespace would load a copy each and re-embed identical content.
 
 ---
 
@@ -656,28 +710,31 @@ All config is via CLI flags. Run `quickbeam build --help` or `quickbeam serve --
 
 | Flag | Default | Description |
 |---|---|---|
-| `--bundle` | required | `NAME=0x...` bundle schema to watch |
-| `--root-profile` | required | Named projection to emit, repeatable. e.g. `--root-profile asset --root-profile transfer` |
-| `--owner` | | Filter to this publisher address. Repeatable. |
-| `--dataset` | | Filter to these dataset names. Accepts multiple values. |
-| `--poll-interval` | `60` | Seconds between subgraph polls |
-| `--subgraph-url` | Fangorn studio URL | The Graph subgraph endpoint |
-| `--graph-api-key` | `""` | The Graph gateway API key |
-| `--ipfs-gateway` | `https://gateway.pinata.cloud/ipfs` | IPFS gateway |
-| `--ipfs-gateway-key` | | Bearer token for authenticated IPFS gateways |
+| `--source` | required | `PUBLISHER:SUBSPACE` to watch, repeatable. `*` on either side widens to the app-level filter (`0x..:*`, `*:docs`, `*:*`) |
+| `--app` | local client's app | App (global namespace) to watch — a name or a 32-byte app id |
+| `--fangorn-bin` | `fangorn` | How to invoke the fangorn CLI — may be a full command, shell-split |
+| `--from-block` | | Replay each source's commits from this block before going live |
+| `--from-start` | `false` | Replay from genesis (ignored if `--from-block` is set); needs a private RPC |
+| `--root-profile` | auto | Named projection to emit, repeatable. Omitted: one profile per vertex tag actually present |
+| `--profiles-file` | | JSON file of custom/override root profiles |
+| `--max-depth` | `1` | Graph-walk depth per profile |
+| `--poll-interval` | `60` | Reconnect backoff in seconds — the watch itself is push-based |
+| `--seed-timeout` | `180` | Max seconds for the startup `fangorn read` seed before going live without it |
+| `--cdn-dir` | | Baked CDN directory — enables live delta delivery when set |
+| `--cdn-domain` | | Domain to append new records to (baked on first run if missing) |
+| `--cdn-config` | `domains.json` | Domain config used to resolve the append scan filter |
 | `--qdrant-host` | `localhost` | Qdrant host |
 | `--qdrant-port` | `6333` | Qdrant HTTP port |
 | `--qdrant-grpc-port` | `6334` | Qdrant gRPC port |
 | `--collection` | `fangorn` | Qdrant collection name |
-| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Shared with `build` — tracks `last_block` and completed manifests |
+| `--checkpoint-file` | `./db/ingest_checkpoint.json` | Shared with `build` — tracks the projected vertex set per `publisher:subspace` |
 | `--embedding-model` | `nomic-ai/nomic-embed-text-v1.5` | fastembed model name |
 | `--dim` | `256` | Matryoshka output dimensions |
 | `--embed-batch` | `16` | GPU embed batch size |
-| `--role-map-file` | `./db/role_map.json` | Role map path — loaded if present, inferred on first cycle otherwise |
+| `--role-map-file` | `./db/role_map.json` | Role map path — loaded if present, inferred on first real batch otherwise |
 | `--searchable-fields` | `auto` | Field allowlist or `auto` |
-| `--page-size` | `100` | Subgraph pagination page size |
-| `--ipfs-timeout` | `20` | IPFS request timeout in seconds |
-| `--concurrency` | `16` | Max concurrent IPFS fetches |
+| `--label-cap` | `50` | Max folded labels per group |
+| `--node-cap` | `2000` | Max nodes visited per root |
 
 ### `quickbeam serve`
 
@@ -796,23 +853,36 @@ All endpoints return JSON. Hits are shaped as `{ id, fields, owner, meta, score?
 
 > When `--x402-pay-to` is set, `/search`, `/search/vector`, and `/search/text` require an `X-PAYMENT` header — see [x402 payment gating](#x402-payment-gating).
 
+> **Scoping.** The three search endpoints take `owner`, `namespace`, and the
+> repeatable `scope=OWNER:NAMESPACE`. One collection holds every watched namespace
+> (see [Deployment](#deployment)) — each point carries `owner` at the payload top
+> level and `meta.namespace` nested — and embeddings are **not** duplicated per
+> caller, so a caller's slice of the corpus is a filter.
+>
+> Several `scope` pairs OR together, each pair AND-ing its own halves, which is what
+> lets one endpoint span several namespaces:
+> `?scope=0xA:tracks&scope=0xB:reviews`. Either half may be empty (`0xA:`, `:tracks`)
+> to leave it unconstrained. `scope` takes precedence over `owner`/`namespace`.
+>
+> `/browse` is **not** scoped: it returns the whole collection.
+
 ### `GET /browse`
 Paginated browse. `?limit=20&offset=0`
 
 ### `GET /search`
 Semantic search by text — embeds the query server-side.
-`?q=late+night+driving&n_results=10&owner=0x...`
+`?q=late+night+driving&n_results=10&scope=0xA:robinhood&scope=0xB:music`
 
 ### `POST /search/vector`
 Query by raw embedding vector.
 ```json
-{ "embedding": [...], "n_results": 20, "owner": "0x..." }
+{ "embedding": [...], "n_results": 20, "scope": ["0xA:robinhood", "0xB:music"] }
 ```
 
 ### `POST /search/text`
 Lexical search over an in-memory index of title, subtitle, and tag fields. Faster than semantic search for exact name lookups.
 ```json
-{ "q": "arctic monkeys", "limit": 20, "owner": "0x..." }
+{ "q": "arctic monkeys", "limit": 20, "scope": ["0xA:robinhood"] }
 ```
 
 ### `POST /embed`

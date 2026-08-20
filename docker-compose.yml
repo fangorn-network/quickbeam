@@ -1,0 +1,102 @@
+# One shared Quickbeam instance serving every watched namespace.
+#
+#   cp .env.example .env    # set SOURCES_URL / ETH_PRIVATE_KEY / PINATA_GATEWAY
+#   docker compose up -d --build
+#
+# Namespaces are NOT configured here. `watch` polls SOURCES_URL (the registry
+# worker) and starts or cancels a stream per namespace with no restart, so adding a
+# customer is a row in the worker's KV — see DOCKER-README.md.
+#
+# Everything embeds into one Qdrant collection; each point carries `owner`,
+# `meta.app` and `meta.namespace`, so `serve` scopes results (search AND export) with
+# ?scope=APP:OWNER:NAMESPACE — repeatable, ORed — and each namespace still gets its
+# own CDN domain.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+    volumes:
+      - qdrant:/qdrant/storage
+    ports:
+      # Loopback only — nothing outside the box needs to reach Qdrant directly.
+      - "127.0.0.1:6333:6333"
+
+  # Follows every watched publisher's on-chain head and embeds commits as they land.
+  # Also bakes each namespace's initial CDN domain, which creates /data/cdn.
+  watch:
+    build: .
+    image: ${IMAGE:-quickbeam:local}
+    restart: unless-stopped
+    depends_on: [qdrant]
+    environment:
+      # Read-only work, but the fangorn CLI refuses to start without a key.
+      ETH_PRIVATE_KEY: ${ETH_PRIVATE_KEY}
+      PINATA_GATEWAY: ${PINATA_GATEWAY}
+    volumes:
+      - data:/data
+    command:
+      - watch
+      # Which app the reads resolve against. Unset means the fangorn CLI's DEFAULT_APP,
+      # which is NOT what the worker's watchlist points at unless they happen to match —
+      # a mismatch reads an empty namespace with no error. Keep APP equal to the
+      # worker's DEFAULT_APP.
+      - --app=${APP}
+      - --sources-url=${SOURCES_URL}
+      - --sources-refresh=${SOURCES_REFRESH:-60}
+      - --collection=${COLLECTION:-fangorn}
+      - --cdn-dir=/data/cdn
+      - --checkpoint-file=/data/db/checkpoint.json
+      - --role-map-file=/data/db/role_map.json
+      - --qdrant-url=http://qdrant:6333
+      - --qdrant-api-key=${QDRANT_API_KEY}
+      # Reconnect backoff for a dropped subscribe stream — NOT a monitoring interval.
+      # `watch` is push-based off `fangorn subscribe` and reacts as commits land.
+      - --poll-interval=${INTERVAL:-60}
+
+  # Static shard delivery, one domain per namespace. Exits at boot until `watch` has
+  # created /data/cdn; the restart policy covers that first-run window.
+  cdn:
+    build: .
+    image: ${IMAGE:-quickbeam:local}
+    restart: unless-stopped
+    depends_on: [watch]
+    volumes:
+      - data:/data
+    ports:
+      - "${CDN_PORT:-8090}:8090"
+    command: [cdn, serve, --cdn-dir=/data/cdn, --cors, --port=8090]
+
+  # The search API. Callers scope with ?owner=&namespace=; the registry worker
+  # proxies to it so browsers get HTTPS.
+  serve:
+    build: .
+    image: ${IMAGE:-quickbeam:local}
+    restart: unless-stopped
+    depends_on: [qdrant]
+    ports:
+      - "${SEARCH_PORT:-8080}:8080"
+    command:
+      - serve
+      - --collection=${COLLECTION:-fangorn}
+      - --qdrant-url=http://qdrant:6333
+      - --qdrant-api-key=${QDRANT_API_KEY}
+      - --host=0.0.0.0
+      - --port=8080
+
+  # Agent-facing MCP, served at /mcp (not /). A CDN pull-client, so it talks to `cdn`
+  # over HTTP and needs no shared volume and no Qdrant.
+  mcp:
+    build: .
+    image: ${IMAGE:-quickbeam:local}
+    restart: unless-stopped
+    depends_on: [cdn]
+    ports:
+      - "${MCP_PORT:-8765}:8765"
+    command: [mcp, --cdn-url=http://cdn:8090, --transport=http, --host=0.0.0.0, --port=8765]
+
+volumes:
+  qdrant:
+  data:

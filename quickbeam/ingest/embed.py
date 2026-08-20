@@ -42,6 +42,15 @@ def _build_text_embedding(args, cpu_only: bool = False):
         if os.path.isdir(snap) and not os.path.isfile(os.path.join(snap, "onnx", "model.onnx")):
             print(f"[Builder] Corrupt model cache at {snap!r}, removing for re-download...")
             shutil.rmtree(snap)
+    # Only ASK for CUDA if this build of onnxruntime actually has it. Requesting an
+    # unavailable provider is fatal at session construction (ValueError), and
+    # ResilientEmbedder's fallback only covers OOM *during* embedding — so without
+    # this check every CPU-only host (the deployment container, a laptop, CI) dies on
+    # startup with no way to opt out short of editing the source.
+    import onnxruntime as ort
+    if not cpu_only and "CUDAExecutionProvider" not in ort.get_available_providers():
+        print("[Builder] CUDAExecutionProvider unavailable — using CPU.")
+        cpu_only = True
     providers = ["CPUExecutionProvider"] if cpu_only else [
         ("CUDAExecutionProvider", {
             "device_id": 0,
@@ -143,19 +152,30 @@ def ensure_indexes(qdrant, collection):
         ("fields.locality",   models.KeywordIndexParams(type="keyword")),
         # Event records (merged in via events_pg): browse upcoming/past + by source,
         # and look up the events a given Business hosts (fields.hostBusinessId).
+        # One collection can hold every watched namespace, so this is the filter the
+        # search routes and the CDN bake scope on — index it or they full-scan.
+        ("meta.namespace",        models.KeywordIndexParams(type="keyword")),
+        ("meta.app",              models.KeywordIndexParams(type="keyword")),
         ("fields.source",         models.KeywordIndexParams(type="keyword")),
         ("fields.isPast",         models.BoolIndexParams(type="bool")),
         ("fields.hostBusinessId", models.KeywordIndexParams(type="keyword")),
         # this is schizo
         ("fields.content",  models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
         ("fields.filename", models.TextIndexParams(type="text", tokenizer=models.TokenizerType.WORD, lowercase=True)),
+        # Codebook cell for private retrieval (`cdn index --push-cells` backfills it).
+        # The bucket endpoint's whole cost model is a filtered scroll on this field,
+        # so without the index every bucket fetch is a full-collection scan.
+        ("cell", models.IntegerIndexParams(type="integer")),
     ]
+    created = []
     for field, schema in specs:
         try:
             qdrant.create_payload_index(collection_name=collection, field_name=field, field_schema=schema)
-            print(f"[index] created {field}")
-        except Exception as e:
-            print(f"[index] {field} already present ({type(e).__name__})")
+            created.append(field)
+        except Exception:  # noqa: BLE001 — already present is the overwhelmingly common case
+            pass
+    if created:
+        print(f"[index] created {len(created)}/{len(specs)}: {', '.join(created)}")
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +262,12 @@ async def _embed_and_upload(args, qdrant, embed_engine, records, role_map, dim, 
                         "fields":     p["fields"],
                         # Carry the on-chain source CID so served results have real
                         # provenance (the `source_cid` the MCP layer surfaces).
-                        "meta":       {"namespace": p["meta"].get("namespace"),
+                        # This literal is written by hand, so a key added to
+                        # project_source's `meta` is DROPPED here unless added twice —
+                        # which is how meta.app once shipped absent while the
+                        # projection looked correct and every app-scoped filter missed.
+                        "meta":       {"app": p["meta"].get("app"),
+                                       "namespace": p["meta"].get("namespace"),
                                        "sourceCid": p["meta"].get("sourceCid")},
                     }
                 )
