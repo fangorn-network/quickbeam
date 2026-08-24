@@ -388,6 +388,12 @@ def _coverage(vectors: list, k: int = COVERAGE_K, dim: int = COVERAGE_DIM) -> di
     works because nomic concentrates information there — the same assumption the
     client makes when it truncates its own query to compare. A model without that
     property must publish `dim == manifest.dim` or routing degrades silently.
+
+    Measured on the 917-row `places` bake (nomic-embed-text-v1.5, 256d): fitting at
+    128d instead of 256d preserves 0.987 of pairwise co-clustering, so the truncation
+    costs ~nothing. The top1-top2 cosine margin WITHIN one domain is thin (~0.05) —
+    these centroids are for choosing between domains, which are far apart, not for
+    routing a query to a cell inside one. That is what index.py's codebook is for.
     """
     import numpy as np
 
