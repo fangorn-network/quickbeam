@@ -136,6 +136,14 @@ def cdn_precompute(ctx: typer.Context):
     precompute_main()
 
 
+@cdn_app.command("coverage", **_PASSTHROUGH)
+def cdn_coverage(ctx: typer.Context):
+    """Fit the routing summary so clients can rank a domain without downloading it."""
+    _fwd("quickbeam cdn coverage", ctx.args)
+    from quickbeam.cdn import coverage_main
+    coverage_main()
+
+
 @cdn_app.command("index", **_PASSTHROUGH)
 def cdn_index(ctx: typer.Context):
     """Fit the public codebook for private retrieval, and measure what it discloses."""

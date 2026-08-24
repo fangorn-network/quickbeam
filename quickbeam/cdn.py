@@ -998,6 +998,92 @@ def precompute_main():
 
 
 # ---------------------------------------------------------------------------
+# COVERAGE — backfill the routing summary into an ALREADY-baked CDN
+# ---------------------------------------------------------------------------
+def write_coverage(cdn_dir: str, domain: str, limit: int = 200_000) -> dict | None:
+    """Fit `coverage` from a domain's own baked shards and fold it into
+    manifest.json + catalog.json.
+
+    `bake` writes coverage inline now, but a CDN that is already deployed should not
+    have to be re-embedded to gain routing — every vector it needs is sitting in the
+    shards it already serves. No qdrant, no model, no GPU.
+    """
+    import numpy as np
+
+    from quickbeam import index as ix
+
+    domain_dir = os.path.join(cdn_dir, domain)
+    if not os.path.exists(os.path.join(domain_dir, "manifest.json")):
+        raise SystemExit(f"[coverage] domain {domain!r} not baked yet — run `cdn bake` first")
+    # ponytail: `limit` truncates from the FRONT of the shards, which is bake order.
+    # The sample below is random within that window, so a domain smaller than the
+    # limit is sampled correctly and a larger one is biased toward its older half.
+    # Raise the limit, or re-bake (which reservoir-samples the whole scroll).
+    _, X, _ = ix.load_corpus(domain_dir, limit=limit)
+    if len(X) > COVERAGE_SAMPLE:
+        X = X[np.random.default_rng(0).choice(len(X), size=COVERAGE_SAMPLE, replace=False)]
+    coverage = _coverage(X.tolist())
+
+    manifest_path = os.path.join(domain_dir, "manifest.json")
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    manifest["coverage"] = coverage
+    tmp = manifest_path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(manifest, f, indent=2)
+    os.replace(tmp, manifest_path)
+
+    # And the catalog entry, which is the copy a client reads WITHOUT fetching each
+    # manifest — the whole point is to choose a domain before touching it.
+    catalog_path = os.path.join(cdn_dir, "catalog.json")
+    if os.path.exists(catalog_path):
+        with open(catalog_path) as f:
+            cat = json.load(f)
+        for e in cat.get("domains", []):
+            if e.get("name") == domain:
+                e["coverage"] = coverage
+        cat["generated_at"] = int(time.time())
+        with open(catalog_path, "w") as f:
+            json.dump(cat, f, indent=2)
+
+    print(f"[coverage] domain {domain!r}: {len(coverage['vectors'])} centroids x "
+          f"{coverage['dim']}d from {coverage['sampled']} sampled vectors; "
+          f"cells {min(coverage['counts'])}/{max(coverage['counts'])} min/max")
+    return coverage
+
+
+def _coverage_args():
+    p = argparse.ArgumentParser(
+        prog="quickbeam cdn coverage",
+        description="Fit the routing summary (k centroids over the domain's own "
+                    "vectors) and fold it into manifest.json + catalog.json, so a "
+                    "client can rank this domain WITHOUT downloading it.")
+    p.add_argument("--cdn-dir", default="./cdn", help="Baked CDN directory.")
+    p.add_argument("--domain", default="", help="Domain to fit. Omit for every domain in the catalog.")
+    p.add_argument("--limit", type=int, default=200_000,
+                   help="Max vectors read back per domain before sampling.")
+    return p.parse_args()
+
+
+def coverage_main():
+    args = _coverage_args()
+    if args.domain:
+        names = [args.domain]
+    else:
+        _, catalog = _read_catalog(args.cdn_dir)
+        names = sorted(catalog)
+        if not names:
+            raise SystemExit(f"[coverage] no catalog.json under {args.cdn_dir}")
+    for name in names:
+        # load_corpus exits on a domain with no embeddings. Fitting every domain is
+        # the common case, and one un-embedded domain must not abandon the rest.
+        try:
+            write_coverage(args.cdn_dir, name, limit=args.limit)
+        except SystemExit as e:
+            print(f"[coverage] domain {name!r}: skipped — {e}")
+
+
+# ---------------------------------------------------------------------------
 # INDEX — public codebook for private retrieval (numerics live in quickbeam/index.py)
 # ---------------------------------------------------------------------------
 def write_index(cdn_dir: str, domain: str, C, bmap, labels, ids, scale: float,

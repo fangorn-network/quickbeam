@@ -43,3 +43,36 @@ def test_empty_domain_publishes_no_coverage():
     # A domain with no vectors must omit the key, not publish a zero centroid that
     # would tie with every query.
     assert _coverage([]) is None
+
+
+def test_backfill_folds_coverage_into_an_already_baked_cdn(tmp_path):
+    """A deployed CDN gains routing from the shards it already serves — no qdrant,
+    no model, no re-embed."""
+    import gzip
+    import json
+
+    from quickbeam.cdn import write_coverage
+
+    rng = np.random.default_rng(1)
+    X = _cluster([1, 2, 3], 50, rng)
+    cdn, dom = tmp_path, "0xaaa/cooking"
+    d = cdn / dom
+    d.mkdir(parents=True)
+    with gzip.open(d / "shard-0000.ndjson.gz", "wt") as f:
+        for i, v in enumerate(X):
+            f.write(json.dumps({"track_id": f"t{i}", "embedding": v.tolist(),
+                                "fields": {"entityType": "video"}}) + "\n")
+    (d / "manifest.json").write_text(json.dumps(
+        {"name": dom, "count": len(X), "dim": 256,
+         "shards": [{"file": "shard-0000.ndjson.gz", "count": len(X)}]}))
+    (cdn / "catalog.json").write_text(json.dumps({"domains": [{"name": dom, "count": len(X)}]}))
+
+    cov = write_coverage(str(cdn), dom)
+    assert cov["sampled"] == 50
+
+    # BOTH copies, because the client reads catalog.json to choose a domain and only
+    # fetches the manifest once it has. Updating one is the failure that looks fine.
+    assert json.loads((d / "manifest.json").read_text())["coverage"] == cov
+    entry = json.loads((cdn / "catalog.json").read_text())["domains"][0]
+    assert entry["coverage"] == cov
+    assert entry["count"] == 50, "backfill must not disturb the rest of the entry"
