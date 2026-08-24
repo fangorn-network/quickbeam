@@ -468,7 +468,8 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             # removals of already-absent cids are no-ops).
             if (ch_owner, ch_ns) not in snapshot["seeded"] and (ch_owner, ch_ns) not in tried:
                 tried.add((ch_owner, ch_ns))
-                await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
+                await _seed_pair(_pair_cdn_args(args, qdrant, ch_owner, ch_ns),
+                                 qdrant, embed_engine, role_map_ref, dim, truncate,
                                  checkpoint, ch_owner, ch_ns, snapshot)
 
             state = _ns_state(snapshot, (ch_owner, ch_ns))
@@ -507,7 +508,8 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
             print(f"[Watcher] {ch_key}: change applied — {status}")
-            _deliver_cdn(args, qdrant, n, change_edges, change_tombstones,
+            _deliver_cdn(_pair_cdn_args(args, qdrant, ch_owner, ch_ns), qdrant, n,
+                         change_edges, change_tombstones,
                          owner=ch_owner, namespace=ch_ns, app=args.app)
 
         rc = await proc.wait()
@@ -609,15 +611,37 @@ def _source_args(args, app: str, owner: str | None, namespace: str | None,
     scoped = copy.copy(args)
     scoped.app = app
     if not pin_domain:
-        # ponytail: a wildcard source gets no live CDN delivery. Its pairs are only
-        # learned as commits arrive, so there is no single domain to bake at task
-        # start — and _deliver_cdn ships to one fixed domain per task. Give the
-        # delivery path a per-change domain if wildcard sources ever need shards.
+        # A wildcard source has no domain at task start — its pairs are only learned
+        # as commits arrive — so it is left None here and derived per change by
+        # _pair_cdn_args, which also bakes a pair's domain the first time it is seen.
         concrete = owner is not None and namespace is not None
         scoped.cdn_domain = (_domain_for(app, owner, namespace)
                              if args.cdn_dir and concrete else None)
     scoped.role_map_file = _scoped_role_map(args.role_map_file, app, owner or "*",
                                             namespace or "*")
+    return scoped
+
+
+def _pair_cdn_args(args, qdrant, owner: str, namespace: str):
+    """Per-pair delivery view of a WILDCARD task's args, or `args` unchanged otherwise.
+
+    A pinned source fixes its domain once, at task start (_source_args + _bake_initial).
+    A wildcard source cannot: its pairs exist only once a commit names them, so the
+    domain is derived — and baked on first sight — here, per change. Everything else
+    (collection, checkpoint, role map) is deliberately shared with the task, exactly as
+    _source_args leaves it; only the domain varies per pair, or their shards intermix.
+
+    The bake is not optional: append_domain EXTENDS a manifest, so with no base one
+    there is nothing to append to and every delivery fails.
+    """
+    if not args.cdn_dir or args.cdn_domain:
+        return args  # delivery is off, or the task is pinned and already has a domain
+    scoped = copy.copy(args)
+    scoped.cdn_domain = _domain_for(args.app, owner, namespace)
+    # Checked here rather than leaning on _bake_initial's own guard, which prints a
+    # line every time — that is once per change on a busy wildcard.
+    if not os.path.exists(os.path.join(args.cdn_dir, scoped.cdn_domain, "manifest.json")):
+        _bake_initial(scoped, qdrant, owner, namespace)
     return scoped
 
 

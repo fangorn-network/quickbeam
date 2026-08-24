@@ -119,7 +119,8 @@ silently reuses the old layer and reproduces bugs you already fixed. To rebuild 
 starting anything, `docker compose build`.
 
 For a static list, write `sources.json` into the shared volume and set
-`SOURCES_URL=file:///data/sources.json`:
+`SOURCES_URL=file:///data/sources.json` (`./deploy-sources.sh` does both halves on
+the box — it is `deploy.sh` plus a `docker compose cp` of the file into the volume):
 
 ```json
 [ {"app": "fangorn", "owner": "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6",
@@ -302,6 +303,14 @@ gcloud compute ssh quickbeam-1 --zone=$REGION-a --command='docker compose pull &
 Compose recreates only the services whose image actually changed, and the `qdrant` and
 `data` volumes are untouched, so the collection and the baked shards survive.
 
+`./deploy.sh --fresh` does the opposite deliberately: it prefixes the remote step with
+`docker compose down -v`, so the box comes back with no vectors, no ingest checkpoint
+and no shards and re-embeds everything. All three have to go together — the checkpoint
+alone would make the watcher skip every record it has already seen and report "no new
+records" over an empty collection. It refuses to wipe unless the box's `FROM_BLOCK` is
+set, because a wildcard (`*:*`) watch list has no seed read and history replay is the
+only way anything comes back.
+
 **Machine type.** `e2-medium` (4GB) is the working default above. `e2-small` (2GB) runs
 but leaves little headroom — if a seed OOMs there, stop the instance, change the type and
 start it again; the disk survives, so it costs a minute. `e2-micro` (1GB, free tier) is
@@ -327,8 +336,9 @@ worker stores the view and its sources join the watchlist; this instance picks u
 A namespace another view already covers logs nothing at all — it is already embedded,
 and the new view queries the same points. That silence is the design working.
 
-**Removing** is a founder action — `POST /admin/remove` with the view id, signed by a
-wallet in `ADMIN_WALLETS`. See `webworker/quickbeam-registry/README.md`. A source stops
+**Removing** is `POST /views/remove` with the view id, signed by the wallet that created
+it (the website's "Stop watching" button), or `POST /admin/remove` for any view, signed
+by a wallet in `ADMIN_WALLETS`. See `webworker/quickbeam-registry/README.md`. A source stops
 being watched only when the **last** view referencing it goes; nothing expires on its
 own, so a lapsed subscription keeps running until someone removes it.
 
