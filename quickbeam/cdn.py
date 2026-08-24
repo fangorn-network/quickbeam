@@ -34,6 +34,14 @@ from quickbeam.roles import infer_roles
 
 # How many baked records to sample for per-domain role inference.
 ROLE_SAMPLE_SIZE = 500
+# Coverage centroids: what a domain is ABOUT, cheap enough to publish in catalog.json.
+# A client ranks a domain it has NOT downloaded by cosine against these, which is the
+# only way an auto-mount ("you are drifting toward recipes") can happen without
+# pulling every shard first. Truncated matryoshka-style, so 8 x 128 rounded floats is
+# ~8 KB per domain — small enough to sit inline in the catalog.
+COVERAGE_K = 8
+COVERAGE_DIM = 128
+COVERAGE_SAMPLE = 20_000
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +208,13 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
     # becomes the entityType vocabulary the client uses for its type-browse grid.
     role_sample: list[dict] = []
     type_counts: dict[str, int] = {}
+    # Reservoir (not first-N): scroll order is qdrant's, which correlates with insert
+    # order, which correlates with source — first-N centroids would describe whoever
+    # published first rather than the domain.
+    import random as _random
+    _rng = _random.Random(0)
+    vec_sample: list = []
+    seen_vecs = 0
 
     def _close_shard():
         nonlocal fh, total_bytes
@@ -269,6 +284,13 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
                 type_counts[et] = type_counts.get(et, 0) + 1
             if len(role_sample) < ROLE_SAMPLE_SIZE:
                 role_sample.append(row["fields"])
+            if len(vec_sample) < COVERAGE_SAMPLE:
+                vec_sample.append(row["embedding"])
+            else:
+                j = _rng.randrange(seen_vecs + 1)
+                if j < COVERAGE_SAMPLE:
+                    vec_sample[j] = row["embedding"]
+            seen_vecs += 1
             if projecting:
                 buffered.append(row)
             else:
@@ -317,6 +339,9 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         "entity_types": entity_types,
         "shards": shards,
     }
+    coverage = _coverage(vec_sample)
+    if coverage:
+        manifest["coverage"] = coverage
     # Record whether a 2-D projection was baked into the rows (the Atlas view reads
     # row.proj when present; otherwise it projects client-side).
     if project and project != "none":
@@ -351,7 +376,43 @@ def _bake_domain(qdrant, collection, name, spec, out_dir, shard_size, scroll_bat
         "shard_count": len(shards),
         "entity_types": type_names,
         "manifest": f"{name}/manifest.json",
+        **({"coverage": coverage} if coverage else {}),
     }
+
+
+def _coverage(vectors: list, k: int = COVERAGE_K, dim: int = COVERAGE_DIM) -> dict | None:
+    """Spherical k-means over a sample of the domain's vectors -> a tiny public
+    summary of where it sits in the space.
+
+    Truncating to `dim` leading components is Matryoshka truncation, and it only
+    works because nomic concentrates information there — the same assumption the
+    client makes when it truncates its own query to compare. A model without that
+    property must publish `dim == manifest.dim` or routing degrades silently.
+    """
+    import numpy as np
+
+    from quickbeam.index import spherical_kmeans
+
+    X = np.asarray(vectors, dtype=np.float32)
+    if X.ndim != 2 or len(X) == 0:
+        return None
+    X /= np.maximum(np.linalg.norm(X, axis=1, keepdims=True), 1e-12)
+    k = max(1, min(k, len(X)))
+    C = spherical_kmeans(X, k)
+    counts = np.bincount(_assign(X, C), minlength=len(C))
+    d = min(dim, X.shape[1])
+    T = C[:, :d]
+    # Renormalize AFTER truncating: a truncated unit vector is not unit, and the
+    # client compares by cosine against a truncated query that it renormalizes too.
+    T = T / np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-12)
+    return {"dim": int(d), "sampled": int(len(X)),
+            "vectors": [[round(float(x), 4) for x in row] for row in T],
+            "counts": [int(c) for c in counts]}
+
+
+def _assign(X, C):
+    import numpy as np
+    return np.argmax(X @ C.T, axis=1)
 
 
 def _read_catalog(cdn_dir: str) -> tuple[str, dict]:
@@ -530,7 +591,11 @@ def _existing_baked_ids(domain_dir: str, manifest: dict) -> dict:
 
 def _sync_catalog(cdn_dir: str, domain: str, manifest: dict) -> None:
     """Keep catalog.json's domain entry in sync after an append (count / bytes /
-    shard_count / entity_types). Bytes is re-summed from the manifest's shards."""
+    shard_count / entity_types). Bytes is re-summed from the manifest's shards.
+
+    ponytail: `coverage` is NOT refit here. It is a coarse "what is this about"
+    summary and a delta shard moves it very little; re-bake to refresh it. Refit on
+    append if a domain ever grows by more than a fraction of itself in deltas."""
     catalog_path = os.path.join(cdn_dir, "catalog.json")
     if not os.path.exists(catalog_path):
         return
