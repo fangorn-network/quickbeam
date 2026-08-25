@@ -55,8 +55,8 @@ def _events(body, timeout=20.0):
                 yield {"event": event, "data": json.loads(data)}
 
 
-def test_events_stream(tmp_dir):
-    cdn_dir = tmp_dir
+def test_events_stream(tmp_path):
+    cdn_dir = str(tmp_path)
     # One domain already baked before the client connects, one not yet present.
     _write_manifest(cdn_dir, "app8-owner8-media", ["shard-aaa.ndjson.gz"])
 
@@ -108,9 +108,9 @@ def test_events_stream(tmp_dir):
         server.should_exit = True
 
 
-def test_traversal_is_rejected(tmp_dir):
+def test_traversal_is_rejected(tmp_path):
     port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(build_app(tmp_dir), host="127.0.0.1",
+    server = uvicorn.Server(uvicorn.Config(build_app(str(tmp_path)), host="127.0.0.1",
                                            port=port, log_level="error"))
     threading.Thread(target=server.run, daemon=True).start()
     for _ in range(100):

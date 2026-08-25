@@ -53,11 +53,15 @@ quickbeam/pipelines/prebake.py
 tests/test_adjacency_route.py
 tests/test_bucket_route.py
 tests/test_cdn_edges.py
+tests/test_cdn_events.py
 tests/test_index.py
+tests/test_ingest_checkpoint.py
 tests/test_mcp.py
 tests/test_roles.py
 tests/test_schemagen_identity.py
+tests/test_scope.py
 tests/test_shell.py
 tests/test_sources.py
 tests/test_watchlist.py
+tests/test_wildcard_cdn_domain.py
 tests/test_x402_agent.py
