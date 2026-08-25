@@ -45,9 +45,9 @@ cp .env.example .env     # set PINATA_GATEWAY, ETH_PRIVATE_KEY, QDRANT_API_KEY, 
 docker compose up -d --build
 ```
 
-Currently, there are four services contained in one image: `qdrant`, `watch`, `serve` (:8080), `cdn` (:8090), `mcp` (:8765). Namespaces are **not** configured in compose. The `watch` command polls the `SOURCES_URL` for its watch list and starts or cancels a stream per namespace without requiring a restart. Full deployment guide: **[`DOCKER-README.md`](DOCKER-README.md)**.
+Currently, there are four services contained in one image: `qdrant`, `watch`, `serve` (:8080), `cdn` (:8090), `mcp` (:8765). Namespaces are **not** configured in compose. The `watch` command polls the `SOURCES_URL` for its watch list and starts or cancels a stream per namespace without requiring a restart. The full deployment guide can be found in the **[`DOCKER-README.md`](DOCKER-README.md)**.
 
-### Or run the pieces by hand
+### Run by hand
 
 ```sh
 # 1. Qdrant
@@ -77,7 +77,7 @@ quickbeam watch --app fangorn --source 0x147c...:robinhood --cdn-dir ./cdn
 
 How the app portion is supplied depends on how sources are given.
 
-**Static `--source` flags** — `build`, `watch` and `serve` take `OWNER:NAMESPACE` (repeatable, **two parts**). All of them run under the single `--app`, so one process covers one app. `*` on either side widens to the whole app:
+**Static `--source` flags**: `build`, `watch` and `serve` take `OWNER:NAMESPACE` (repeatable, **two parts**). All of them run under the single `--app`, so one process covers one app. `*` on either side widens to the whole app:
 
 ```sh
 --source 0x147c...:robinhood   # one publisher, one subspace
@@ -86,18 +86,18 @@ How the app portion is supplied depends on how sources are given.
 --source '*:*'                 # the whole app
 ```
 
-**A watch list — `watch --sources-url`** (what the compose deployment uses). Here **each entry carries its own app**, so one instance serves several. For example:
+**A watch list: `watch --sources-url`** (what the compose deployment uses). Here **each entry carries its own app**, so one instance serves several. For example:
 
 ```json
 ["app1Id::", "app2Id::", "fangorn:0x147c...:robinhood"]
 ```
-Here, we are watching all of app1, app2, but only a specific namespace for a specific publisher in the fangorn app.
+In the example above, we are watching all of app1, app2, but only a specific namespace for a specific publisher in the fangorn app.
 
 Entries are `"APP:OWNER:NAMESPACE"` strings or `{app, owner, namespace}` objects, and an empty or `*` part is a wildcard. So `app1Id::` means *everything in app1*. `--app` (the `APP` env var in compose) is only the **fallback** for an entry naming no app. An entry with no app and no fallback is **dropped** because reading the wrong app silently indexes the wrong graph.
 
 > Warning: **Don't pass the three-part form to `--source`.** It splits on the first colon only, so `--source fangorn:0xA:docs` silently becomes owner `fangorn`, namespace `0xA:docs` with no error and nothing watched.
 
-> Note `--source` means something different on two other commands: `cdn edges --source` is a **path** to a linkset JSON, and `data events-fetch --source` names a **scraper** (`eventbrite` / `eventbrite-location` / `tribe`). Check the `--help` flag for the command you're running.
+> Note: `--source` means something different on two other commands: `cdn edges --source` is a **path** to a linkset JSON, and `data events-fetch --source` names a **scraper** (`eventbrite` / `eventbrite-location` / `tribe`). Check the `--help` flag for the command you're running.
 
 A wildcard source has no single namespace to seed with `fangorn read`, so it only sees namespaces published before it started if you also pass `--from-block N`.
 
@@ -118,8 +118,7 @@ Every watched namespace embeds into **one** Qdrant collection. Points carry `own
 A profile walks the graph from every vertex carrying a given tag and folds its neighbors into one document. With no `--root-profile`, one profile is auto-derived per distinct vertex tag present in the source. Override with `--profiles-file` (see [`quickbeam/profiles.example.json`](quickbeam/profiles.example.json)):
 
 ```json
-{ "file": { "root_type": "File", "max_depth": 2, "include": ["File"],
-            "content_fields": ["filename", "text"] } }
+{ "file": { "root_type": "File", "max_depth": 2, "include": ["File"], "content_fields": ["filename", "text"] } }
 ```
 
 `--max-depth`, `--label-cap` (max folded labels per relation group) and `--node-cap` (max nodes visited per root) bound the walk.

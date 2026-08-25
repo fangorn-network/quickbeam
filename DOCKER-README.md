@@ -91,8 +91,7 @@ docker compose up -d --build
 For a static list, write `sources.json` into the shared volume and set `SOURCES_URL=file:///data/sources.json`. An example `sources.json`:
 
 ```json
-[ {"app": "fangorn", "owner": "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6",
-   "namespace": "robinhood"} ]
+[ {"app": "fangorn", "owner": "0x147c24c5Ea2f1EE1ac42AD16820De23bBba45Ef6", "namespace": "robinhood"} ]
 ```
 
 The list also accepts `"APP:OWNER:NAMESPACE"` strings, the older `"OWNER:NAMESPACE"` form (which takes the `APP` env var as its app), and either form wrapped in `{"sources": …}` (the shape the worker's `/watchlist` returns). `*` on owner or namespace widens the subscription to the app level.
