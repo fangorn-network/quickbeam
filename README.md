@@ -1,6 +1,6 @@
 # quickbeam
 
-Semantic search over [Fangorn](https://github.com/fangorn-network/fangorn) knowledge graphs. A publisher versions a graph offchain and anchors it onchain; quickbeam reads that graph with the `fangorn` light client, embeds it into Qdrant, and serves it via three means: an HTTP search API, a static "Semantic CDN" of downloadable shards, and an MCP server for agents.
+Semantic search over [Fangorn](https://github.com/fangorn-network/fangorn) knowledge graphs. A publisher versions a graph offchain and anchors it onchain. Quickbeam reads that graph with the `fangorn` light client, embeds it into Qdrant, and serves it via three means: an HTTP search API, a static "Semantic CDN" of downloadable shards, and an MCP server for agents.
 
 ---
 
@@ -45,7 +45,7 @@ cp .env.example .env     # set PINATA_GATEWAY, ETH_PRIVATE_KEY, QDRANT_API_KEY, 
 docker compose up -d --build
 ```
 
-Currently, there are four services contained in one image: `qdrant`, `watch`, `serve` (:8080), `cdn` (:8090), `mcp` (:8765). Namespaces are **not** configured in compose. The `watch` command polls the `SOURCES_URL` for its watch list and starts or cancels a stream per namespace without requiring a restart. The full deployment guide can be found in the **[`DOCKER-README.md`](DOCKER-README.md)**.
+Currently, there are five services contained in one image: `qdrant`, `watch`, `serve` (:8080), `cdn` (:8090), `mcp` (:8765). Namespaces are **not** configured in compose. The `watch` command polls the `SOURCES_URL` for its watch list and starts or cancels a stream per namespace without requiring a restart. The full deployment guide can be found in the **[`DOCKER-README.md`](DOCKER-README.md)**.
 
 ### Run by hand
 
@@ -54,7 +54,7 @@ Currently, there are four services contained in one image: `qdrant`, `watch`, `s
 docker run -d -p 6333:6333 -p 6334:6334 -v "$(pwd)/db/qdrant:/qdrant/storage" qdrant/qdrant
 
 # 2. Embed a namespace (one shot)
-quickbeam build --source 0x147c24c5...:robinhood --root-profile asset
+quickbeam build --source  0x147c24c5...:robinhood --root-profile asset
 
 # 3. Serve it
 quickbeam serve --port 8080
