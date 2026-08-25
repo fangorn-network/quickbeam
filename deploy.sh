@@ -35,7 +35,8 @@ run() { if [[ $DRY -eq 1 ]]; then echo "  + $*"; else "$@"; fi; }
 [[ -f .env ]] || { echo "no .env — copy .env.example and set IMAGE" >&2; exit 1; }
 # `|| true` because pipefail turns grep's "no match" into a silent exit 1,
 # which would skip the explanatory error below.
-IMG=$(grep -E '^IMAGE=' .env | tail -1 | cut -d= -f2- || true)
+# IMG=$(grep -E '^IMAGE=' .env | tail -1 | cut -d= -f2- || true)
+IMG="us-east4-docker.pkg.dev/lucky-lead-489114-d7/quickbeam/quickbeam:latest"
 [[ -n "$IMG" ]] || { echo "IMAGE is unset in .env (compose would fall back to quickbeam:local)" >&2; exit 1; }
 [[ "$IMG" != *"quickbeam:local"* ]] || { echo "IMAGE points at a local build, not Artifact Registry: $IMG" >&2; exit 1; }
 

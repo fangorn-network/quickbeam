@@ -157,16 +157,16 @@ IPFS fetch, the projection and the embed all worked.
 
 ### Configuration
 
-| Variable | Notes |
-|---|---|
-| `SOURCES_URL` | The registry worker's `/watchlist` — the deduplicated union of every view's sources. Namespaces arrive there, never here. |
-| `SOURCES_REFRESH` | Seconds between watch-list polls. |
-| `APP` | Fallback app for a watch-list entry that names none. Entries from the worker always carry their own, so this only covers a hand-written list — but keep it equal to the worker's `DEFAULT_APP`, since that is what the worker stamps on a view created without one. A wrong value reads an empty namespace with **no error**. |
-| `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, no funding, no registration. |
-| `PINATA_GATEWAY` | Reads resolve every block by CID through this. The default is `ipfs.io`, DNS-filtered on many networks. |
-| `QDRANT_API_KEY` | Any random string; Qdrant enforces it on every request. |
-| `COLLECTION` | One collection for all namespaces. |
-| `INTERVAL` | Reconnect backoff. Not a monitoring interval. |
+| Variable          | Notes                                                                                                                                                                                                                                                                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SOURCES_URL`     | The registry worker's `/watchlist` — the deduplicated union of every view's sources. Namespaces arrive there, never here.                                                                                                                                                                                                     |
+| `SOURCES_REFRESH` | Seconds between watch-list polls.                                                                                                                                                                                                                                                                                             |
+| `APP`             | Fallback app for a watch-list entry that names none. Entries from the worker always carry their own, so this only covers a hand-written list — but keep it equal to the worker's `DEFAULT_APP`, since that is what the worker stamps on a view created without one. A wrong value reads an empty namespace with **no error**. |
+| `ETH_PRIVATE_KEY` | **Required even though the container only reads** — the `fangorn` CLI refuses to start without one. A throwaway is correct: never spent, no funding, no registration.                                                                                                                                                         |
+| `PINATA_GATEWAY`  | Reads resolve every block by CID through this. The default is `ipfs.io`, DNS-filtered on many networks.                                                                                                                                                                                                                       |
+| `QDRANT_API_KEY`  | Any random string; Qdrant enforces it on every request.                                                                                                                                                                                                                                                                       |
+| `COLLECTION`      | One collection for all namespaces.                                                                                                                                                                                                                                                                                            |
+| `INTERVAL`        | Reconnect backoff. Not a monitoring interval.                                                                                                                                                                                                                                                                                 |
 
 Do **not** bake a `~/.fangorn/config.json` into the image. The CLI returns early when
 that file exists and ignores every environment variable above.

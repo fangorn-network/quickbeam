@@ -1,5 +1,7 @@
 # quickbeam
 
+ docker compose -f docker-compose.yml -f docker-compose.local.yml up
+
 This repo contains infrastructure for building and serving vector search over on-chain data sources registered with [Fangorn](https://github.com/fangorn-network/fangorn). The core script pulls manifests from The Graph, resolves payloads from IPFS, walks the typed graph they describe, and then builds embeddings via fastembed/ONNX.
 
 > **Two meanings of "bundle".** This doc uses the word in two unrelated ways:
