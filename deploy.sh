@@ -81,7 +81,7 @@ FRESH_CMD=""
 if [[ $FRESH -eq 1 ]]; then
   # Checked on the BOX, not here, because .env only ships with --env — the local copy
   # is not what the watcher reads. Aborts before the wipe, never after.
-  # ponytail: FROM_BLOCK is the only rebuild path while the watch list is wildcard
+  # FROM_BLOCK is the only rebuild path while the watch list is wildcard
   # (`*:*`) sources — those get no startup seed read, so their pairs are only
   # discovered by replaying StateCommitted history. Relax this to a warning if pinned
   # `owner:namespace` entries ever come back, since those DO seed themselves.

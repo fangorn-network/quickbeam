@@ -15,6 +15,6 @@ jobs:
           cache: pip
           cache-dependency-path: pyproject.toml
       - run: pip install -e ".[cpu,dev]"
-      # ponytail: tests/ only — quickbeam/test_roles.py is a sys.exit self-check
+      # tests/ only — quickbeam/test_roles.py is a sys.exit self-check
       # that kills collection if pytest walks the package dir.
       - run: pytest tests -q

@@ -706,7 +706,7 @@ def _fetch_sources(url: str, default_app: str | None = None) -> set:
     guessed: reads resolve against the app, so watching the wrong one silently indexes
     the wrong graph, which is worse than watching nothing.
 
-    ponytail: urllib in a thread rather than adding an async HTTP client for one
+    urllib in a thread rather than adding an async HTTP client for one
     poll every --sources-refresh seconds.
 
     The User-Agent is NOT cosmetic: the registry worker sits behind Cloudflare, whose
@@ -744,7 +744,7 @@ def _make_qdrant(args) -> QdrantClient:
     """Qdrant connection: a remote URL (with optional API key) when given, else the
     local host/port pair. Mirrors pull.py's helper of the same name.
 
-    ponytail: the URL branch does NOT set prefer_grpc. A remote Qdrant is typically
+    The URL branch does NOT set prefer_grpc. A remote Qdrant is typically
     reached through an HTTPS reverse proxy on 443, which does not carry gRPC on 6334 —
     forcing gRPC there fails to connect. REST is slower per upload and correct
     everywhere; switch it on if a deployment actually exposes gRPC.

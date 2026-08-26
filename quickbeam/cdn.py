@@ -1268,7 +1268,7 @@ def build_app(cdn_dir: str, cors: bool = False):
     # The watcher writes shards from a DIFFERENT container (shared /data volume), so
     # there is no in-process signal to hook. This polls each watched manifest instead
     # and diffs its shard list.
-    # ponytail: mtime-gated polling, not inotify — one small stat per domain per
+    # mtime-gated polling, not inotify — one small stat per domain per
     # connection per tick, against a handful of domains and a handful of clients.
     # Reach for watchfiles only if that ever shows up in a profile.
     _POLL_SECONDS = 2.0
