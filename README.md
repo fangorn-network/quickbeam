@@ -16,7 +16,7 @@ pip install -e ".[dev]"     # + pytest
 ```
 
 Requires Python ≥3.12 and the [`fangorn` CLI](https://github.com/fangorn-network/fangorn) on `PATH` (or pass `--fangorn-bin`). The fangorn CLI refuses to start without
-`ETH_PRIVATE_KEY`, but using a throwaway key is fine if you are not writing onchain. We recommend setting `PINATA_GATEWAY` too since the default `ipfs.io` is not guaranteed to serve content (ISP provider specific).
+`ETH_PRIVATE_KEY`, but using a throwaway key is fine if you are not writing onchain. We recommend setting `PINATA_GATEWAY` too since the default `ipfs.io` is not guaranteed to serve content (ISP specific).
 
 ## Commands
 
