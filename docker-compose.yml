@@ -35,6 +35,14 @@ services:
       # Read-only work, but the fangorn CLI refuses to start without a key.
       ETH_PRIVATE_KEY: ${ETH_PRIVATE_KEY}
       PINATA_GATEWAY: ${PINATA_GATEWAY}
+      # Bootstrap for an app-level (`*:*`) source: replay from here so already-published
+      # namespaces are discovered. Without it `subscribe --all` starts at the current tip
+      # and an app with existing data looks empty, with no error anywhere. Ignored once
+      # the CLI's resume cursor exists, so restarts don't re-replay.
+      FROM_BLOCK: ${FROM_BLOCK:-}
+      # Blocks per eth_getLogs during that catch-up. The SDK defaults to 1000, which is
+      # ~300k requests from an Arbitrum Sepolia block; the public RPC accepts 100k fine.
+      FANGORN_LOG_WINDOW: ${FANGORN_LOG_WINDOW:-100000}
     volumes:
       - data:/data
     command:
@@ -56,8 +64,8 @@ services:
       # `watch` is push-based off `fangorn subscribe` and reacts as commits land.
       - --poll-interval=${INTERVAL:-60}
 
-  # Static shard delivery, one domain per namespace. Exits at boot until `watch` has
-  # created /data/cdn; the restart policy covers that first-run window.
+  # Static shard delivery, one domain per namespace. Boots before `watch` has baked
+  # anything and serves an empty /data/cdn (/health says "no-catalog") until it does.
   cdn:
     build: .
     image: ${IMAGE:-quickbeam:local}

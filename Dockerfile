@@ -25,8 +25,28 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY quickbeam ./quickbeam
 # cpu:   fastembed without CUDA (the box embeds deltas, not backfills — see README)
+# gpu:   fastembed-gpu, i.e. onnxruntime-gpu — built by docker-compose.gpu.yml, which
+#        up.sh layers in only on a host that can actually pass a GPU through.
 # agent: fastmcp, which `quickbeam mcp` imports
-RUN pip install --no-cache-dir -e ".[cpu,agent]"
+ARG EXTRAS=cpu
+RUN pip install --no-cache-dir -e ".[${EXTRAS},agent]"
+
+# onnxruntime-gpu dynamically links the CUDA runtime (libcublasLt.so.13, libcudart.so.13,
+# ...) and bundles none of it. The container runtime injects the driver's libcuda.so.1;
+# the rest has to come from pip, or the CUDA provider fails to dlopen and onnxruntime
+# SILENTLY FALLS BACK TO CPU — no error, just ~10x slower embedding (see gpu-env.sh).
+# Take the CUDA deps from onnxruntime-gpu's OWN `cuda`/`cudnn` extras rather than naming
+# nvidia-* packages here: the wheel pins the CUDA major it was built against (1.29 = CUDA
+# 13, not 12), and a hand-written list silently drifts on the next fastembed-gpu bump.
+# ldconfig instead of LD_LIBRARY_PATH: the wheels do not agree on a directory name
+# (nvidia/cu13/lib, nvidia/cudnn/lib, ...), so glob whatever they laid down.
+RUN if [ "$EXTRAS" = "gpu" ]; then \
+      pip install --no-cache-dir "onnxruntime-gpu[cuda,cudnn]" \
+   && python -c "import site; print(site.getsitepackages()[0])" > /tmp/sp \
+   && ls -d "$(cat /tmp/sp)"/nvidia/*/lib "$(cat /tmp/sp)"/onnxruntime/capi \
+        > /etc/ld.so.conf.d/nvidia-pip.conf \
+   && ldconfig; \
+    fi
 
 # Python block-buffers stdout when it isn't a TTY, so a long-running container's
 # progress (every `print` in the watcher) sits invisible in a buffer while stderr

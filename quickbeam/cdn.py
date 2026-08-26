@@ -1597,8 +1597,10 @@ def build_app(cdn_dir: str, cors: bool = False):
 def serve_main():
     import uvicorn
     args = _serve_args()
-    if not os.path.exists(args.cdn_dir):
-        sys.exit(f"[serve] cdn dir not found: {args.cdn_dir} (run `cdn bake` first)")
+    # Every route resolves paths per-request, so an empty dir serves fine: /health
+    # reports "no-catalog" until the watcher bakes into the shared volume. Creating
+    # it beats exiting — under compose, `cdn` boots before `watch` has baked.
+    os.makedirs(args.cdn_dir, exist_ok=True)
     app = build_app(args.cdn_dir, cors=args.cors)
     print(f"[serve] Semantic CDN on http://{args.host}:{args.port} "
           f"(dir: {os.path.abspath(args.cdn_dir)})")

@@ -110,8 +110,13 @@ Prove the image before any cloud is involved. Local runs don't need the worker �
 ```sh
 cd quickbeam
 cp .env.example .env      # set ETH_PRIVATE_KEY, PINATA_GATEWAY, QDRANT_API_KEY, APP
-docker compose up -d --build
+./up.sh                   # = docker compose up -d --build, plus the GPU overlay if usable
 ```
+
+`up.sh` is the entry point rather than `docker compose up` because the GPU overlay must
+not be layered in blind — see **GPU** below. Plain `docker compose up -d --build` still
+works and gives you the CPU image. Extra compose files pass straight through:
+`./up.sh -f docker-compose.local.yml`.
 
 `--build` is not optional the first time, and not optional after a source change either:
 the Dockerfile `COPY`s `quickbeam/` at build time, so a plain `docker compose up -d`
@@ -184,6 +189,36 @@ image (measured 2026-08-13).
 ```sh
 docker compose build          # tags quickbeam:local
 ```
+
+### GPU
+
+`./up.sh` gives the `watch` service the GPU when — and only when — the host has a working
+driver (`nvidia-smi -L`) **and** Docker has the nvidia container runtime registered. Both
+halves matter: `gpus: all` on a box missing either one fails the container at start, so a
+compose file that reserves a GPU unconditionally is a footgun. Without both it builds the
+CPU image, which works, just slower. What you should see:
+
+```sh
+./up.sh
+#   ==> GPU detected — building the CUDA image for `watch`
+docker compose exec watch python -c "from fastembed import TextEmbedding as T; \
+  print(T(model_name='nomic-ai/nomic-embed-text-v1.5').model.model.get_providers())"
+#   ['CUDAExecutionProvider', 'CPUExecutionProvider']
+```
+
+`CPUExecutionProvider` alone in that list means the CUDA provider failed to `dlopen` and
+onnxruntime fell back **silently** — no error, ~10x slower (147 docs/s vs 1433/s measured
+on an RTX 2070). `docker compose logs watch | grep -i cuda` shows the loader error.
+
+Only `watch` gets a device. `serve` and `mcp` embed one short query per request, where a
+CPU session costs milliseconds and does not hold VRAM, so they stay on the CPU image —
+which is also why the GPU build is tagged separately (`${IMAGE}-gpu`): the same tag must
+never be built from two different `EXTRAS` values. The image is bigger by the CUDA 12
+wheels (cuBLAS, cuRAND, cuFFT, nvrtc, cudart) that `onnxruntime-gpu` links but does not
+bundle; only `libcuda.so.1` comes from the host, injected by the runtime.
+
+The GCE deployment has no GPU and is unaffected — `deploy.sh` builds the default CPU
+image, and `EXTRAS` defaults to `cpu`.
 
 **Build here, not on the box.** E2 shared-core types are burstable and small; installing
 the ONNX stack on one is slow at best and OOMs at worst, and it burns the same burst
@@ -368,7 +403,9 @@ Neither touches this box.
 - **The embedding model is baked into the image.** Changing `--embedding-model` means
   rebuilding, or it downloads at every container start.
 - **CPU-only hosts work** because `_build_text_embedding()` asks onnxruntime which
-  providers exist before requesting CUDA. A GPU box still selects CUDA automatically.
+  providers exist before requesting CUDA. A GPU box still selects CUDA automatically —
+  but only if the image was built with `EXTRAS=gpu`, which is `up.sh`'s job. The CPU
+  image has no CUDA provider to find, so a GPU host running it is silently CPU-bound.
 - **`/browse` is not namespace-scoped.** It returns the whole collection. The search
   routes are the scoped ones.
 

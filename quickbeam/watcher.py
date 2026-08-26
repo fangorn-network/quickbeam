@@ -89,13 +89,16 @@ def parse_args():
                         "app is the first part of the app:publisher:subspace triple and is "
                         "NOT part of --source. Unset means whatever the local fangorn client "
                         "is configured with (`fangorn set-app`, ~/.fangorn/config.json).")
-    p.add_argument("--from-block", type=int, default=None,
-                   help="Replay each source's commits from this block before going live. "
-                        "This is how an app-level (`*`) watch picks up namespaces published "
-                        "before it started — a wildcard source has no single namespace to "
-                        "seed with `fangorn read`. Catch-up is fetched in windows "
-                        "(FANGORN_LOG_WINDOW blocks each), so pick a block near the first "
-                        "publish, not genesis.")
+    p.add_argument("--from-block", type=int,
+                   default=int(os.environ["FROM_BLOCK"]) if os.environ.get("FROM_BLOCK") else None,
+                   help="Replay each source's commits from this block before going live "
+                        "(env: FROM_BLOCK). This is how an app-level (`*`) watch picks up "
+                        "namespaces published before it started — a wildcard source has no "
+                        "single namespace to seed with `fangorn read`. Catch-up is fetched in "
+                        "windows (FANGORN_LOG_WINDOW blocks each), so pick a block near the "
+                        "first publish, not genesis. The range only has to contain ONE commit "
+                        "per namespace: that commit triggers a full `fangorn read` seed, which "
+                        "picks up the whole graph however old it is.")
     p.add_argument("--from-start", action="store_true",
                    help="Replay from genesis (ignored if --from-block is set). Only "
                         "practical on a private RPC with a large log window.")
@@ -379,15 +382,20 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
 
     On failure we leave the prior snapshot ALONE and ingest nothing: projecting an empty
     namespace would diff every already-embedded vertex as removed and tombstone the whole
-    source (the exact outcome the null-head guard in _seed_read_async exists to prevent)."""
+    source (the exact outcome the null-head guard in _seed_read_async exists to prevent).
+    Returns True only once the pair is seeded — the caller MUST NOT apply a change to an
+    unseeded pair's (empty) snapshot, which is that same tombstone-everything diff by
+    another route."""
     key = f"{owner}:{namespace}"
+    if (owner, namespace) in snapshot["seeded"]:
+        return True
     try:
         contents = await _seed_read_async(
             args.fangorn_bin, owner, namespace, args.seed_timeout, args.app)
     except Exception as e:  # noqa: BLE001
         print(f"[Watcher] {key}: seed read skipped ({e}); going live on the "
               f"stream, will retry seed on reconnect", file=sys.stderr)
-        return
+        return False
 
     state = _ns_state(snapshot, (owner, namespace))
     state["vertices"] = {v["cid"]: v for v in contents.get("vertices", [])}
@@ -410,6 +418,7 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
     # an unfiltered append sweeps every other source's points into this domain.
     _deliver_cdn(args, qdrant, n, seed_edges, seed_tombstones,
                  owner=owner, namespace=namespace, app=args.app)
+    return True
 
 
 async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, truncate,
@@ -434,9 +443,25 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
     # the pipe. Applying such a buffered change after the seed is idempotent: vertices
     # are content-addressed (re-adding a cid the seed already has is a no-op) and the
     # checkpoint dedupes embeds — so the seed↔live gap loses nothing.
+    # --from-block is honoured on EVERY connection, not just the first. Suppressing it
+    # once the CLI's cursor file exists loses namespaces permanently: the subscribe child
+    # advances that cursor as it EMITS a line, while the watcher only ingests it minutes
+    # later (a seed + embed of the previous namespace runs first), so a restart in that
+    # window resumes past a commit that was never ingested — and since a wildcard source
+    # only ever seeds a pair on first sight of its commit, that namespace is then never
+    # read at all, with no error anywhere. Replaying is cheap and idempotent: the reads
+    # cost RPC time, and `vertex_cids` diffing means an already-ingested commit embeds
+    # nothing. The operator set FROM_BLOCK; honour it.
+    from_block = args.from_block
+    if app_mode and from_block is None and not args.from_start:
+        print(f"[Watcher] {key}: app-level watch starting from the CURRENT TIP — namespaces "
+              f"published before now stay invisible, because a wildcard source has no single "
+              f"namespace to seed with `fangorn read`. Set FROM_BLOCK to a block at or before "
+              f"their last commit to discover them.", file=sys.stderr)
+
     proc = await asyncio.create_subprocess_exec(
         *subscribe_cmd(args.fangorn_bin, owner, namespace, args.from_start,
-                       args.from_block),
+                       from_block),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         limit=_STREAM_LIMIT, env=app_env(args.app),
     )
@@ -486,6 +511,16 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
                 tried.add((ch_owner, ch_ns))
                 await _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
                                  checkpoint, ch_owner, ch_ns, snapshot)
+            if (ch_owner, ch_ns) not in snapshot["seeded"]:
+                # Seed failed (or already failed this connection). The snapshot for this
+                # pair is EMPTY, so re-projecting the change against it would diff every
+                # already-embedded vertex as removed and tombstone the whole namespace.
+                # Drop the change; the next reconnect retries the seed, which reads the
+                # whole graph including this commit.
+                print(f"[Watcher] {ch_key}: change skipped — pair not seeded yet "
+                      f"(applying it to an empty snapshot would tombstone the namespace)",
+                      file=sys.stderr)
+                continue
 
             state = _ns_state(snapshot, (ch_owner, ch_ns))
             vertices_by_cid = state["vertices"]

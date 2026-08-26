@@ -1,0 +1,21 @@
+# GPU overlay — layered in automatically by ./up.sh when the host has a GPU *and*
+# Docker has the nvidia runtime registered. Never layer it in blind: a compose file
+# that reserves a GPU refuses to start the service on a box without one.
+#
+#   ./up.sh                                     # picks this up if a GPU is usable
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Only `watch` gets the device. It is the throughput-bound service (measured on this
+# box: 147 docs/s CPU vs 1433/s GPU); `serve` and `mcp` embed one short query per
+# request, where the CPU session costs milliseconds and does not hold VRAM.
+#
+# Separate image tag on purpose: the other services keep the small CPU image, and the
+# same tag must never be built from two different EXTRAS values.
+services:
+  watch:
+    build:
+      context: .
+      args:
+        EXTRAS: gpu
+    image: ${IMAGE:-quickbeam:local}-gpu
+    gpus: all
