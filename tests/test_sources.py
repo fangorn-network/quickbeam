@@ -26,6 +26,9 @@ def test_subscribe_cmd_app_mode():
         ["fangorn", "subscribe", "--all", "--from-start"]
     assert subscribe_cmd("fangorn", None, None, from_start=True, from_block=42) == \
         ["fangorn", "subscribe", "--all", "--from-block", "42"]
+    # 0 is "no replay", not genesis — docker-compose.yml passes --from-block=${FROM_BLOCK:-0}
+    # unconditionally because compose cannot omit an argument.
+    assert subscribe_cmd("fangorn", None, None, from_block=0) == ["fangorn", "subscribe", "--all"]
     # --fangorn-bin may be a full command, shell-split.
     assert subscribe_cmd("node cli.js", None, None)[:2] == ["node", "cli.js"]
 

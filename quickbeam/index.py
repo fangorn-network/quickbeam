@@ -34,7 +34,7 @@ scatter. Two independent integer dials.
 
 WHAT IS DELIBERATELY NOT HERE
 -----------------------------
-ponytail: the codebook is FLAT, not the two-level tree the design calls for. The tree
+The codebook is FLAT, not the two-level tree the design calls for. The tree
 is a client-side routing accelerator — it finds the same nearest centroid, just in
 ~512 comparisons instead of K — so it cannot change any number this harness reports.
 Fit it in Stage D from the flat codebook, when there is a client that cares.
@@ -134,7 +134,7 @@ def spherical_kmeans(X, k: int, iters: int = 25, seed: int = 0, chunk: int = 100
     transitively under umap-learn), and the balanced assignment below is something
     sklearn cannot do anyway, so both halves are written out.
 
-    ponytail: full-batch, chunked. At 500k x 4096 that is ~10s/iteration, fine for
+    Full-batch, chunked. At 500k x 4096 that is ~10s/iteration, fine for
     the gate. If this is still the fit path at 20M, switch to minibatch (sample a
     batch per iteration, same update rule) — the ceiling is wall-clock, not quality.
     """

@@ -19,7 +19,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Provides the `fangorn` binary on PATH — the default --fangorn-bin.
-RUN npm i -g @fangorn-network/sdk && npm cache clean --force
+# PIN the version: the DataRegistry address rides inside the SDK's config.js, so an
+# unpinned install baked into a cached layer silently keeps reading a retired registry
+# (an image built 2026-08-13 was still on 0x9dfa…572c and saw none of the state
+# published to 0x97d6…df91). Bump this when the registry moves.
+RUN npm i -g @fangorn-network/sdk@2026.8.18-dev && npm cache clean --force
 
 WORKDIR /app
 COPY pyproject.toml ./

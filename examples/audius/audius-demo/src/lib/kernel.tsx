@@ -52,7 +52,7 @@ function load(): Saved | null {
 }
 
 function save(s: Saved) {
-  // ponytail: synchronous write per signal (~110 KB at skip_window=20). Well under
+  // synchronous write per signal (~110 KB at skip_window=20). Well under
   // a frame and far under the 5 MB quota; debounce only if a profile says so.
   try { localStorage.setItem(KEY, JSON.stringify(s)); } catch { /* quota / private mode */ }
 }

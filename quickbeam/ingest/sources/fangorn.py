@@ -103,13 +103,21 @@ def subscribe_cmd(fangorn_bin: str, owner: str | None, namespace: str | None,
 
     `from_block` (or `from_start`, its genesis form) replays history before going live —
     how an app-level watch discovers namespaces published before it started, since a
-    wildcard source can't be seeded with `read` (which needs one exact namespace). Prefer
-    `from_block`: the catch-up is windowed, and genesis on a fast chain like Arbitrum is
-    hundreds of thousands of windows."""
+    wildcard source can't be seeded with `read` (which needs one exact namespace). It
+    OVERRIDES the CLI's saved cursor (cli.js reads the flag before the cursor file), so
+    it replays on every reconnect, not only the first.
+
+    Prefer `from_block` to `from_start`: the catch-up is windowed at 1000 blocks per
+    eth_getLogs (FANGORN_LOG_WINDOW in the SDK), so each million blocks is a thousand
+    sequential RPC calls and genesis on Arbitrum is hundreds of thousands of them.
+
+    0 means "no replay", not "from genesis" — that is `from_start`. The falsy check is
+    what lets docker-compose.yml pass `--from-block=${FROM_BLOCK:-0}` unconditionally;
+    compose cannot omit an argument, and an empty one dies in argparse."""
     argv = [*shlex.split(fangorn_bin), "subscribe"]
     if owner is None or namespace is None:
         argv.append("--all")
-    if from_block is not None:
+    if from_block:
         argv += ["--from-block", str(from_block)]
     elif from_start:
         argv.append("--from-start")

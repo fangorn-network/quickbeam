@@ -14,6 +14,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Everything under test here is pure string/parsing logic, but importing the watcher
 # drags in the whole embedding stack. Stub the leaves so this file runs on a plain
 # checkout (`pip install -e .` with no [cpu] extra) instead of only inside the image.
@@ -34,6 +36,10 @@ from quickbeam.watcher import _domain_for, _fetch_sources, _sort_key, _wild  # n
 
 OWNER = "0x7a7849231cF7Ab1EA003BcF0063CB89704D7Cce9"
 WORKER = Path(__file__).resolve().parents[2] / "webworker/quickbeam-registry/src/index.js"
+# The worker lives in the fangorn monorepo one level up, not in this repo — so a
+# standalone quickbeam checkout (CI) has no copy to compare against.
+needs_worker = pytest.mark.skipif(not WORKER.exists(),
+                                  reason="registry worker source not checked out alongside quickbeam")
 
 
 def _watchlist(payload, default_app=None):
@@ -112,6 +118,7 @@ def test_app_reaches_the_qdrant_payload():
 APP_ID = "0x" + "a3f19b2c" + "0" * 56  # shape of toAppId(): 0x + 64 hex
 
 
+@needs_worker
 def test_domain_matches_the_worker():
     """_domain_for(app, owner, namespace) == the worker's domainFor(app, owner, ns)."""
     src = WORKER.read_text()
@@ -135,6 +142,7 @@ def test_domain_matches_the_worker():
     assert _domain_for("sond3r.test.1", OWNER, "media") == "sond3r-test-1-7a784923-media"
 
 
+@needs_worker
 def test_worker_canonicalises_app_to_an_id():
     """The site can only ever send an app ID — `StateCommitted` carries the id and has no
     on-chain preimage, so an app the site has no name for still has to be expressible.

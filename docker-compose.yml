@@ -52,6 +52,14 @@ services:
       - --role-map-file=/data/db/role_map.json
       - --qdrant-url=http://qdrant:6333
       - --qdrant-api-key=${QDRANT_API_KEY}
+      # Replay history before going live, which is the ONLY way a wildcard source
+      # (`*:*`) discovers namespaces published before this box existed — it has no
+      # single namespace to seed with `fangorn read`. Overrides the CLI's saved cursor,
+      # so it re-runs on every restart. 0 = off (the default), NOT genesis.
+      # Cost: the catch-up is 1000 blocks per eth_getLogs, so a million blocks back is a
+      # thousand sequential calls against the public RPC. Pick a block just before the
+      # commits you want, not a round number far in the past.
+      - --from-block=${FROM_BLOCK:-0}
       # Reconnect backoff for a dropped subscribe stream — NOT a monitoring interval.
       # `watch` is push-based off `fangorn subscribe` and reacts as commits land.
       - --poll-interval=${INTERVAL:-60}
