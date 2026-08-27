@@ -364,7 +364,7 @@ async def _seed_pair(args, qdrant, embed_engine, role_map_ref, dim, truncate,
     On failure we leave the prior snapshot ALONE and ingest nothing: projecting an empty
     namespace would diff every already-embedded vertex as removed and tombstone the whole
     source (the exact outcome the null-head guard in _seed_read_async exists to prevent)."""
-    key = f"{owner}:{namespace}"
+    key = f"{_app_slug(args.app)}:{owner}:{namespace}"
     try:
         contents = await _seed_read_async(
             args.fangorn_bin, owner, namespace, args.seed_timeout, args.app)
@@ -411,7 +411,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
     once per pair, then reconnects reuse the snapshot and rely on the subscribe cursor
     replaying any commits missed while down. Re-reading the whole namespace on every
     reconnect is what made a slow read freeze the watcher in a loop."""
-    key = f"{owner or '*'}:{namespace or '*'}"
+    key = f"{_app_slug(args.app)}:{owner or '*'}:{namespace or '*'}"
     app_mode = owner is None or namespace is None
 
     # Start the subscription FIRST so any commit that lands while we seed buffers in
@@ -461,6 +461,11 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             ch_owner = change.get("owner") or owner
             ch_ns = change.get("namespace") or namespace
             ch_key = f"{ch_owner}:{ch_ns}"
+            # ch_key is the PERSISTED checkpoint key (the setdefault below). Its format
+            # must not change: rewriting it orphans every /data/db/checkpoint.json entry,
+            # so every source reads as unseeded and re-embeds the whole corpus from chain.
+            # ch_show is the log label only, and is where the app belongs.
+            ch_show = f"{_app_slug(args.app)}:{ch_key}"
 
             # First commit seen for a namespace we've never read: seed it now, so the
             # projection sees the whole graph and not just what streamed past since.
@@ -494,7 +499,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
             src_ck["head"] = change.get("newRoot")
             src_ck["block"] = change.get("blockNumber")
 
-            print(f"[Watcher] {ch_key}: change @ block {change.get('blockNumber')} "
+            print(f"[Watcher] {ch_show}: change @ block {change.get('blockNumber')} "
                   f"(+{len(change.get('addedVertices', []))} / "
                   f"-{len(change.get('removedVertexCids', []))} vertices) "
                   f"→ {change.get('commitCid')}")
@@ -507,7 +512,7 @@ async def _stream_source_once(args, qdrant, embed_engine, role_map_ref, dim, tru
                 edges_sink=change_edges, tombstones_sink=change_tombstones,
             )
             status = f"{n} new record(s) embedded" if n else "no new records for the active profiles"
-            print(f"[Watcher] {ch_key}: change applied — {status}")
+            print(f"[Watcher] {ch_show}: change applied — {status}")
             _deliver_cdn(_pair_cdn_args(args, qdrant, ch_owner, ch_ns), qdrant, n,
                          change_edges, change_tombstones,
                          owner=ch_owner, namespace=ch_ns, app=args.app)
@@ -529,7 +534,7 @@ async def _stream_source(args, qdrant, embed_engine, role_map_ref, dim, truncate
     """Supervise one source forever: (re)subscribe, and if the stream drops, back off
     --poll-interval seconds and reconnect. `fangorn subscribe` persists its own resume
     cursor, so a reconnect replays commits missed while we were down."""
-    key = f"{owner or '*'}:{namespace or '*'}"
+    key = f"{_app_slug(args.app)}:{owner or '*'}:{namespace or '*'}"
     # Persist the in-memory namespace snapshots across reconnects so the expensive full
     # seed read runs only until it succeeds once per pair; later reconnects reuse them and
     # lean on the subscribe cursor to replay anything missed while down.

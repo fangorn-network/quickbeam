@@ -31,6 +31,9 @@ for mod, attr in (("qdrant_client", "QdrantClient"), ("qdrant_client", "models")
         setattr(sys.modules[mod], attr,
                 sys.modules["qdrant_client.models"] if attr == "models" else object)
 
+import inspect  # noqa: E402
+
+from quickbeam import watcher  # noqa: E402
 from quickbeam.ingest.checkpoint import _load_checkpoint  # noqa: E402
 from quickbeam.watcher import _ingest_contents  # noqa: E402
 
@@ -152,9 +155,28 @@ def test_no_new_records_still_persists():
         assert sorted(_stored_cids(args)) == first
 
 
+
+def test_change_checkpoint_key_stays_app_free():
+    """The per-change checkpoint key must NOT gain the app slug.
+
+    `ch_key` is persisted into checkpoint.json's "sources" map. Reformatting it orphans
+    every existing entry, so each source reads as unseeded and re-embeds its whole corpus
+    from chain — hours of CPU that presents as data loss, not as a logging change. The app
+    belongs on `ch_show`, the log label, which may be reformatted freely.
+
+    KEY above pins the other (seed-path) checkpoint key behaviourally; this pins the
+    per-change one, which no test otherwise covers.
+    """
+    src = inspect.getsource(watcher._stream_source_once)
+    assert 'ch_key = f"{ch_owner}:{ch_ns}"' in src, "persisted per-change key format changed"
+    assert "setdefault(ch_key, {})" in src, "checkpoint must key off ch_key, not the log label"
+    assert 'ch_show = f"{_app_slug(args.app)}:{ch_key}"' in src, "app belongs on the log label"
+
+
 if __name__ == "__main__":
     for fn in (test_failed_upload_does_not_advance_the_checkpoint,
                test_records_are_reoffered_and_only_then_recorded,
-               test_no_new_records_still_persists):
+               test_no_new_records_still_persists,
+               test_change_checkpoint_key_stays_app_free):
         fn()
         print("ok", fn.__name__)
