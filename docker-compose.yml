@@ -30,6 +30,7 @@ services:
     build: .
     image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
+    mem_limit: 2500m
     depends_on: [qdrant]
     environment:
       # Read-only work, but the fangorn CLI refuses to start without a key.
@@ -83,6 +84,7 @@ services:
     build: .
     image: ${IMAGE:-quickbeam:local}
     restart: unless-stopped
+    mem_limit: 1600m
     depends_on: [qdrant]
     ports:
       - "${SEARCH_PORT:-8080}:8080"
