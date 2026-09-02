@@ -14,6 +14,7 @@
     "stage:cdn": "node scripts/stage-cdn.mjs --src ../audius-build/cdn --dest public/cdn --domain audius",
     "build:static": "npm run stage:cdn && npm run build",
     "check:private": "node --experimental-strip-types scripts/check-private.ts",
+    "check:playlists": "node --experimental-strip-types scripts/check-playlists.ts",
     "private-search": "node --experimental-strip-types scripts/private-search.ts"
   },
   "dependencies": {

@@ -330,10 +330,11 @@ that the kernel learns from it**. That last one is the sharpest silent failure h
 `kernelSignal` no-ops when it cannot find a vector, so playback looks perfectly normal
 while the recommender goes deaf.
 
-## Why this exists instead of `examples/`
+## Why this exists instead of `examples/places`
 
-`examples/` re-ranks search results with a local Qwen2.5-0.5B text-generation model
-(`src/lib/llm.ts`). transformers.js decodes that on the **main thread**, so the UI
+`examples/places` re-ranks search results with a local Qwen2.5-0.5B text-generation
+model (`examples/places/src/lib/llm.ts`). transformers.js decodes that on the **main
+thread**, so the UI
 freezes mid-search — and `requestIdleCallback` doesn't help, because once WASM
 decoding starts the thread is gone until it finishes.
 
@@ -401,7 +402,7 @@ sampling. Plays, skips and explicit ♥/– all feed the same two transitions �
 is just unambiguous evidence of the same kind, so there is one state machine, not two.
 
 It runs **in the worker**, next to the vectors, and the main thread holds only a
-snapshot. `quickbeam/examples/src/lib/sessionKernel.ts` is a simplification of the
+snapshot. `quickbeam/examples/places/src/lib/sessionKernel.ts` is a simplification of the
 same thing and was used only as a reading aid.
 
 Three adaptations, all in `src/kernel/adapt.ts` and `constants.ts`:

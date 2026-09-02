@@ -3,6 +3,7 @@ import { duration, fallbackArt, initial, nfmt, recArt } from '../lib/format';
 import { isPlayable } from '../lib/player';
 import { goEntity } from '../lib/router';
 import type { Rec } from '../lib/types';
+import AddButton from './AddButton';
 import Chip from './Chip';
 import PlayButton from './PlayButton';
 import Taste from './Taste';
@@ -38,6 +39,7 @@ export default function Card({ rec, queue }: { rec: Rec; queue?: Rec[] }) {
           </div>
         )}
         <span className="card-chip"><Chip owner={rec.owner} /></span>
+        <span className="card-add"><AddButton rec={rec} size="sm" /></span>
         {isPlayable(rec) && (
           <span className="card-play"><PlayButton rec={rec} queue={queue} /></span>
         )}

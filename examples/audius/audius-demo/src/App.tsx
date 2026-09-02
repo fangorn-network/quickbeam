@@ -5,11 +5,13 @@ import Onboarding from './components/Onboarding';
 import SearchBar from './components/SearchBar';
 import { kernelSnapshot, onProgress, ready, type Progress } from './lib/client';
 import { useKernel } from './lib/kernel';
-import { goAbout, goHome, goPrivacy } from './lib/router';
+import { usePlaylists } from './lib/playlists.tsx';
+import { goAbout, goHome, goPlaylists, goPrivacy } from './lib/router';
 import { useRoute } from './lib/router';
 import type { Stats } from './lib/types';
 import About from './views/About';
 import Entity from './views/Entity';
+import Playlists from './views/Playlists';
 import Privacy from './views/Privacy';
 import Home from './views/Home';
 import Search from './views/Search';
@@ -20,6 +22,7 @@ export default function App() {
   const [prog, setProg] = useState<Progress>({ phase: 'start', pct: 0 });
   const [err, setErr] = useState<string | null>(null);
   const { snap, refresh, onboarded } = useKernel();
+  const { playlists } = usePlaylists();
   /** Pages that stand outside the graph UI, and outside the onboarding gate. */
   const isStatic = route.view === 'about' || route.view === 'privacy';
 
@@ -44,6 +47,18 @@ export default function App() {
             reachable when the snapshot fails to load, which is exactly when
             someone wants to know what this page is and what it stores. */}
         <nav className="topnav">
+          {/* Gated on `onboarded` so it can't dead-end on the onboarding screen, but
+              shown at zero playlists — otherwise there is nowhere to go after the
+              first add, and the feature is undiscoverable. */}
+          {stats && onboarded && (
+            <button
+              className={`topnav-link ${route.view === 'playlists' ? 'is-on' : ''}`}
+              aria-current={route.view === 'playlists' ? 'page' : undefined}
+              onClick={() => goPlaylists()}
+            >
+              Playlists{playlists.length ? ` (${playlists.length})` : ''}
+            </button>
+          )}
           <button
             className={`topnav-link ${route.view === 'about' ? 'is-on' : ''}`}
             aria-current={route.view === 'about' ? 'page' : undefined}
@@ -109,6 +124,7 @@ export default function App() {
             {route.view === 'home' && <Home stats={stats} />}
             {route.view === 'search' && <Search q={route.q} />}
             {route.view === 'entity' && <Entity id={route.id} />}
+            {route.view === 'playlists' && <Playlists id={route.id} />}
           </>
         )}
       </main>

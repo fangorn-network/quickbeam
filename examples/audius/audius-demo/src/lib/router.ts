@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react';
 
 export interface Route {
-  view: 'home' | 'search' | 'entity' | 'about' | 'privacy';
+  view: 'home' | 'search' | 'entity' | 'about' | 'privacy' | 'playlists';
   q: string;
   id: string;
 }
@@ -16,6 +16,8 @@ export function parse(hash: string): Route {
   if (path === 'search') return { view: 'search', q: params.get('q') ?? '', id: '' };
   // Entity ids contain ':' and '/', so they ride as a query param, not a path segment.
   if (path === 'e') return { view: 'entity', q: '', id: params.get('id') ?? '' };
+  // Index and detail are one route; `id` is empty for the index.
+  if (path === 'playlists') return { view: 'playlists', q: '', id: params.get('id') ?? '' };
   if (path === 'about') return { view: 'about', q: '', id: '' };
   if (path === 'privacy') return { view: 'privacy', q: '', id: '' };
   return { view: 'home', q: '', id: '' };
@@ -36,3 +38,6 @@ export const goEntity = (id: string) => { location.hash = `#/e?id=${encodeURICom
 export const goHome = () => { location.hash = '#/'; };
 export const goAbout = () => { location.hash = '#/about'; };
 export const goPrivacy = () => { location.hash = '#/privacy'; };
+export const goPlaylists = (id?: string) => {
+  location.hash = id ? `#/playlists?id=${encodeURIComponent(id)}` : '#/playlists';
+};

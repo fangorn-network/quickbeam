@@ -33,6 +33,10 @@ ctx.onmessage = async (ev: MessageEvent<Req>) => {
                                     args.type as string | undefined);
         break;
       case 'entity':    result = graph.entity(args.id as string); break;
+      // Positionally aligned with the ids it was given, so a null slot IS the
+      // answer to "which of these no longer resolve" — which is what a saved
+      // playlist needs after a re-bake, with no bookkeeping on the main thread.
+      case 'entities':  result = (args.ids as string[]).map((i) => graph.entity(i)); break;
       case 'relations': result = graph.relations(args.id as string); break;
       case 'neighbours':
         result = graph.neighbours(args.id as string, args.rel as string,

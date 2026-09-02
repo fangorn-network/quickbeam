@@ -598,3 +598,134 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 }
 .rail-more:hover { border-color: var(--secondary); color: var(--text); }
 
+
+/* ─── your playlists ─────────────────────────────────────────────────────── */
+/* Local-only, per-browser. The rows are a list rather than the .grid of cards the
+   rest of the app uses, because reordering needs a stable vertical order and a drop
+   target you can aim at. */
+
+/* The one free corner: .card-chip has top-left, .card-taste bottom-left,
+   .card-play bottom-right. Hover/touch behaviour mirrors .card-taste exactly. */
+.card-add { position: absolute; top: 8px; right: 8px;
+            opacity: 0; transform: translateY(-6px);
+            transition: opacity .16s ease, transform .16s ease; }
+.card:hover .card-add, .card:focus-within .card-add { opacity: 1; transform: none; }
+@media (hover: none) { .card-add { opacity: 1; transform: none; } }
+
+.addbtn.is-on { color: var(--primary); border-color: var(--primary); }
+.addbtn-sm { width: 26px; height: 26px; }
+.addbtn svg { width: 16px; height: 16px; }
+
+/* Screen-reader-only live region: reordering is silent without it. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.pl-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pl-danger:hover:not(:disabled) { border-color: #e0566d; color: #ff8098; }
+.pl-import { position: relative; overflow: hidden; cursor: pointer; }
+.pl-import input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+.pl-note { font-size: 13px; color: var(--text-faint); margin: 10px 0; }
+.pl-linkbtn { color: var(--secondary); text-decoration: underline; background: none;
+              border: 0; padding: 0; font: inherit; cursor: pointer; }
+
+.pl-cover { width: 100%; height: 100%; display: grid; }
+.pl-cover.is-mosaic { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.pl-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+
+.pl-head { display: flex; gap: 20px; align-items: flex-end; margin: 16px 0 24px;
+           flex-wrap: wrap; }
+.pl-head-art { width: 160px; aspect-ratio: 1; border-radius: var(--r-l);
+               overflow: hidden; background: var(--bg-sunken); flex: none; }
+.pl-head-body { flex: 1; min-width: 240px; }
+.pl-head-body h1 { margin: 0 0 4px; font-size: 34px; letter-spacing: -.02em; }
+.pl-stats { margin: 0 0 14px; color: var(--text-muted); font-size: 14px; }
+.pl-rename input { font: inherit; font-size: 30px; font-weight: 700; width: 100%;
+                   background: var(--bg-sunken); color: var(--text);
+                   border: 1px solid var(--line); border-radius: var(--r-m);
+                   padding: 4px 10px; margin-bottom: 4px; }
+
+.pl-rows { list-style: none; margin: 0; padding: 0; }
+.pl-row {
+  display: flex; align-items: center; gap: 12px; padding: 8px 10px;
+  border-bottom: 1px solid var(--line); border-top: 2px solid transparent;
+}
+.pl-row:hover { background: var(--surface); }
+.pl-row.is-over { border-top-color: var(--secondary); }
+.pl-row.is-dead { opacity: .55; }
+.pl-grip { cursor: grab; color: var(--text-faint); letter-spacing: 2px; user-select: none; }
+.pl-num { width: 2ch; text-align: right; color: var(--text-faint);
+          font-family: var(--mono); font-size: 13px; }
+.pl-art { width: 44px; height: 44px; border-radius: var(--r-s); overflow: hidden;
+          flex: none; background: var(--bg-sunken); }
+.pl-art img, .pl-art .art-fallback { width: 100%; height: 100%; object-fit: cover;
+                                     display: block; }
+.pl-title { flex: 1; min-width: 0; display: flex; flex-direction: column;
+            text-align: left; background: none; border: 0; padding: 0;
+            color: inherit; font: inherit; cursor: pointer; }
+.pl-title-dead { cursor: default; }
+.pl-title-main { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; }
+.pl-title-sub { font-size: 13px; color: var(--text-muted); overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+.pl-dur { font-family: var(--mono); font-size: 13px; color: var(--text-faint); }
+.pl-row-controls { display: flex; align-items: center; gap: 6px; }
+/* Never hover-revealed: on touch these are the only way to reorder. */
+.pl-move { display: flex; gap: 2px; }
+.pl-move button {
+  width: 28px; height: 28px; border-radius: var(--r-s); border: 1px solid var(--line);
+  background: transparent; color: var(--text-muted); font-size: 14px; line-height: 1;
+}
+.pl-move button:hover:not(:disabled) { color: var(--text); border-color: var(--secondary); }
+.pl-move button:disabled { opacity: .3; }
+
+@media (max-width: 620px) {
+  .pl-row-controls .taste { display: none; }
+  .pl-head-art { width: 112px; }
+  .pl-head-body h1 { font-size: 26px; }
+}
+
+/* ─── the one add-to-playlist dialog ─────────────────────────────────────── */
+/* Native <dialog>: showModal() puts it in the top layer, so it clears the fixed
+   now-playing bar (z-index 30) without inventing a z-index of its own. */
+.dlg {
+  border: 1px solid var(--line); border-radius: var(--r-xl); padding: 0;
+  background: var(--surface); color: var(--text); width: min(420px, calc(100vw - 32px));
+  box-shadow: var(--shadow-far);
+}
+.dlg::backdrop { background: rgba(10, 10, 18, .6); backdrop-filter: blur(3px); }
+.dlg-body { padding: 20px; }
+.dlg-body h2 { margin: 0; font-size: 19px; }
+.dlg-sub { margin: 2px 0 14px; color: var(--text-muted); font-size: 14px;
+           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlg-list { list-style: none; margin: 0 0 14px; padding: 0;
+            max-height: 40vh; overflow-y: auto; }
+.dlg-pick {
+  width: 100%; display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; padding: 10px 12px; margin-bottom: 6px; text-align: left;
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--r-m); color: var(--text); font: inherit;
+}
+.dlg-pick:hover { border-color: var(--secondary); }
+.dlg-pick.is-on { border-color: var(--primary); color: var(--primary); }
+.dlg-pick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dlg-pick-n { font-size: 12px; color: var(--text-faint); flex: none; }
+.dlg-pick.is-on .dlg-pick-n { color: var(--primary); }
+.dlg-new { display: flex; gap: 8px; }
+.dlg-new input {
+  flex: 1; min-width: 0; font: inherit; padding: 9px 12px; color: var(--text);
+  background: var(--bg-sunken); border: 1px solid var(--line);
+  border-radius: var(--r-m);
+}
+.dlg-new button, .dlg-done {
+  padding: 9px 14px; border-radius: var(--r-m); border: 1px solid var(--line);
+  background: var(--surface-2); color: var(--text); font: inherit;
+}
+.dlg-new button:disabled { opacity: .5; }
+.dlg-warn { color: #ff8098; font-size: 13px; margin: 12px 0 0; }
+.dlg-done { width: 100%; margin-top: 14px; background: var(--gradient);
+            border-color: transparent; font-weight: 600; }
+/* The file input is transparent and covers the label, so the label has to show the
+   focus ring on its behalf or Import is invisible to keyboard users. */
+.pl-import:focus-within { border-color: var(--secondary); color: var(--text); }

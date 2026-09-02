@@ -45,6 +45,9 @@ export function ready(): Promise<Stats> {
 
 export const search = (q: string, k = 40, type?: string) => call<Rec[]>('search', { q, k, type });
 export const entity = (id: string) => call<Rec | null>('entity', { id });
+/** Resolve many ids in one round trip. The result is index-aligned with `ids`;
+ *  a null means that id is not in this snapshot. */
+export const entities = (ids: string[]) => call<(Rec | null)[]>('entities', { ids });
 export const relations = (id: string) => call<RelationGroup[]>('relations', { id });
 export const neighbours = (id: string, rel: string, dir: 'out' | 'in', limit = 12) =>
   call<{ records: Rec[]; total: number }>('neighbours', { id, rel, dir, limit });

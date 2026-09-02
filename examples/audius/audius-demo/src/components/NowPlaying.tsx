@@ -3,6 +3,7 @@ import { usePlayer } from '../lib/player';
 import { goEntity } from '../lib/router';
 import Chip from './Chip';
 import PlayButton from './PlayButton';
+import AddButton from './AddButton';
 import Taste from './Taste';
 
 /**
@@ -46,6 +47,7 @@ export default function NowPlaying() {
         <PlayButton rec={current} size="lg" />
         <button className="np-step" onClick={next} aria-label="Next track">››</button>
         <Taste rec={current} />
+        <AddButton rec={current} />
       </div>
 
       <div className="np-scrub">

@@ -40,6 +40,12 @@ export function duration(sec?: number) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+/** A playlist total crosses an hour, where duration()'s m:ss would read "73:12". */
+export function hms(sec?: number) {
+  const m = Math.floor((sec ?? 0) / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
 export const splitTags = (s?: string) =>
   (s ?? '').split(',').map((t) => t.trim()).filter(Boolean);
 

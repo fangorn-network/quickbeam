@@ -5,6 +5,7 @@ import './styles.css';
 import App from './App';
 import { KernelProvider } from './lib/kernel';
 import { PlayerProvider } from './lib/player';
+import { PlaylistProvider } from './lib/playlists.tsx';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -13,7 +14,10 @@ createRoot(document.getElementById('root')!).render(
     {/* Kernel outside the player: the player reports plays and skips into it. */}
     <KernelProvider>
       <PlayerProvider>
-        <App />
+        {/* Innermost: it needs the player to start a playlist, nothing needs it. */}
+        <PlaylistProvider>
+          <App />
+        </PlaylistProvider>
       </PlayerProvider>
     </KernelProvider>
   </StrictMode>,

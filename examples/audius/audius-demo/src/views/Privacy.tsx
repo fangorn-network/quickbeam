@@ -1,8 +1,11 @@
 // Privacy policy. Every claim here was checked against this app's code, not copied
 // from the Surge XT manual's — the two differ in ways that matter:
 //
-//   • This app DOES use localStorage (lib/kernel.tsx, key "audius-demo.kernel").
-//     The manual stores nothing. Do not import that sentence from it.
+//   • This app DOES use localStorage, under TWO keys: the taste kernel
+//     (lib/kernel.tsx, "audius-demo.kernel") and your playlists (lib/playlists.tsx,
+//     "audius-demo.playlists"). The manual stores nothing. Do not import that
+//     sentence from it. scripts/check-playlists.ts fails if this page stops naming
+//     the playlist key.
 //   • Artwork is fetched PER RECORD from Audius' content node (lib/format.ts
 //     artUrl), so browsing does disclose what you are looking at. The manual
 //     bundles its images and can honestly claim the opposite.
@@ -30,10 +33,11 @@ export default function Privacy() {
       <div className="hero-kicker">Privacy</div>
       <h1>What this page <em>can</em> know.</h1>
       <p className="about-lede">
-        There are no accounts, no logins, no wallet connection and no forms here.
-        The whole graph is downloaded to your browser once and searched there, so
-        most of what you do never reaches a server at all. The exceptions are
-        worth stating plainly, because there are some.
+        There are no accounts, no logins and no wallet connection here. The whole
+        graph is downloaded to your browser once and searched there, so most of what
+        you do never reaches a server at all — including the only text you ever type,
+        a search or a playlist name. The exceptions are worth stating plainly,
+        because there are some.
       </p>
 
       <h2>What never leaves your browser</h2>
@@ -108,11 +112,21 @@ export default function Privacy() {
 
       <h2>Storage on your device</h2>
       <p>
-        No cookies. Two things are kept locally: your taste profile, under the
-        key <code>audius-demo.kernel</code>, and the search model, which your
-        browser caches after the first search. Clearing this site's data removes
-        both. You can reset the taste profile at any time from the readout strip
-        at the top of the page, without clearing anything else.
+        No cookies. Three things are kept locally: your taste profile, under the
+        key <code>audius-demo.kernel</code>; your playlists, under{' '}
+        <code>audius-demo.playlists</code>; and the search model, which your browser
+        caches after the first search. Clearing this site's data removes all three.
+        You can reset the taste profile at any time from the readout strip at the top
+        of the page, without clearing anything else.
+      </p>
+
+      <p>
+        <b>What a playlist is.</b> A name and a list of record ids — never a copy of
+        the audio or the artwork, which stay where they already are. Playlists are
+        never uploaded and there is no account to attach them to, so they live in
+        this browser and nowhere else: another device will not see them. You can
+        export them to a file you keep and import that file back; the import is read
+        and parsed in this tab, not sent anywhere.
       </p>
 
       <h2>Contact</h2>
@@ -121,7 +135,7 @@ export default function Privacy() {
         <a href="mailto:fangorn@fangorn.network">fangorn@fangorn.network</a>. This
         policy may change if the demo does; the date below is the last revision.
       </p>
-      <p className="about-lede" style={{ fontSize: 14 }}>Last updated 4 August 2026.</p>
+      <p className="about-lede" style={{ fontSize: 14 }}>Last updated 2 September 2026.</p>
 
       <button className="back" onClick={goHome}>← Back to the graph</button>
     </section>
