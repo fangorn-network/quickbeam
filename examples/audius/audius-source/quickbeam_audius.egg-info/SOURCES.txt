@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 quickbeam_audius/__init__.py
 quickbeam_audius/api.py

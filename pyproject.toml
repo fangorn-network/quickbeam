@@ -26,8 +26,17 @@ dependencies = [
 # Install one of these depending on your hardware:
 #   pip install -e ".[gpu]"   — CUDA-accelerated embeddings (default for build)
 #   pip install -e ".[cpu]"   — CPU-only fallback
-gpu = ["fastembed-gpu"]
+# NOTE: `fastembed-gpu` depends on bare `onnxruntime-gpu`, which declares its CUDA and
+# cuDNN wheels as OPTIONAL extras ("cuda" and "cudnn"). Without them the CUDA provider
+# still registers and then dies mid-graph on the first Einsum node with
+# "cuDNN is unavailable ... dlopen failed for libcudnn.so". Spelling the extras out here
+# is what makes `.[gpu]` mean what it says.
+gpu = ["fastembed-gpu", "onnxruntime-gpu[cuda,cudnn]"]
 cpu = ["fastembed"]
+# These two are mutually exclusive in practice: `fastembed` and `fastembed-gpu` both own
+# the `fastembed` package directory, as do `onnxruntime` and `onnxruntime-gpu`. Installing
+# one extra does NOT remove the other, so switching means uninstalling all four first —
+# otherwise two onnxruntime versions land in the same directory. See gpu-env.sh.
 # Agent / payments layer: MCP server (FastMCP) + x402 EIP-712 payment signing.
 agent = ["fastmcp", "eth-account", "httpx"]
 dev   = ["pytest", "fastmcp", "eth-account"]

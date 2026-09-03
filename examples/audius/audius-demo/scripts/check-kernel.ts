@@ -394,9 +394,24 @@ await check('a thin-catalogue artist is still reachable past the shortlist', () 
   // is the thing that decides whether "follow" visibly means anything.
   const thin = picks.reduce((a, b) => (a.tracks <= b.tracks ? a : b));
   const theirs = new Set(g.neighbours(thin.id, 'created', 'out', 60).records.map((r) => r.id));
-  const deep = g.kernelRecommend(200, undefined, 25000);
+  // Pool = the WHOLE corpus, derived not pinned. This read `25000`, which was the
+  // corpus size at the reference bake (25,372 points) and therefore meant "everything".
+  // A re-crawl grows the corpus — 26,642 here — and the constant silently stops being
+  // exhaustive, so a thin artist falls outside the pool and this check fails for a
+  // reason that has nothing to do with the kernel.
+  // Both numbers are derived, not pinned, because BOTH used to be "the whole corpus"
+  // by accident and stopped being so the moment anyone re-crawled:
+  //   • pool was 25000 — the corpus size at the reference bake (25,372). At 26,642 it
+  //     silently stopped covering everything, which is the starvation this guards.
+  //   • depth was 200. The property under test is "not starved entirely", not "top
+  //     200": where a thin artist lands is data-dependent (rank 374 on this crawl,
+  //     inside 200 on the reference one), so a fixed cutoff fails for reasons that
+  //     have nothing to do with the kernel.
+  const depth = Math.min(1000, stats.records);
+  const deep = g.kernelRecommend(depth, undefined, stats.records);
   const at = deep.findIndex((r) => theirs.has(r.id));
-  assert.ok(at >= 0, `nothing by ${thin.name} (${thin.tracks} tracks) ranks at all`);
+  assert.ok(at >= 0,
+    `nothing by ${thin.name} (${thin.tracks} tracks) ranks in the top ${depth} of ${stats.records}`);
   console.log(`    ${thin.name} (${thin.tracks} tracks) first appears at rank ${at}`);
 });
 

@@ -16,14 +16,42 @@ rm -rf audius-build/stage
 "$REPO/venv/bin/python" -m quickbeam.cli data audius --side B --cache-file ./audius-build/audius_cache.json \
   --output-dir ./audius-build/stage --volume 2
 "$REPO/venv/bin/audius-link" --cache-file ./audius-build/audius_cache.json --out ./audius-build/linkset.json
-curl -s -X DELETE http://localhost:6333/collections/audius > /dev/null
-curl -s -X PUT http://localhost:6333/collections/audius -H 'Content-Type: application/json' \
+# Qdrant answers on TWO ports and the tools disagree about which: these curls speak
+# REST (6333), while `data prebake` and `cdn bake` build their client with
+# prefer_grpc=True and speak gRPC (6334). Moving the curls to 6334 does not fail
+# loudly — the connection is refused and `-s ... >/dev/null` swallows it, so the
+# collection is silently never created and the failure surfaces much later as an empty
+# or wrong-dim bake. Hence -fsS: these have to be audible.
+#
+# Defaults match the RUNBOOK's standalone container. Override when Qdrant lives
+# elsewhere — a compose stack already holding 6333, or one that wants an API key:
+#   QDRANT_PORT=7333 QDRANT_GRPC_PORT=7334 bash examples/audius/audius-build/rebuild.sh
+# NOTE 6334 must be PUBLISHED (-p 6334:6334), not merely EXPOSEd; a compose service
+# that maps only 6333 gives "failed to connect to all addresses ... 6334".
+QDRANT_HOST="${QDRANT_HOST:-localhost}"
+QDRANT_PORT="${QDRANT_PORT:-6333}"              # REST
+QDRANT_GRPC_PORT="${QDRANT_GRPC_PORT:-6334}"    # gRPC
+QDRANT_API_KEY="${QDRANT_API_KEY:-}"
+_QK=(); _QH=()
+if [ -n "$QDRANT_API_KEY" ]; then
+  _QK=(--qdrant-api-key "$QDRANT_API_KEY")
+  _QH=(-H "api-key: $QDRANT_API_KEY")
+fi
+_QP=(--qdrant-host "$QDRANT_HOST" --qdrant-port "$QDRANT_PORT"
+     --qdrant-grpc-port "$QDRANT_GRPC_PORT")
+
+# An absent collection is not an error; a failed CREATE is.
+curl -fsS -X DELETE "http://$QDRANT_HOST:$QDRANT_PORT/collections/audius" "${_QH[@]}" > /dev/null || true
+curl -fsS -X PUT "http://$QDRANT_HOST:$QDRANT_PORT/collections/audius" "${_QH[@]}" \
+  -H 'Content-Type: application/json' \
   -d '{"vectors":{"size":256,"distance":"Cosine"}}' > /dev/null
 "$REPO/venv/bin/python" -m quickbeam.cli data prebake --input-dir ./audius-build/stage --volume 1 \
   --collection audius --dim 256 --role-map-file ./audius-build/role_map.json \
+  "${_QP[@]}" "${_QK[@]}" \
   --owner 0x1111111111111111111111111111111111111111
 "$REPO/venv/bin/python" -m quickbeam.cli data prebake --input-dir ./audius-build/stage --volume 2 \
   --collection audius --dim 256 --role-map-file ./audius-build/role_map.json \
+  "${_QP[@]}" "${_QK[@]}" \
   --owner 0x2222222222222222222222222222222222222222
 rm -rf audius-build/cdn
 # --shard-size 5000: Cloudflare Pages REJECTS any file over 25 MiB, and the default
@@ -33,9 +61,11 @@ rm -rf audius-build/cdn
 # Run the bake from $REPO: `bundle_schema` inside a domains config is resolved
 # against the CWD, not the config's own location, so all three domains.*.json in
 # this repo spell it repo-root-relative. Same --cdn-dir, just addressed from there.
-( cd "$REPO" && venv/bin/python -m quickbeam.cli cdn bake \
+( cd "$REPO" && QDRANT_HOST="$QDRANT_HOST" venv/bin/python -m quickbeam.cli cdn bake \
     --config ./examples/audius/audius-build/domains.audius.json \
     --domain audius --collection audius \
+    --qdrant-host "$QDRANT_HOST" --qdrant-port "$QDRANT_PORT" \
+    --qdrant-grpc-port "$QDRANT_GRPC_PORT" "${_QK[@]}" \
     --cdn-dir ./examples/audius/audius-build/cdn --shard-size 5000 )
 "$REPO/venv/bin/python" - <<'PY'
 import json

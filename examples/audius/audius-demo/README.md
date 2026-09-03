@@ -57,6 +57,14 @@ venv/bin/pip install -e examples/audius/audius-source   # registers `quickbeam d
 docker run -d --name qdrant -p 6333:6333 -p 6334:6334 qdrant/qdrant
 ```
 
+Publish **both** ports. Qdrant answers REST on 6333 and gRPC on 6334, and the build uses both: `rebuild.sh`'s `curl` calls create the collection over REST, while `data prebake` and `cdn bake` build their client with `prefer_grpc=True` and talk to 6334.
+
+If 6333 is already taken, or your Qdrant wants an API key, you can override it:
+```sh
+QDRANT_PORT=7333 QDRANT_GRPC_PORT=7334 bash examples/audius/audius-build/rebuild.sh
+# QDRANT_API_KEY=… is threaded through to curl, prebake and bake when set
+```
+
 ### Crawl for Data
 
 ```sh
@@ -87,9 +95,31 @@ Running rebuild.sh is deterministic. It drops the `audius` collection and rmtree
 
 Two important flags:
 
-- **`--dim 256`** has to equal `D` in `src/kernel/constants.ts` and the slice width in `src/lib/matryoshka.ts`. Documents are embedded with `nomic-ai/nomic-embed-text-v1.5` (natively 768) and matryoshka-sliced to 256. The browser repeats that transform on the query side. A difference between them degrades ranking. See [The one thing that can break silently](#the-one-thing-that-can-break-silently).
-> Note `cdn bake` reads dim from the *collection*, not the config, so changing it means re-embedding.
-- **`--shard-size 5000`** see [The constraint that dictates the bake](#the-constraint-that-dictates-the-bake).
+- **`--dim 256`** has to equal `D` in `src/kernel/constants.ts` and the slice width in `src/lib/matryoshka.ts`. Documents are embedded with `nomic-ai/nomic-embed-text-v1.5` (natively 768) and matryoshka-sliced to 256. The browser repeats that transform on the query side. A difference between them degrades ranking which is what `npm run check` catches.
+> Note `cdn bake` reads dim from the *collection* so changing it means re-embedding.
+- **`--shard-size 5000`** see [File size constraints](#file-size-constraints).
+
+### GPU (optional)
+
+`.[gpu]` on its own is not enough. `fastembed-gpu` depends on the bare `onnxruntime-gpu`, which declares its CUDA and cuDNN wheels as *optional* extras, so nothing CUDA gets installed. The provider still registers and then dies partway through the graph:
+
+```
+NOT_IMPLEMENTED : ... Einsum node. Name:'/encoder/layers.0/attn/rotary_emb/Einsum'
+cuDNN is unavailable or disabled for CUDA Execution Provider:
+dlopen failed for libcudnn.so: cannot open shared object file
+```
+
+This is because it is missing a library. The `gpu` extra spells out `onnxruntime-gpu[cuda,cudnn]`, and `gpu-env.sh` puts `nvidia/*/lib` on `LD_LIBRARY_PATH` and creates the unversioned `libcudnn.so` alias that onnxruntime dlopen's but the wheel does not ship (only `libcudnn.so.9`). `rebuild.sh` sources it already; it re-creates the alias each time, because `pip install` drops it.
+
+```sh
+venv/bin/pip uninstall -y onnxruntime onnxruntime-gpu fastembed fastembed-gpu
+venv/bin/pip install -e ".[gpu]"
+source gpu-env.sh
+venv/bin/python -c "from fastembed import TextEmbedding as T; \
+  print(T(model_name='nomic-ai/nomic-embed-text-v1.5').model.model.get_providers())"
+```
+
+The uninstall is not optional. If you ever ran `.[cpu]` then `fastembed`/`fastembed-gpu` and `onnxruntime`/`onnxruntime-gpu` will share a package directory since installing one does not remove the other.
 
 ### Verify build
 

@@ -17,6 +17,7 @@ Requires-Dist: umap-learn
 Requires-Dist: uvicorn[standard]
 Provides-Extra: gpu
 Requires-Dist: fastembed-gpu; extra == "gpu"
+Requires-Dist: onnxruntime-gpu[cuda,cudnn]; extra == "gpu"
 Provides-Extra: cpu
 Requires-Dist: fastembed; extra == "cpu"
 Provides-Extra: agent

@@ -27,3 +27,4 @@ eth-account
 
 [gpu]
 fastembed-gpu
+onnxruntime-gpu[cuda,cudnn]
