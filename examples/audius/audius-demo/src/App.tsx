@@ -124,7 +124,7 @@ export default function App() {
             {route.view === 'home' && <Home stats={stats} />}
             {route.view === 'search' && <Search q={route.q} />}
             {route.view === 'entity' && <Entity id={route.id} />}
-            {route.view === 'playlists' && <Playlists id={route.id} />}
+            {route.view === 'playlists' && <Playlists id={route.id} share={route.share} />}
           </>
         )}
       </main>

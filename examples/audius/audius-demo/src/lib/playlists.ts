@@ -94,6 +94,69 @@ export function serialize(pls: Playlist[]): string {
   return JSON.stringify(pls);
 }
 
+// ── sharing ─────────────────────────────────────────────────────────────────
+//
+// A share link carries the playlist IN the URL — there is no server to put it on,
+// which is the same reason search is a local vector match rather than a request.
+// It rides in the hash fragment (see router.ts), the part browsers never transmit,
+// so copying a link sends nothing anywhere. The link IS the data.
+//
+// Base64url and `location` belong to the browser, so they live in playlists.tsx.
+// What is here is the shape, and the shape is where the bugs would be.
+
+/** Every id in the snapshot is `audius:<type>:<suffix>` — measured across all 26,642
+ *  records, suffix charset `[A-Za-z0-9-]`, never a colon. So this prefix is 13 of the
+ *  ~20 characters of a track id, it is the same on every one of them, and dropping it
+ *  is reversible by asking whether a colon survived. */
+const TRACK_PREFIX = 'audius:track:';
+
+const short = (id: string) =>
+  (id.startsWith(TRACK_PREFIX) ? id.slice(TRACK_PREFIX.length) : id);
+
+/** Anything non-string becomes '', which cleanIds drops — see parse. */
+const long = (s: unknown) =>
+  (typeof s !== 'string' ? '' : s.includes(':') ? s : TRACK_PREFIX + s);
+
+/**
+ * The wire form: `[[id, name, ...trackSuffixes], …]`.
+ *
+ * The playlist's own id rides along. That is what makes re-sharing an EDITED playlist
+ * union into the recipient's existing copy instead of landing beside it as a second
+ * one — merge() matches by id, so the id is the thing that makes a link idempotent.
+ *
+ * `createdAt` deliberately does not: it is stamped on arrival, so a playlist someone
+ * just saved sorts to the top of the newest-first index rather than to wherever the
+ * sender happened to make it.
+ *
+ * ponytail: no compression. 30 tracks is ~450 chars of URL and a whole library ~2,500,
+ * both of which paste fine. CompressionStream would cut that to ~600 and the app
+ * already uses its decompress twin (graph.ts), but it is a WEB global and this module
+ * is deliberately free of those (see the header) — reach for it only if library links
+ * start getting truncated in the wild.
+ */
+export function toShare(pls: Playlist[]): string {
+  return JSON.stringify(pls.map((p) => [p.id, p.name, ...p.trackIds.map(short)]));
+}
+
+/**
+ * Read the wire form back. NEVER throws, and deliberately does not grow a validator
+ * of its own: it rebuilds whole Playlists and hands them to parse(), which is already
+ * THE trust boundary for untrusted input and already salvages per entry. A URL is
+ * untrusted in exactly the way localStorage and an imported file are — one validator,
+ * tested once.
+ *
+ * `now` is a parameter rather than a call for the same reason create()'s is: it keeps
+ * the check deterministic.
+ */
+export function fromShare(wire: string, now = Date.now()): Playlist[] {
+  let data: unknown;
+  try { data = JSON.parse(wire); } catch { return []; }
+  if (!Array.isArray(data)) return [];
+  return parse(JSON.stringify(data.map((e) => (Array.isArray(e)
+    ? { id: e[0], name: e[1], createdAt: now, trackIds: e.slice(2).map(long) }
+    : null))));
+}
+
 /** Swap one playlist by id. `fn` returning null means "nothing changed". */
 function patch(
   pls: Playlist[], id: string, fn: (pl: Playlist) => Playlist | null,

@@ -10,6 +10,7 @@ import {
   createContext, useCallback, useContext, useEffect, useMemo, useRef, useState,
 } from 'react';
 import * as P from './playlists.ts';
+import { shareHref } from './router';
 import type { Rec } from './types';
 
 export type { Playlist } from './playlists.ts';
@@ -27,6 +28,31 @@ function load(): P.Playlist[] {
 function save(pls: P.Playlist[]): boolean {
   try { localStorage.setItem(P.PLAYLISTS_KEY, P.serialize(pls)); return true; }
   catch { return false; }
+}
+
+// base64url, the browser half of sharing (the shape lives in playlists.ts).
+//
+// Chosen over encodeURIComponent for one reason that is not size: its alphabet is
+// `A-Za-z0-9-_`, and NOTHING in there is touched by URLSearchParams on the way back
+// out. Percent-escapes would be decoded once by the browser and once by
+// params.get(), and a plain base64 `+` would come back as a space.
+//
+// btoa is Latin-1 only, so the TextEncoder round trip is not optional — playlist
+// names carry emoji and CJK.
+const enc = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)))
+  .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+const dec = (s: string) => new TextDecoder().decode(
+  Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0)),
+);
+
+/** A link that carries these playlists. Nothing is uploaded to produce it. */
+export const shareUrl = (pls: P.Playlist[]) => shareHref(enc(P.toShare(pls)));
+
+/** The other direction. Never throws — a mangled link reads as no playlists, which is
+ *  what the preview renders an empty state for. */
+export function readShare(payload: string): P.Playlist[] {
+  try { return P.fromShare(dec(payload)); } catch { return []; }
 }
 
 /** crypto.randomUUID is undefined outside a secure context — which includes the bare

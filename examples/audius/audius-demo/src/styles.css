@@ -627,6 +627,11 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .pl-import { position: relative; overflow: hidden; cursor: pointer; }
 .pl-import input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .pl-note { font-size: 13px; color: var(--text-faint); margin: 10px 0; }
+/* Shown only when navigator.clipboard is unavailable (insecure context) — the link
+   still has to be gettable, so it is rendered selected and ready for ctrl-C. */
+.pl-share-url { flex: 1 0 100%; min-width: 0; font: inherit; font-size: 12px;
+  font-family: var(--mono); padding: 7px 10px; border-radius: var(--r-s);
+  border: 1px solid var(--line); background: var(--surface); color: var(--text); }
 .pl-linkbtn { color: var(--secondary); text-decoration: underline; background: none;
               border: 0; padding: 0; font: inherit; cursor: pointer; }
 

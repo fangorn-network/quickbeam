@@ -12,6 +12,11 @@
 //   • Search rides in the HASH (lib/router.ts, #/search?q=…), which browsers
 //     never transmit — stronger than the manual, whose query is a real query
 //     string and relies on Cloudflare not logging it.
+//   • Playlists can be SHARED as a link (lib/playlists.tsx shareUrl →
+//     lib/router.ts shareHref, #/playlists?s=…). The payload is in the fragment,
+//     so it is not transmitted either — but it does leave this browser in the
+//     hands of whoever you send it to, which is why the paragraph below says the
+//     link is the data. check-playlists.ts fails if this page stops saying so.
 //
 // Hosts, verified: creatornode.audius.co + discoveryprovider.audius.co
 // (lib/config.ts), huggingface.co (transformers.js default remote host — nothing
@@ -124,9 +129,19 @@ export default function Privacy() {
         <b>What a playlist is.</b> A name and a list of record ids — never a copy of
         the audio or the artwork, which stay where they already are. Playlists are
         never uploaded and there is no account to attach them to, so they live in
-        this browser and nowhere else: another device will not see them. You can
-        export them to a file you keep and import that file back; the import is read
-        and parsed in this tab, not sent anywhere.
+        this browser unless you deliberately move them. You can export them to a file
+        you keep and import that file back; the import is read and parsed in this
+        tab, not sent anywhere.
+      </p>
+      <p>
+        <b>Sharing a playlist.</b> "Copy link" does not upload anything, because there
+        is nowhere to upload it to. The playlist's name and record ids are encoded{' '}
+        <i>into the link itself</i>, after the <code>#</code> — so, exactly like a
+        search, it is never transmitted to this site's host and cannot appear in its
+        logs or analytics. The trade is that <b>the link is the data</b>: anyone
+        holding it can read the playlist, and it travels wherever you paste it.
+        Opening someone else's link only shows it to you — nothing is written to this
+        browser until you press Save.
       </p>
 
       <h2>Contact</h2>

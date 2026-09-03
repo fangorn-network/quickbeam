@@ -9,7 +9,9 @@ import Taste from '../components/Taste';
 import { entities } from '../lib/client';
 import { duration, fallbackArt, hms, initial, recArt } from '../lib/format';
 import { isPlayable, usePlayer } from '../lib/player';
-import { serialize, usePlaylists, type Playlist } from '../lib/playlists.tsx';
+import {
+  readShare, serialize, shareUrl, usePlaylists, type Playlist,
+} from '../lib/playlists.tsx';
 import { goEntity, goPlaylists } from '../lib/router';
 import type { Rec } from '../lib/types';
 
@@ -46,6 +48,46 @@ function useRecords(ids: string[]): Map<string, Rec | null> | null {
     return () => { live = false; };
   }, [key]);
   return map;
+}
+
+/**
+ * One row's contents: art, title, duration, controls — or the placeholder when the
+ * record isn't there. Shared by the editor and the read-only shared-link preview.
+ *
+ * Deliberately does NOT own the row's <li>, its number, grip or move buttons: those
+ * are the editable parts, and keeping them outside is what lets the preview reuse
+ * this without a `readOnly` flag threaded through the editor.
+ */
+function TrackCell(
+  { rec, tid, known, queue }: { rec: Rec | null; tid: string; known: boolean; queue: Rec[] },
+) {
+  if (!rec) {
+    return (
+      <span className="pl-title pl-title-dead">
+        <span className="pl-title-main">{known ? 'Not in this snapshot' : 'Loading…'}</span>
+        {known && <span className="pl-title-sub">{tid}</span>}
+      </span>
+    );
+  }
+  const art = recArt(rec, 150);
+  return (
+    <>
+      <span className="pl-art">
+        {art
+          ? <img src={art} alt="" loading="lazy" />
+          : <span className="art-fallback" style={{ background: fallbackArt(rec.id) }} />}
+      </span>
+      <button className="pl-title" onClick={() => goEntity(rec.id)}>
+        <span className="pl-title-main">{rec.fields.title || rec.id}</span>
+        <span className="pl-title-sub">{rec.fields.artist}</span>
+      </button>
+      <span className="pl-dur">{duration(rec.fields.duration)}</span>
+      <span className="pl-row-controls">
+        <PlayButton rec={rec} queue={queue} />
+        <Taste rec={rec} size="sm" />
+      </span>
+    </>
+  );
 }
 
 /** Up to four covers, 2x2. One cover fills the square; none falls back to the same
@@ -121,6 +163,55 @@ function ExportButton({ what, name }: { what: Playlist[]; name: string }) {
   );
 }
 
+/**
+ * Copy a link that CARRIES these playlists — see playlists.ts's sharing section. There
+ * is no server involved and nothing is uploaded: the payload is the link.
+ *
+ * The fallback is not decoration. navigator.clipboard is undefined outside a secure
+ * context, which includes the bare LAN IP the README's "showing it on another device"
+ * section tells you to use — the same trap playlists.tsx works around for
+ * crypto.randomUUID. When it's missing the URL is shown in a readonly input instead,
+ * selected and ready for ctrl-C, which needs no JS and no deprecated execCommand.
+ */
+function ShareButton({ what, label = 'Copy link' }: { what: Playlist[]; label?: string }) {
+  const [msg, setMsg] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
+  const field = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => { field.current?.select(); }, [url]);
+  if (!what.length) return null;
+
+  return (
+    <>
+      <button
+        className="playall"
+        onClick={() => {
+          const href = shareUrl(what);
+          const show = () => { setMsg(null); setUrl(href); };
+          if (!navigator.clipboard) { show(); return; }
+          void navigator.clipboard.writeText(href).then(
+            () => { setUrl(null); setMsg('Link copied — it carries the playlist itself.'); },
+            show,
+          );
+        }}
+      >
+        {label}
+      </button>
+      {msg && <span className="pl-note" role="status">{msg}</span>}
+      {url && (
+        <input
+          className="pl-share-url"
+          ref={field}
+          readOnly
+          value={url}
+          aria-label="Share link — copy this"
+          onFocus={(e) => e.target.select()}
+        />
+      )}
+    </>
+  );
+}
+
 // index ─────────────────────────────────────────────────────────────────────
 
 function Index() {
@@ -144,6 +235,7 @@ function Index() {
         <h2>Your playlists <span className="count">{playlists.length || ''}</span></h2>
         <div className="pl-actions">
           <ExportButton what={playlists} name="audius-playlists" />
+          <ShareButton what={playlists} label="Copy link to all" />
           <ImportButton />
         </div>
       </div>
@@ -266,6 +358,7 @@ function Detail({ id }: { id: string }) {
               </button>
             )}
             <ExportButton what={[pl]} name={pl.name.replace(/[^\w-]+/g, '-').toLowerCase() || 'playlist'} />
+            <ShareButton what={[pl]} />
             <button
               className="playall pl-danger"
               onClick={() => {
@@ -312,7 +405,6 @@ function Detail({ id }: { id: string }) {
           {pl.trackIds.map((tid, i) => {
             const rec = recs[i];
             const known = byId.has(tid);
-            const art = rec && recArt(rec, 150);
             return (
               <li
                 // Keyed by track, not index: the browser keeps focus on a moved node,
@@ -341,31 +433,7 @@ function Detail({ id }: { id: string }) {
                 <span className="pl-grip" aria-hidden="true">::</span>
                 <span className="pl-num">{i + 1}</span>
 
-                {rec ? (
-                  <>
-                    <span className="pl-art">
-                      {art
-                        ? <img src={art} alt="" loading="lazy" />
-                        : <span className="art-fallback" style={{ background: fallbackArt(rec.id) }} />}
-                    </span>
-                    <button className="pl-title" onClick={() => goEntity(rec.id)}>
-                      <span className="pl-title-main">{rec.fields.title || rec.id}</span>
-                      <span className="pl-title-sub">{rec.fields.artist}</span>
-                    </button>
-                    <span className="pl-dur">{duration(rec.fields.duration)}</span>
-                    <span className="pl-row-controls">
-                      <PlayButton rec={rec} queue={playable} />
-                      <Taste rec={rec} size="sm" />
-                    </span>
-                  </>
-                ) : (
-                  <span className="pl-title pl-title-dead">
-                    <span className="pl-title-main">
-                      {known ? 'Not in this snapshot' : 'Loading…'}
-                    </span>
-                    {known && <span className="pl-title-sub">{tid}</span>}
-                  </span>
-                )}
+                <TrackCell rec={rec} tid={tid} known={known} queue={playable} />
 
                 {/* Always visible, never hover-revealed: HTML5 drag does not fire on
                     touch at all, so on a phone these are the ONLY way to reorder. */}
@@ -400,6 +468,135 @@ function Detail({ id }: { id: string }) {
   );
 }
 
-export default function Playlists({ id }: { id: string }) {
+// a shared link ─────────────────────────────────────────────────────────────
+
+/**
+ * Someone else's playlists, read out of the URL. NOT saved — that is the whole point
+ * of previewing rather than importing on arrival: a link should not be able to write
+ * to your library just because you clicked it. Play it, then decide.
+ *
+ * Everything here is read-only: no rename, reorder, remove or delete, and the
+ * "not in this snapshot" note appears WITHOUT the editor's remove button, since
+ * pruning someone else's playlist before you have even taken it makes no sense.
+ */
+function Shared({ payload }: { payload: string }) {
+  const { importJson } = usePlaylists();
+  const { play } = usePlayer();
+  const [saved, setSaved] = useState<string | null>(null);
+
+  // Decoding is pure and the payload only changes with the URL, so this runs once.
+  const pls = useMemo(() => readShare(payload), [payload]);
+  const ids = useMemo(() => [...new Set(pls.flatMap((p) => p.trackIds))], [pls]);
+  const byId = useRecords(ids);
+
+  if (!pls.length) {
+    return (
+      <div className="empty">
+        <h3>That link didn't carry a playlist</h3>
+        <p>It may have been truncated on the way here — links are cut short by some
+          chat apps. Ask for it again, or for the exported file instead.</p>
+        <button className="back" onClick={() => goPlaylists()}>Your playlists</button>
+      </div>
+    );
+  }
+
+  const recsOf = (pl: Playlist) => pl.trackIds.map((t) => byId?.get(t) ?? null);
+  const one = pls.length === 1 ? pls[0] : null;
+  const recs = one ? recsOf(one) : [];
+  const playable = recs.filter((r): r is Rec => !!r && isPlayable(r));
+  // Over `ids`, which is already deduped — a track in two of the shared playlists is
+  // one missing track, not two.
+  const missing = byId ? ids.filter((t) => byId.has(t) && !byId.get(t)).length : 0;
+  const tracks = pls.reduce((n, p) => n + p.trackIds.length, 0);
+
+  return (
+    <section>
+      <button className="back" onClick={() => goPlaylists()}>Your playlists</button>
+
+      <div className="pl-head">
+        <div className="pl-head-art">
+          <Cover pl={pls[0]} recs={one ? recs : recsOf(pls[0])} />
+        </div>
+        <div className="pl-head-body">
+          <h1>{one ? one.name : `${pls.length} playlists`}</h1>
+          <p className="pl-stats">
+            Shared with you · {tracks} track{tracks === 1 ? '' : 's'}
+            {one && byId ? ` · ${hms(totalSecs(recs))}` : ''}
+          </p>
+          <div className="pl-actions">
+            {!!playable.length && (
+              <button className="playall" onClick={() => play(playable[0], playable)}>
+                Play all
+              </button>
+            )}
+            <button
+              className="playall"
+              onClick={() => {
+                // The same merge an imported file goes through, so this can only ever
+                // ADD — it never renames or deletes what you already have, and
+                // pressing it twice does nothing the second time.
+                const n = importJson(serialize(pls));
+                setSaved(!n.playlists && !n.tracks
+                  ? 'Already in your playlists.'
+                  : `Saved ${n.playlists} playlist${n.playlists === 1 ? '' : 's'} and ${n.tracks} track${n.tracks === 1 ? '' : 's'}.`);
+              }}
+            >
+              Save to your playlists
+            </button>
+            {saved && <span className="pl-note" role="status">{saved}</span>}
+          </div>
+        </div>
+      </div>
+
+      <p className="pl-note">
+        Nothing is saved to this browser until you press Save.
+      </p>
+
+      {missing > 0 && (
+        <p className="pl-note">
+          {missing} track{missing === 1 ? ' is' : 's are'} not in this snapshot and
+          won't play.
+        </p>
+      )}
+
+      {one ? (
+        <ol className="pl-rows">
+          {one.trackIds.map((tid, i) => (
+            <li key={tid} className={`pl-row${byId?.has(tid) && !byId.get(tid) ? ' is-dead' : ''}`}>
+              <span className="pl-num">{i + 1}</span>
+              <TrackCell
+                rec={recs[i]}
+                tid={tid}
+                known={!!byId?.has(tid)}
+                queue={playable}
+              />
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <div className="grid">
+          {pls.map((pl) => (
+            // Not a link: these aren't addressable until they're saved.
+            <div key={pl.id} className="card">
+              <div className="card-art"><Cover pl={pl} recs={recsOf(pl)} /></div>
+              <div className="card-body">
+                <span className="card-title">{pl.name}</span>
+                <span className="card-meta">
+                  {pl.trackIds.length} track{pl.trackIds.length === 1 ? '' : 's'}
+                  {byId ? ` · ${hms(totalSecs(recsOf(pl)))}` : ''}
+                </span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+export default function Playlists({ id, share }: { id: string; share?: string }) {
+  // A share payload outranks an id: it addresses a playlist that is not in this
+  // browser yet, so there would be nothing for `id` to find.
+  if (share) return <Shared payload={share} />;
   return id ? <Detail id={id} /> : <Index />;
 }

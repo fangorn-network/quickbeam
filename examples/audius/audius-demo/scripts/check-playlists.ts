@@ -14,8 +14,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  PLAYLISTS_KEY, addTrack, create, merge, parse, remove, removeTrack, rename,
-  reorder, serialize, trackCount, type Playlist,
+  PLAYLISTS_KEY, addTrack, create, fromShare, merge, parse, remove, removeTrack,
+  rename, reorder, serialize, toShare, trackCount, type Playlist,
 } from '../src/lib/playlists.ts';
 
 let failures = 0;
@@ -169,6 +169,96 @@ await check('importing a hostile file never throws and never drops what I have',
   }
 });
 
+// ── sharing by URL ──────────────────────────────────────────────────────────
+//
+// A share link is a playlist encoded into a URL, so the failure that matters is the
+// same one as everywhere else in this file: silently losing tracks. The base64url
+// wrapper lives in playlists.tsx (it needs btoa); everything with a decision in it is
+// here.
+
+const shared = [
+  pl('a', 'Night drive', ['audius:track:2GROP7Z', 'audius:track:bmzwk']),
+  pl('b', 'Garage', ['audius:track:aNPwOO1']),
+];
+
+await check('toShare → fromShare round-trips every playlist and every track', () => {
+  const out = fromShare(toShare(shared), 1);
+  assert.deepEqual(out, shared);
+});
+
+// The prefix strip is the only lossy-looking step. Verified against all 26,642
+// records in the bake: every id is `audius:<type>:<suffix>` and no suffix contains a
+// colon, so "did a colon survive" is a sound test for "was this already whole".
+await check('the audius:track: prefix strip is lossless, and spares other ids', () => {
+  const wire = toShare([pl('a', 'Mixed', ['audius:track:abc', 'audius:playlist:xyz'])]);
+  assert.ok(!wire.includes('audius:track:'), 'track prefix should not be in the wire form');
+  assert.ok(wire.includes('audius:playlist:xyz'), 'a non-track id must ride whole');
+  assert.deepEqual(
+    fromShare(wire, 1)[0].trackIds,
+    ['audius:track:abc', 'audius:playlist:xyz'],
+  );
+});
+
+await check('fromShare never throws and yields [] on junk', () => {
+  for (const raw of ['', '{', 'null', 'undefined', '{"a":1}', '"a string"', 'NaN',
+                     '[1,2,3]', '[null]', '[[]]', '[{"id":"a"}]']) {
+    assert.deepEqual(fromShare(raw, 1), [], `raw=${JSON.stringify(raw)}`);
+  }
+});
+
+// NOT junk, and the distinction is load-bearing: an id with no tracks is exactly what
+// create() makes, so a link to an empty playlist must arrive as an empty playlist
+// rather than as nothing at all.
+await check('a bare id decodes to an empty playlist, like create() makes', () => {
+  assert.deepEqual(fromShare('[["id"]]', 1),
+    [{ id: 'id', name: 'Untitled playlist', createdAt: 1, trackIds: [] }]);
+});
+
+// A hostile link is a hostile file is a hostile localStorage blob — fromShare must go
+// through parse() rather than growing a second, less-tested validator.
+await check('fromShare salvages good entries beside a malformed one', () => {
+  const out = fromShare(JSON.stringify([
+    ['a', 'Keep me', 'abc'], 'nope', null, 42, ['', 'no id', 'x'], ['d', 'Also keep', 'q'],
+  ]), 1);
+  assert.deepEqual(out.map((p) => p.id), ['a', 'd']);
+  assert.deepEqual(out[0].trackIds, ['audius:track:abc']);
+});
+
+await check('a non-string track id is dropped, not turned into a bogus one', () => {
+  const out = fromShare(JSON.stringify([['a', 'Mixed', 'abc', 5, null, 'def']]), 1);
+  assert.deepEqual(out[0].trackIds, ['audius:track:abc', 'audius:track:def']);
+});
+
+// THE anti-regression assertion for sharing. Saving a link you already have must be a
+// no-op, and merge() only knows that by id — so this fails the moment the id stops
+// riding in the payload, or the prefix strip stops round-tripping.
+await check('saving your own share link back is a no-op, BY REFERENCE', () => {
+  assert.equal(merge(shared, fromShare(toShare(shared), 2)), shared);
+});
+
+await check('a shared playlist unions rather than replacing what you already have', () => {
+  const mine = [pl('a', 'My name for it', ['audius:track:2GROP7Z', 'audius:track:mine'])];
+  const out = merge(mine, fromShare(toShare(shared), 1));
+  assert.equal(out.length, 2, 'the unknown playlist should be appended');
+  const a = out.find((p) => p.id === 'a')!;
+  assert.equal(a.name, 'My name for it', 'an import must never rename');
+  assert.deepEqual(a.trackIds,
+    ['audius:track:2GROP7Z', 'audius:track:mine', 'audius:track:bmzwk']);
+});
+
+await check('createdAt is stamped on arrival, not carried', () => {
+  const sender = [pl('a', 'Old', ['audius:track:abc'])]; // createdAt 1
+  assert.equal(fromShare(toShare(sender), 9999)[0].createdAt, 9999);
+});
+
+// The reason the prefix strip exists at all.
+await check('a share payload is much smaller than the export it replaces', () => {
+  const big = [pl('a', 'Long one',
+    Array.from({ length: 30 }, (_, i) => `audius:track:id${i}`))];
+  assert.ok(toShare(big).length * 2 < serialize(big).length,
+    `share ${toShare(big).length} vs export ${serialize(big).length}`);
+});
+
 // ── the two claims outside this file ────────────────────────────────────────
 
 await check('the storage key is its own, and is not the kernel\'s', () => {
@@ -183,6 +273,17 @@ await check('Privacy.tsx names the playlist storage key', () => {
   const src = readFileSync(new URL('../src/views/Privacy.tsx', import.meta.url), 'utf8');
   assert.ok(src.includes(PLAYLISTS_KEY),
     `Privacy.tsx must name ${PLAYLISTS_KEY} — it tells the reader what is stored`);
+});
+
+// Same pattern as the key check above: the policy makes a specific, falsifiable claim
+// about sharing ("the link is the data"), and a share feature that ships without it is
+// a policy that lies. Anchored on the URL shape so it also ties router.ts's parse.
+await check('Privacy.tsx explains the share link', () => {
+  const src = readFileSync(new URL('../src/views/Privacy.tsx', import.meta.url), 'utf8');
+  assert.ok(src.includes('#/playlists?s='),
+    'Privacy.tsx must name the share URL shape');
+  assert.ok(/the link is the data/i.test(src),
+    'Privacy.tsx must say the link carries the playlist, not a reference to it');
 });
 
 if (failures) { console.error(`\n${failures} check(s) failed`); process.exit(1); }
