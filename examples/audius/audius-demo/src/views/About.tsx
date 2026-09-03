@@ -83,6 +83,39 @@ export default function About({ stats }: { stats: Stats }) {
         something has escaped onto the main thread.
       </p>
 
+      <h2>The third client: an agent in this tab</h2>
+      <p>
+        Two things already read this snapshot: this page, and{' '}
+        <code>quickbeam mcp</code>, a pull-client that hands the same shards to an
+        agent as tools — the snapshot goes to the process, so the queries never leave
+        it. WebMCP is the third, and it is that argument taken to its end: there is no
+        process. The tab already holds the graph, so an agent's question is answered by
+        the same local vector search yours is, and neither reaches a server.
+      </p>
+      <p>
+        Where the browser supports it — today that means a flag that is off by
+        default — this page registers fourteen verbs an agent can call:{' '}
+        <code>search-music</code>, <code>open-record</code>,{' '}
+        <code>describe-graph</code>, <code>list-relations</code>,{' '}
+        <code>traverse</code>, <code>browse</code>, <code>player-state</code>,{' '}
+        <code>control-player</code>, <code>read-taste</code>, <code>recommend</code>,{' '}
+        <code>list-playlists</code>, <code>create-playlist</code>,{' '}
+        <code>add-to-playlist</code> and <code>share-playlist</code>.
+      </p>
+      <p>
+        The last four are the ones a backend could not offer.{' '}
+        <code>control-player</code> moves the same audio element the bar at the bottom
+        drives, not a copy of it. <code>read-taste</code> reads a model that exists in
+        this tab and nowhere else — there is no profile on a server to look up. And
+        because search results carry each track's length and mood, an agent can answer
+        a brief with a shape to it: <i>an hour long, high energy to start, tapering
+        off by the end</i>. Ask it in those words and it can build that.
+      </p>
+      <p>
+        Making a new playlist happens straight away. Changing one you already made
+        asks first, and silence is not a yes. Nothing here deletes or renames.
+      </p>
+
       <h2>The session kernel</h2>
       <p>
         "Where you're heading" is a geometric taste model, not a playlist. Your genre

@@ -6,6 +6,7 @@ import SearchBar from './components/SearchBar';
 import { kernelSnapshot, onProgress, ready, type Progress } from './lib/client';
 import { useKernel } from './lib/kernel';
 import { usePlaylists } from './lib/playlists.tsx';
+import { AgentTools } from './lib/webmcp.tsx';
 import { goAbout, goHome, goPlaylists, goPrivacy } from './lib/router';
 import { useRoute } from './lib/router';
 import type { Stats } from './lib/types';
@@ -130,6 +131,17 @@ export default function App() {
       </main>
 
       <NowPlaying />
+
+      {/* WebMCP: registers this tab's verbs for a browser-resident agent, and owns the
+          card that asks before an agent changes a playlist. Renders nothing and
+          registers nothing when no agent is present, which is almost every visitor.
+          Outside <main> for the same reason NowPlaying is — it is not a view.
+
+          Deliberately NOT gated on `stats`: the tools read the world through a ref, so
+          one registered now still sees the snapshot when it finishes loading. Gating
+          would mean an agent that opened the tab sees no tools at all until the
+          download finishes, and it has no way to know to look again. */}
+      <AgentTools />
     </div>
   );
 }

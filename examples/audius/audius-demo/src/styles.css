@@ -632,6 +632,14 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .pl-share-url { flex: 1 0 100%; min-width: 0; font: inherit; font-size: 12px;
   font-family: var(--mono); padding: 7px 10px; border-radius: var(--r-s);
   border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+/* The agent consent card. Reuses .dlg / .dlg-body / .dlg-sub; only the attribution
+   line and the button row are its own. */
+.ask-who { margin: 0 0 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--secondary); }
+.ask-row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+.ask-row form { margin: 0; }
+.ask-yes { border-color: var(--secondary); color: var(--text); }
+
 .pl-linkbtn { color: var(--secondary); text-decoration: underline; background: none;
               border: 0; padding: 0; font: inherit; cursor: pointer; }
 

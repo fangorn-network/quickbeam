@@ -15,6 +15,7 @@
     "build:static": "npm run stage:cdn && npm run build",
     "check:private": "node --experimental-strip-types scripts/check-private.ts",
     "check:playlists": "node --experimental-strip-types scripts/check-playlists.ts",
+    "check:webmcp": "node --experimental-strip-types scripts/check-webmcp.ts",
     "private-search": "node --experimental-strip-types scripts/private-search.ts"
   },
   "dependencies": {

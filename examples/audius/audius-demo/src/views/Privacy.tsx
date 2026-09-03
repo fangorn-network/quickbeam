@@ -12,6 +12,12 @@
 //   • Search rides in the HASH (lib/router.ts, #/search?q=…), which browsers
 //     never transmit — stronger than the manual, whose query is a real query
 //     string and relies on Cloudflare not logging it.
+//   • An AGENT in this browser can drive the page (lib/webmcp.ts, registered on
+//     document.modelContext). It is behind a Chrome flag, so it is absent for
+//     almost every visitor — but where present it can read the taste kernel
+//     (`read-taste`) and write playlists, which is a disclosure this page has to
+//     name. It sends nothing anywhere: the tools call the same in-tab worker the
+//     UI does. check-webmcp.ts fails if this page stops naming `read-taste`.
 //   • Playlists can be SHARED as a link (lib/playlists.tsx shareUrl →
 //     lib/router.ts shareHref, #/playlists?s=…). The payload is in the fragment,
 //     so it is not transmitted either — but it does leave this browser in the
@@ -65,6 +71,32 @@ export default function Privacy() {
         folded into a model held in this tab and saved to this browser's local
         storage so it survives a reload. It is never uploaded, and there is no
         account for it to be attached to.
+      </p>
+
+      <h2>If you use an AI agent in this browser</h2>
+      <p>
+        This page offers its own tools to a browser-resident agent, so one can
+        search the graph, work the player and build playlists for you without a
+        server in the middle. Almost nobody has this: it needs a browser flag that
+        is off by default, and where it is off the feature does not exist and
+        nothing below applies.
+      </p>
+      <p>
+        Where it <i>is</i> on, an agent you are using can read the same things you
+        can see — including your taste profile, through a tool called{' '}
+        <code>read-taste</code>. That is worth stating plainly, because it is the
+        one way the profile described above leaves the page at all. It does not
+        leave it to <em>us</em>: every tool runs against the snapshot already in
+        this tab, and none of them sends anything to a server. What the agent then
+        does with what it read is between you and whoever makes your agent.
+      </p>
+      <p>
+        Two tools can change your playlists. Making a <b>new</b> playlist happens
+        without interrupting you, because you asked for it and nothing you already
+        had is touched. Adding tracks to a playlist you <b>already made</b> puts a
+        card on the screen and waits: if you dismiss it, or simply do not answer,
+        nothing is added. No tool can rename or delete anything, and none of them
+        can spend money — there is nothing here to spend it on.
       </p>
 
       <h2>What Audius can see</h2>
@@ -150,7 +182,7 @@ export default function Privacy() {
         <a href="mailto:fangorn@fangorn.network">fangorn@fangorn.network</a>. This
         policy may change if the demo does; the date below is the last revision.
       </p>
-      <p className="about-lede" style={{ fontSize: 14 }}>Last updated 2 September 2026.</p>
+      <p className="about-lede" style={{ fontSize: 14 }}>Last updated 3 September 2026.</p>
 
       <button className="back" onClick={goHome}>← Back to the graph</button>
     </section>

@@ -18,6 +18,52 @@ cd examples/audius/audius-demo && npm install && npm run dev      # http://local
 
 This app is not the only consumer of that snapshot. `quickbeam mcp` pulls the same shards and the same linkset and hands them to an **agent** as tools which give semantic search plus typed traversal, with the same "the data comes to you, the query stays here" property this app has. `.mcp.json` at the repo root registers it which reads from the `cdn serve` command from step 1. Setup and the traversal recipe are in [`audius-source/README.md`](../audius-source/README.md#let-an-agent-explore-it-mcp).
 
+### The third client — an agent inside this tab
+
+`quickbeam mcp` is a pull-client: the snapshot comes to the process, so the queries
+never leave it. **WebMCP is that argument with no process at all.** The tab has already
+downloaded the graph, so this page registers its own verbs on `document.modelContext`
+([WebMCP](https://github.com/webmachinelearning/webmcp)) and a browser-resident agent
+calls them directly. No server, no transport, **no dependency** — see
+[`src/lib/webmcp.ts`](src/lib/webmcp.ts).
+
+Fourteen tools: `search-music`, `open-record`, `describe-graph`, `list-relations`,
+`traverse`, `browse`, `player-state`, `control-player`, `read-taste`, `recommend`,
+`list-playlists`, `create-playlist`, `add-to-playlist`, `share-playlist`.
+
+```sh
+scripts/webmcp-chrome.sh          # Chrome, flag on, throwaway profile
+npm run check:webmcp              # the tools' self-check — no browser, no network
+```
+
+In the tab's console (Chrome wants the tool **object**, not its name, and takes the
+arguments as a JSON **string**):
+
+```js
+const mc = document.modelContext;
+const t = (await mc.getTools()).find((x) => x.name === "search-music");
+await mc.executeTool(t, JSON.stringify({ query: "late night driving synthwave", limit: 3 }));
+```
+
+Four things this is built around, rather than assumed:
+
+- **`document.modelContext` is undefined for almost everyone.** It is behind a Chrome
+  flag. The hook feature-detects and returns, so the app is byte-identical without it —
+  that path is the common one and is the one to check after any change here.
+- **The tools read the world through a ref, and register exactly once.** An effect with
+  the deps object in its dependency array re-registers on every render, and the agent
+  watches fourteen tools vanish and reappear continuously while calls in flight die on
+  the abort. It is also why mounting is not gated on the snapshot having loaded: a tool
+  registered now sees the graph when it arrives.
+- **Search results carry `duration` and `mood`.** That is not payload trimming left
+  generous, it is the feature: without them an agent can retrieve but not *compose*, and
+  *"make a playlist called 'party tonight', high energy tapering off, one hour long"*
+  stops being answerable. `check-webmcp.ts` drives exactly that request end to end.
+- **Only two tools write, and they differ on purpose.** `create-playlist` saves without
+  interrupting — you asked for a playlist and nothing you had is touched.
+  `add-to-playlist` changes something you already made, so it raises a card and waits;
+  dismissal and silence both mean no. Nothing renames or deletes.
+
 ### Showing it on another device (ngrok, Cloudflare tunnel, a phone)
 
 Tunnel **only the app port**. The snapshot rides along with it:
@@ -129,7 +175,11 @@ npm run check         # needs Qdrant up — asserts the query-side transform sti
                       # matches the one used at ingest
 npm run check:graph   # needs `cdn serve` on 8090 — 12 assertions over the served tree
 npm run check:kernel  # 16 assertions over the recommender seam
+npm run check:webmcp  # 25 assertions over the agent tools — no browser needed
 ```
+
+`check:webmcp` needs nothing running at all — `src/lib/webmcp.ts` has zero imports, so
+the 25 assertions drive the tools with a fake `modelContext` and stub dependencies.
 
 `check:graph` catches a bad bake. It asserts both publishers are present, that every edge endpoint resolves, and that the baked `manifest.stats` equals what the graph contains.
 
