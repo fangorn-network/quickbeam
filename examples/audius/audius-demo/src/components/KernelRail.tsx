@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { kernelRecommend } from '../lib/client';
-import { shortAddr } from '../lib/format';
 import type { Rec, Stats } from '../lib/types';
 import Card from './Card';
 
@@ -21,7 +20,6 @@ export default function KernelRail({
 }: { railVersion: number; stats: Stats }) {
   const [recs, setRecs] = useState<Rec[]>([]);
   const [other, setOther] = useState<Rec[]>([]);
-  const [otherOwner, setOtherOwner] = useState<string>('');
 
   // Keyed on railVersion, not version: starting a track feeds the kernel but must
   // not re-rank the grid under the click that started it. See KernelCtx.
@@ -31,14 +29,14 @@ export default function KernelRail({
     return () => { live = false; };
   }, [railVersion]);
 
-  // Whichever publisher the top picks came from, show the other one's best.
+  // The top picks cluster in one corner of the catalogue; this pulls the best
+  // of what they left out, so the rail doesn't narrow to a single publisher.
   useEffect(() => {
     if (!recs.length) { setOther([]); return; }
     const lead = (recs[0].owner ?? '').toLowerCase();
     const opposite = stats.publishers.find((p) => p.owner.toLowerCase() !== lead);
     if (!opposite) { setOther([]); return; }
     let live = true;
-    setOtherOwner(opposite.owner);
     void kernelRecommend(6, opposite.owner).then((r) => { if (live) setOther(r); });
     return () => { live = false; };
   }, [recs, stats.publishers]);
@@ -58,10 +56,8 @@ export default function KernelRail({
       {other.length > 0 && (
         <>
           <div className="section-head">
-            <h2>…and from the other repo</h2>
-            <span className="count">
-              same ranking, narrowed to {shortAddr(otherOwner)}
-            </span>
+            <h2>…and further out</h2>
+            <span className="count">same ranking, a different corner of the catalogue</span>
           </div>
           <div className="grid">
             {other.map((r) => <Card key={r.id} rec={r} queue={other} />)}

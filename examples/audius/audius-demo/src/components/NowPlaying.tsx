@@ -1,7 +1,7 @@
 import { duration as fmt, fallbackArt, initial, recArt } from '../lib/format';
 import { usePlayer } from '../lib/player';
 import { goEntity } from '../lib/router';
-import Chip from './Chip';
+import AudiusBadge from './AudiusBadge';
 import PlayButton from './PlayButton';
 import AddButton from './AddButton';
 import Taste from './Taste';
@@ -38,7 +38,7 @@ export default function NowPlaying() {
         </button>
         <div className="np-sub">
           <span>{current.fields.artist}</span>
-          <Chip owner={current.owner} />
+          <AudiusBadge />
         </div>
       </div>
 

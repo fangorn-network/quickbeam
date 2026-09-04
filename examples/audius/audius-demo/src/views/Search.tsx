@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import Card from '../components/Card';
 import SearchBar from '../components/SearchBar';
 import { search } from '../lib/client';
-import { isPlatform } from '../lib/format';
 import type { Rec } from '../lib/types';
 
 const TYPES = ['All', 'Track', 'Artist', 'Playlist', 'Genre', 'Mood', 'Tag'];
@@ -22,8 +21,6 @@ export default function Search({ q }: { q: string }) {
       .catch((e) => { if (live) setErr(e.message); });
     return () => { live = false; };
   }, [q, type]);
-
-  const fromArtist = hits?.filter((h) => !isPlatform(h.owner)).length ?? 0;
 
   return (
     <>
@@ -46,9 +43,7 @@ export default function Search({ q }: { q: string }) {
       <div className="section-head">
         <h2>{q}</h2>
         {hits && (
-          <span className="count">
-            {hits.length} results · {fromArtist} from the artist's own repo
-          </span>
+          <span className="count">{hits.length} results</span>
         )}
       </div>
 

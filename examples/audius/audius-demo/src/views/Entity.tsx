@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import Chip from '../components/Chip';
+import AudiusBadge from '../components/AudiusBadge';
 import PlayButton from '../components/PlayButton';
 import Rail, { RecordRail } from '../components/Rail';
 import Taste from '../components/Taste';
 import { discovery, entity, neighbours, relations } from '../lib/client';
 import { isPlayable, usePlayer } from '../lib/player';
 import {
-  duration, fallbackArt, initial, nfmt, recArt, shortAddr, splitTags,
+  duration, fallbackArt, initial, nfmt, recArt, splitTags,
 } from '../lib/format';
 import { goSearch } from '../lib/router';
 import type { Rec, RelationGroup } from '../lib/types';
@@ -21,11 +21,8 @@ const PRIMARY_REL: Record<string, string | undefined> = {
  * Reading order for a TRACK's rails: who made it, where it lives, then what it
  * is, narrowing from attribution to classification.
  *
- * This deliberately overrides `Graph.relations`, which sorts cross-publisher
- * rails to the top on the grounds that they are the demonstration. That ranking
- * is right for browsing a graph and wrong for reading a track — so a crossing
- * `remixOf` now sits mid-page rather than first. Nothing is lost: the
- * "crosses publishers" badge still renders wherever the rail lands.
+ * This deliberately overrides `Graph.relations`, whose ranking is right for
+ * browsing a graph and wrong for reading a track.
  *
  * Anything unlisted keeps its incoming order and sits between mood and tags,
  * since tags are the weakest discovery signal and were asked for last.
@@ -78,7 +75,7 @@ export default function Entity({ id }: { id: string }) {
     return (
       <div className="empty">
         <h3>Not in this snapshot</h3>
-        <p>That record isn't part of either published graph.</p>
+        <p>That record isn't in this catalogue.</p>
       </div>
     );
   }
@@ -120,7 +117,7 @@ export default function Entity({ id }: { id: string }) {
       id={id}
       limit={g.rel === primaryRel && g.dir === 'out' ? 60 : 12}
       note={partialCatalogue && g.rel === 'created' && g.dir === 'out'
-        ? `${heldTracks} of their ${nfmt(audiusTracks)} Audius tracks reached this crawl`
+        ? `${heldTracks} of their ${nfmt(audiusTracks)} Audius tracks are in the catalogue`
         : undefined}
     />
   );
@@ -145,7 +142,6 @@ export default function Entity({ id }: { id: string }) {
         <div className="entity-meta">
           <span className="entity-type">
             {f.kind ?? rec.entityType}
-            {f.isReference ? ' · platform reference' : ''}
           </span>
           <h1>{f.title || rec.id}</h1>
           {f.artist && !isArtist && <span className="entity-sub">{f.artist}</span>}
@@ -157,7 +153,7 @@ export default function Entity({ id }: { id: string }) {
             {/* Seeds the queue from whichever relation actually holds this page's
                 tracks — `contains` for a playlist, `created` for an artist. */}
             {primaryRel && <PlayAll id={id} rel={primaryRel} onPlay={play} />}
-            <Chip owner={rec.owner} showAddr />
+            <AudiusBadge />
             {f.isVerified ? <span className="tag">Verified on Audius</span> : null}
           </div>
 
@@ -168,7 +164,7 @@ export default function Entity({ id }: { id: string }) {
               <div><b>{nfmt(heldTracks)}</b><span>tracks here</span></div>
             )}
             {partialCatalogue && (
-              <div title="This graph is a bounded crawl of Audius, not a mirror of it.">
+              <div title="The catalogue holds a slice of Audius, not all of it.">
                 <b>{nfmt(audiusTracks)}</b><span>on Audius</span>
               </div>
             )}
@@ -183,15 +179,14 @@ export default function Entity({ id }: { id: string }) {
         </div>
       </header>
 
-      {/* The sovereignty moment, stated where it happens rather than in a footnote. */}
+      {/* Says why this page is nearly empty, at the point someone notices. */}
       {f.isReference && (
         <div className="banner">
           <div>
-            <b>This is the platform's reference, not the artist's record.</b> It carries an
-            id and a handle and nothing else — no profile, no catalogue, no artwork,
-            because the platform doesn't hold them. Follow <em>Same artist as</em> below
-            to reach the record the artist published from their own wallet
-            {rec.owner ? <> (<code>{shortAddr(rec.owner)}</code> → a different key)</> : null}.
+            <b>This artist publishes their own catalogue.</b> The record here carries an
+            id and a handle and nothing else — no profile, no tracks, no artwork.
+            Follow <em>Same artist as</em> below to reach the one they publish
+            themselves.
           </div>
         </div>
       )}
@@ -217,7 +212,7 @@ export default function Entity({ id }: { id: string }) {
           catalogue, since an artist page has no classification tail to sit in
           front of. */}
       {(isTrack || isArtist) && (
-        <Discovery id={id} owner={rec.owner} kind={isTrack ? 'Track' : 'Artist'} />
+        <Discovery id={id} kind={isTrack ? 'Track' : 'Artist'} />
       )}
 
       {afterDiscovery.map(renderRail)}
@@ -251,9 +246,7 @@ const DISCOVERY_LABELS = {
   },
 } as const;
 
-function Discovery({ id, owner, kind }: {
-  id: string; owner?: string; kind: 'Artist' | 'Track';
-}) {
+function Discovery({ id, kind }: { id: string; kind: 'Artist' | 'Track' }) {
   const [d, setD] = useState<{ peers: Rec[]; similar: Rec[] } | null>(null);
 
   useEffect(() => {
@@ -265,12 +258,6 @@ function Discovery({ id, owner, kind }: {
 
   if (!d) return null;
 
-  // Same test the real relation rails use: does following this land you in a
-  // different wallet's graph? For the sovereign artist it always does — their
-  // tracks sit in the platform's playlists, so every peer is a platform artist.
-  const leaves = (rs: Rec[]) =>
-    rs.some((r) => (r.owner ?? '').toLowerCase() !== (owner ?? '').toLowerCase());
-
   const L = DISCOVERY_LABELS[kind];
 
   return (
@@ -278,14 +265,12 @@ function Discovery({ id, owner, kind }: {
       <RecordRail
         title={L.peers.title}
         count={d.peers.length || undefined}
-        crosses={leaves(d.peers)}
         note={L.peers.note}
         recs={d.peers}
       />
       <RecordRail
         title={L.similar.title}
         count={d.similar.length || undefined}
-        crosses={leaves(d.similar)}
         note={L.similar.note}
         recs={d.similar}
       />

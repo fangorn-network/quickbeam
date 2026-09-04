@@ -10,7 +10,6 @@
 // learned from listening.
 import { useEffect, useState } from 'react';
 import { onboardingOptions, type OnboardingOptions } from '../lib/client';
-import { isPlatform } from '../lib/format';
 import { useKernel } from '../lib/kernel';
 
 /** Enough genres to place μ somewhere specific rather than in the middle of everything. */
@@ -44,8 +43,8 @@ export default function Onboarding() {
       <div className="hero-kicker">First, tell it what you like</div>
       <h1>Seed the <em>kernel</em>.</h1>
       <p className="onboard-lede">
-        Everything below is read out of the two published graphs — no profile, no
-        account, nothing sent anywhere. Your picks become the starting point for a
+        Everything below is read out of the catalogue — no profile, no account,
+        nothing sent anywhere. Your picks become the starting point for a
         recommender that runs entirely in this browser.
       </p>
 
@@ -93,12 +92,6 @@ export default function Onboarding() {
                 <span className="onboard-artist-name">{a.name}</span>
                 <span className="onboard-artist-meta">
                   {a.followers.toLocaleString()} followers · {a.tracks} tracks
-                </span>
-                {/* The sovereign artist publishes from their own wallet, so this
-                    marker is the demo's whole premise showing up before you have
-                    clicked anything. */}
-                <span className={`chip ${isPlatform(a.owner) ? 'chip-platform' : 'chip-artist'}`}>
-                  {isPlatform(a.owner) ? 'Platform' : 'Artist'}
                 </span>
               </button>
             );

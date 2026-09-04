@@ -11,10 +11,9 @@ import Card from './Card';
  * identically to real relation rails without duplicating the markup — the two
  * differ in where their records come from, not in how they look.
  */
-export function RecordRail({ title, count, crosses, note, recs, footer }: {
+export function RecordRail({ title, count, note, recs, footer }: {
   title: string;
   count?: number;
-  crosses?: boolean;
   /** Where these records came from, when it isn't a plain graph edge. */
   note?: string;
   recs: Rec[] | null;
@@ -27,11 +26,6 @@ export function RecordRail({ title, count, crosses, note, recs, footer }: {
       <div className="rail-head">
         <span className="rail-title">{title}</span>
         {count !== undefined && <span className="rail-count">{count}</span>}
-        {crosses && (
-          <span className="rail-bridge" title="This relation joins records published by different wallets">
-            crosses publishers
-          </span>
-        )}
         {note && <span className="rail-note">{note}</span>}
       </div>
       {!recs ? (
@@ -47,12 +41,7 @@ export function RecordRail({ title, count, crosses, note, recs, footer }: {
 }
 
 /**
- * One typed relation, resolved from the linkset.
- *
- * When `crosses` is set, at least one neighbour was published by a different wallet —
- * so following this rail leaves one publisher's graph and lands in another's. That
- * badge is the miniature of the hero's strand marker, and it is the single most
- * important thing on the page: it is the claim, demonstrated, on real records.
+ * One typed relation, resolved from the graph.
  *
  * `limit` exists because a page's PRIMARY relation is its reason for existing: an
  * artist page truncating a 41-track catalogue to 12 is hiding the thing you came
@@ -81,7 +70,6 @@ export default function Rail({ group, id, limit = 12, note }: {
     <RecordRail
       title={relLabel(group.rel, group.dir)}
       count={group.count}
-      crosses={group.crosses}
       note={note}
       recs={recs}
       footer={more ? (

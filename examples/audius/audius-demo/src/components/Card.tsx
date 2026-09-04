@@ -4,7 +4,7 @@ import { isPlayable } from '../lib/player';
 import { goEntity } from '../lib/router';
 import type { Rec } from '../lib/types';
 import AddButton from './AddButton';
-import Chip from './Chip';
+import AudiusBadge from './AudiusBadge';
 import PlayButton from './PlayButton';
 import Taste from './Taste';
 
@@ -38,7 +38,9 @@ export default function Card({ rec, queue }: { rec: Rec; queue?: Rec[] }) {
             {initial(f.title)}
           </div>
         )}
-        <span className="card-chip"><Chip owner={rec.owner} /></span>
+        {/* Vocabulary nodes (Genre/Mood/Tag) are derived by the pipeline, not
+            published by Audius — badging one would be a false provenance claim. */}
+        {!f.vocabulary && <span className="card-chip"><AudiusBadge /></span>}
         <span className="card-add"><AddButton rec={rec} size="sm" /></span>
         {isPlayable(rec) && (
           <span className="card-play"><PlayButton rec={rec} queue={queue} /></span>

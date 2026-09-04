@@ -13,7 +13,7 @@ export default function SearchBar({ initial = '', autoFocus = false }: { initial
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="Describe what you want to hear"
-        aria-label="Search the graph"
+        aria-label="Search the catalogue"
         autoFocus={autoFocus}
       />
       <button type="submit" disabled={!q.trim()}>Search</button>

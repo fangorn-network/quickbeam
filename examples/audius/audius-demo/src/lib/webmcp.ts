@@ -223,7 +223,7 @@ export function registerTools(mc: ModelContext, get: () => Deps): () => void {
   reg({
     name: 'search-music',
     description:
-      "Search this music graph by MEANING, across BOTH publishers at once. The query is embedded and matched inside this browser tab — it is never sent anywhere, so descriptive and vibe-based phrasing works and you do not need exact keywords: 'peak time high energy dance floor', 'rainy day melancholy piano'. Mood and genre are part of what was embedded, so energy words in the query work without a separate filter. Results carry `duration` (seconds) and `mood`, which is what lets you budget a playlist to a length and shape its energy. By default this also shows the results on the person's screen; pass show:false while you are gathering candidates so their page does not jump on every search.",
+      "Search this music catalogue by MEANING. The query is embedded and matched inside this browser tab — it is never sent anywhere, so descriptive and vibe-based phrasing works and you do not need exact keywords: 'peak time high energy dance floor', 'rainy day melancholy piano'. Mood and genre are part of what was embedded, so energy words in the query work without a separate filter. Results carry `duration` (seconds) and `mood`, which is what lets you budget a playlist to a length and shape its energy. By default this also shows the results on the person's screen; pass show:false while you are gathering candidates so their page does not jump on every search.",
     inputSchema: {
       type: 'object',
       properties: {
@@ -267,7 +267,7 @@ export function registerTools(mc: ModelContext, get: () => Deps): () => void {
   reg({
     name: 'describe-graph',
     description:
-      'What this snapshot holds: the two publishers, how many records each contributed, and the linkset of edges that cross between them. Start here if you want to know what you are searching before you search it.',
+      "What this snapshot holds: which publishers contributed it, how many records each, and how many edges join one publisher's records to another's. Start here if you want to know what you are searching before you search it.",
     inputSchema: { type: 'object', properties: {} },
     async execute() {
       try { return text(await get().stats()); }
@@ -278,7 +278,7 @@ export function registerTools(mc: ModelContext, get: () => Deps): () => void {
   reg({
     name: 'list-relations',
     description:
-      "Which typed relations a record has, and how many neighbours each leads to. `crosses: true` means at least one neighbour on that relation was published by a DIFFERENT wallet — that is the whole point of this graph: two publishers who never coordinated, joined by content addressing. Feed a relation name to `traverse` to walk it.",
+      "Which typed relations a record has, and how many neighbours each leads to. `crosses: true` means at least one neighbour on that relation was published by a different publisher, so following it leaves this one's catalogue. Feed a relation name to `traverse` to walk it.",
     inputSchema: {
       type: 'object',
       properties: { id: { type: 'string', description: 'A record id' } },

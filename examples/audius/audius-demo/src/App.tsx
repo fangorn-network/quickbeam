@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { AudiusGlyphSprite } from './components/AudiusBadge';
 import KernelStrip from './components/KernelStrip';
 import NowPlaying from './components/NowPlaying';
 import Onboarding from './components/Onboarding';
@@ -34,10 +35,11 @@ export default function App() {
 
   return (
     <div className="shell">
+      <AudiusGlyphSprite />
       <header className="topbar">
         <button className="brand" onClick={goHome} aria-label="Home">
-          <span className="brand-mark">FANGORN</span>
-          <span className="brand-sub">Audius on two roots</span>
+          <span className="brand-mark">FANGORN MUSIC</span>
+          <span className="brand-sub">search by sound, in your browser</span>
         </button>
         {stats && onboarded && !isStatic && route.view !== 'home' && (
           <SearchBar initial={route.q} />
@@ -99,10 +101,10 @@ export default function App() {
           <div className="loading">
             <div className="spinner" />
             <div className="bar"><i style={{ width: `${prog.pct}%` }} /></div>
-            <span>{prog.detail ?? 'Downloading the graph to your browser…'}</span>
+            <span>{prog.detail ?? 'Loading the catalogue into your browser…'}</span>
             <span style={{ fontSize: 13, color: 'var(--text-faint)', maxWidth: '46ch', textAlign: 'center' }}>
-              The whole snapshot is coming to you, once. After this, every search runs
-              locally and nothing you type is sent anywhere.
+              The whole catalogue is coming to you, once. After this, every search
+              runs locally and nothing you type is sent anywhere.
             </span>
           </div>
         )}

@@ -16,11 +16,6 @@
   --text-faint:    #8e93ab;
   --gradient:      linear-gradient(315deg, #5b23e1 0%, #a22feb 100%);
 
-  /* the two publishers. Distinguished by FORM as well as hue — never hue alone,
-     because that is the one thing a colour-blind viewer cannot use. */
-  --pub-platform:  #c67cff;
-  --pub-artist:    #d767e1;
-
   /* corner radius — harmony/foundations/corner-radius */
   --r-s: 4px;  --r-m: 8px;  --r-l: 12px;  --r-xl: 16px;  --r-2xl: 32px;
   --r-pill: 1000px;
@@ -82,7 +77,8 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .brand { display: flex; align-items: baseline; gap: 10px; font-weight: 700; letter-spacing: -.02em;
   padding: 0; text-align: left; }
 .brand-mark { font-size: 18px; }
-/* Explicitly a Fangorn demo *of* Audius data — never dressed as an Audius property. */
+/* This is Fangorn Music. Audius appears as a source badge on records, never as
+   the identity of the site itself. */
 .brand-sub { font-size: 12px; color: var(--text-faint); font-weight: 500; }
 
 .main { flex: 1; width: 100%; max-width: 1180px; margin: 0 auto; padding: 0 24px 96px; }
@@ -116,24 +112,17 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .topbar .search input { font-size: 15px; padding: 9px 0; }
 .topbar .search button { padding: 9px 18px; font-size: 14px; }
 
-/* ─── publisher chip: form + hue, so it never relies on colour alone ────── */
-.chip {
-  display: inline-flex; align-items: center; gap: 6px;
+/* ─── source badge: where a record came from ────────────────────────────── */
+.srcbadge {
+  display: inline-flex; align-items: center; gap: 5px;
   font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   padding: 3px 10px; border-radius: var(--r-pill); white-space: nowrap;
+  color: var(--text); background: rgba(25, 26, 39, .72);
 }
-.chip-platform { background: color-mix(in srgb, var(--pub-platform) 20%, transparent);
-                 color: var(--pub-platform); border: 1px solid transparent; }
-.chip-artist   { background: transparent; color: var(--pub-artist);
-                 border: 1px solid var(--pub-artist); }
-.chip-artist::before {
-  content: ''; width: 6px; height: 6px; border-radius: 50%;
-  background: var(--pub-artist);
-}
-.chip-addr { font-family: var(--mono); font-size: 10px; opacity: .8; letter-spacing: 0; }
+.srcbadge-glyph { width: 12px; height: 12px; flex: none; display: block; }
 
-/* ─── hero: the root ledger ─────────────────────────────────────────────── */
-.hero { padding: 72px 0 40px; }
+/* ─── hero ──────────────────────────────────────────────────────────────── */
+.hero { padding: 72px 0 24px; }
 .hero-kicker {
   font-size: 12px; font-weight: 700; letter-spacing: .18em; text-transform: uppercase;
   color: var(--secondary); margin-bottom: 18px;
@@ -144,50 +133,15 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 }
 .hero h1 em { font-style: normal; background: var(--gradient);
               -webkit-background-clip: text; background-clip: text; color: transparent; }
-.hero p { margin: 0 0 40px; font-size: 18px; color: var(--text-muted); max-width: 56ch; }
+.hero p { margin: 0 0 32px; font-size: 18px; color: var(--text-muted); max-width: 56ch; }
 
-.ledger {
-  display: grid; grid-template-columns: 1fr minmax(180px, 300px) 1fr;
-  gap: 0; align-items: stretch; margin-bottom: 40px;
+/* Selector carries two classes deliberately: it has to outrank `.hero p`, which
+   caps the lede at 56ch. This line is one row of figures and reads wrong broken
+   across two. */
+.hero .hero-stats {
+  margin: 28px 0 0; max-width: none; font-size: 13px; color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
-.root {
-  background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--r-xl); padding: 22px 24px;
-  display: flex; flex-direction: column; gap: 4px; min-width: 0;
-}
-.root-role { font-size: 12px; font-weight: 700; letter-spacing: .12em;
-             text-transform: uppercase; color: var(--text-faint); }
-.root-name { font-size: 22px; font-weight: 700; letter-spacing: -.02em;
-             overflow: hidden; text-overflow: ellipsis; }
-.root-addr { font-family: var(--mono); font-size: 12px; color: var(--text-muted);
-             overflow: hidden; text-overflow: ellipsis; }
-.root-stats { display: flex; gap: 18px; margin-top: 12px; }
-.root-stat b { display: block; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
-.root-stat span { font-size: 11px; color: var(--text-faint);
-                  text-transform: uppercase; letter-spacing: .08em; }
-.root-a { border-top: 3px solid var(--pub-platform); }
-.root-b { border-top: 3px solid var(--pub-artist); }
-
-/* the strands: one per relation type, thickness proportional to its real count */
-.strands { position: relative; display: flex; align-items: center; }
-.strands svg { width: 100%; height: 100%; overflow: visible; }
-.strand-path { fill: none; stroke-linecap: round; }
-.strand-label {
-  font-family: var(--mono); font-size: 9px; fill: var(--text-muted);
-  letter-spacing: -.02em;
-}
-@media (prefers-reduced-motion: no-preference) {
-  .strand-path { stroke-dasharray: var(--len); stroke-dashoffset: var(--len);
-                 animation: draw .9s cubic-bezier(.2, .7, .3, 1) forwards; }
-  .strand-label { opacity: 0; animation: fade .4s ease forwards .55s; }
-}
-@keyframes draw { to { stroke-dashoffset: 0; } }
-@keyframes fade { to { opacity: 1; } }
-
-.ledger-caption {
-  text-align: center; font-size: 13px; color: var(--text-faint); margin: 0 0 40px;
-}
-.ledger-caption b { color: var(--text-muted); font-weight: 600; }
 
 /* ─── result grid ───────────────────────────────────────────────────────── */
 .section-head {
@@ -214,8 +168,7 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .card-art { position: relative; aspect-ratio: 1; background: var(--bg-sunken); }
 .card-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .card-chip { position: absolute; top: 8px; left: 8px;
-             backdrop-filter: blur(6px); background: rgba(25, 26, 39, .72);
-             border-radius: var(--r-pill); }
+             backdrop-filter: blur(6px); border-radius: var(--r-pill); }
 .card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 3px; }
 .card-title { font-weight: 600; font-size: 15px; line-height: 1.3;
               display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
@@ -260,15 +213,6 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .rail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .rail-title { font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
 .rail-count { font-size: 12px; color: var(--text-faint); font-family: var(--mono); }
-/* the miniature of the hero's strand marker: this rail leaves the publisher */
-.rail-bridge {
-  display: inline-flex; align-items: center; gap: 6px; font-size: 11px;
-  font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--bg); background: var(--gradient);
-  padding: 3px 10px; border-radius: var(--r-pill);
-}
-.rail-bridge b { color: var(--bg); }
-
 .banner {
   display: flex; gap: 14px; align-items: flex-start;
   border: 1px solid var(--line); border-left: 3px solid var(--secondary);
@@ -461,8 +405,6 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 }
 
 @media (max-width: 860px) {
-  .ledger { grid-template-columns: 1fr; gap: 12px; }
-  .strands { height: 96px; }
   .entity-head { flex-direction: column; align-items: flex-start; gap: 20px; }
   .entity-art { width: 148px; height: 148px; }
   .topbar .search { display: none; }
@@ -565,18 +507,6 @@ button { font: inherit; color: inherit; cursor: pointer; background: none; borde
 .about-lede { font-size: 17px; margin-top: 16px !important; }
 .about b { color: var(--text); font-weight: 600; }
 .about em { color: var(--text); font-style: italic; }
-
-.about-defs { margin: 0 0 18px; }
-.about-defs dt {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-  font-weight: 700; color: var(--text); margin-top: 18px;
-}
-.about-defs dd {
-  margin: 6px 0 0; padding-left: 14px;
-  border-left: 2px solid var(--line);
-  color: var(--text-muted); line-height: 1.6;
-}
-.about-addr { font-family: var(--mono); font-size: 12px; font-weight: 400; color: var(--text-faint); }
 
 .about-caveats { margin: 0; padding: 0; list-style: none; }
 .about-caveats li {

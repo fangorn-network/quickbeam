@@ -45,7 +45,7 @@ export default function Privacy() {
       <h1>What this page <em>can</em> know.</h1>
       <p className="about-lede">
         There are no accounts, no logins and no wallet connection here. The whole
-        graph is downloaded to your browser once and searched there, so most of what
+        catalogue is downloaded to your browser once and searched there, so most of what
         you do never reaches a server at all — including the only text you ever type,
         a search or a playlist name. The exceptions are worth stating plainly,
         because there are some.
@@ -76,7 +76,7 @@ export default function Privacy() {
       <h2>If you use an AI agent in this browser</h2>
       <p>
         This page offers its own tools to a browser-resident agent, so one can
-        search the graph, work the player and build playlists for you without a
+        search the catalogue, work the player and build playlists for you without a
         server in the middle. Almost nobody has this: it needs a browser flag that
         is off by default, and where it is off the feature does not exist and
         nothing below applies.
@@ -101,8 +101,8 @@ export default function Privacy() {
 
       <h2>What Audius can see</h2>
       <p>
-        This demo is built on real Audius data and plays real audio, which means
-        Audius' own servers are involved whenever media loads:
+        The catalogue here comes from Audius and the audio is Audius' own, so their
+        servers are involved whenever media loads:
       </p>
       <ul className="about-caveats">
         <li>
@@ -180,11 +180,11 @@ export default function Privacy() {
       <p>
         Questions can go to{' '}
         <a href="mailto:fangorn@fangorn.network">fangorn@fangorn.network</a>. This
-        policy may change if the demo does; the date below is the last revision.
+        policy may change if the site does; the date below is the last revision.
       </p>
       <p className="about-lede" style={{ fontSize: 14 }}>Last updated 3 September 2026.</p>
 
-      <button className="back" onClick={goHome}>← Back to the graph</button>
+      <button className="back" onClick={goHome}>← Back to the music</button>
     </section>
   );
 }
